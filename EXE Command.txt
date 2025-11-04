@@ -1,0 +1,1 @@
+pyinstaller --onefile --windowed "C:\Scripts\Ready Jobs Watcher\ready_jobs_watcher.py" --add-data "C:\Scripts\Ready Jobs Watcher\send_notification.py;." --add-data "C:\Scripts\Ready Jobs Watcher\favicon.ico;." --icon "C:\Scripts\Ready Jobs Watcher\favicon.ico"

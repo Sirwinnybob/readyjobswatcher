@@ -1,0 +1,38 @@
+# Log files
+*.log
+
+# Lock files
+*.lock
+
+# Build directories
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Blacklist files (may contain sensitive data)
+bad_parts_blacklist.json
+permanently_ignored_blacklist.json
+
+# Config files (may contain credentials)
+config.json
+
+# Spec files
+*.spec
