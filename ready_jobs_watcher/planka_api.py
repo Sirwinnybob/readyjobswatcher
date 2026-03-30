@@ -2,18 +2,21 @@ import os
 import re
 import logging
 import datetime
+from typing import Optional, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from plankapy import Planka, PasswordAuth, interfaces
 from plankapy.routes import Routes
 
 from .notifications import send_notification
 from .bad_parts_checker import BAD_PART_LOG_FILE
+from .config import Config
+from . import planka_credentials
 
 planka_logger = logging.getLogger('planka')
 
-# Planka integration constants
-PLANKABAN_BASE_URL = "http://192.168.1.15:30064"
-PLANKABAN_USERNAME = "bad_parts"
-PLANKABAN_PASSWORD = "BadParts@KKC123"
+# Planka integration - credentials loaded via planka_credentials.initialize_planka_credentials()
+PLANKABAN_TIMEOUT = int(os.getenv("PLANKA_TIMEOUT", "10"))
+
 PLANKABAN_BOARD_IDENTIFIER = None
 PLANKABAN_BOARD_ID = None
 PLANKABAN_LIST_NAME = None
@@ -74,7 +77,7 @@ class CompatiblePlanka(Planka):
             project_objects.append(CompatibleProject(**project_filtered).bind(self.routes))
         return interfaces.QueryableList(project_objects)
 
-def internal_parse_overload(args:tuple, kwargs: dict, model: str, options: tuple[str], required: tuple[str]=(), noarg=None) -> dict:
+def internal_parse_overload(args: tuple, kwargs: dict, model: str, options: tuple, required: tuple = (), noarg: Optional[Dict[str, Any]] = None) -> dict:
     if isinstance(options, str):
         options = (options,)
     if isinstance(required, str):
@@ -95,7 +98,31 @@ try:
 except ImportError:
     parse_overload = internal_parse_overload
 
-def resolve_board_id(planka):
+
+def run_with_timeout(func, timeout_seconds: int = None, description: str = "operation"):
+    """
+    Run a function with a timeout. Raises TimeoutError if the operation takes too long.
+
+    Args:
+        func: Callable to execute
+        timeout_seconds: Maximum time to wait (defaults to PLANKABAN_TIMEOUT)
+        description: Description for logging
+
+    Returns:
+        The result of func()
+    """
+    if timeout_seconds is None:
+        timeout_seconds = PLANKABAN_TIMEOUT
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except FuturesTimeoutError:
+            planka_logger.error(f"❌ {description} timed out after {timeout_seconds} seconds")
+            raise TimeoutError(f"{description} timed out after {timeout_seconds} seconds")
+
+def resolve_board_id(planka: Planka) -> Optional[str]:
     global PLANKABAN_BOARD_ID
     if PLANKABAN_BOARD_ID and PLANKABAN_BOARD_ID != "unknown":
         return PLANKABAN_BOARD_ID
@@ -135,7 +162,15 @@ def resolve_board_id(planka):
         PLANKABAN_BOARD_ID = "unknown"
         return None
 
-def create_planka_card(pdf_path, page_num, config):
+def create_planka_card(pdf_path: str, page_num: int, config: Config) -> None:
+    # Get credentials from the credential helper
+    PLANKABAN_BASE_URL, PLANKABAN_USERNAME, PLANKABAN_PASSWORD = planka_credentials.get_planka_credentials()
+
+    # Skip if Planka credentials are not configured
+    if not PLANKABAN_USERNAME or not PLANKABAN_PASSWORD:
+        planka_logger.debug("Planka credentials not configured, skipping card creation")
+        return
+
     try:
         planka_logger.info("🔧 Starting Planka card creation for bad part detection")
 
@@ -153,13 +188,25 @@ def create_planka_card(pdf_path, page_num, config):
         planka_logger.info(f"📋 Bad part detected - Job: {job_number}, Page: {page_num + 1}, File: {os.path.basename(pdf_path)}")
 
         try:
-            planka = CompatiblePlanka(PLANKABAN_BASE_URL, PasswordAuth(PLANKABAN_USERNAME, PLANKABAN_PASSWORD))
+            # Connect to Planka with timeout
+            def connect_planka():
+                return CompatiblePlanka(PLANKABAN_BASE_URL, PasswordAuth(PLANKABAN_USERNAME, PLANKABAN_PASSWORD))
+
+            planka_logger.debug(f"Connecting to Planka (timeout: {PLANKABAN_TIMEOUT}s)...")
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(connect_planka)
+                try:
+                    planka = future.result(timeout=PLANKABAN_TIMEOUT)
+                except FuturesTimeoutError:
+                    planka_logger.error(f"❌ Planka connection timed out after {PLANKABAN_TIMEOUT} seconds")
+                    raise TimeoutError(f"Planka connection timed out after {PLANKABAN_TIMEOUT} seconds")
 
             global PLANKABAN_BOARD_IDENTIFIER, PLANKABAN_LIST_NAME
             PLANKABAN_BOARD_IDENTIFIER = config.planka_board_identifier
             PLANKABAN_LIST_NAME = config.planka_list_name
 
-            projects = planka.projects
+            # Get projects with timeout
+            projects = run_with_timeout(lambda: planka.projects, description="Get projects")
             if not projects:
                 planka_logger.error("❌ No projects available in Planka")
                 return
@@ -167,7 +214,8 @@ def create_planka_card(pdf_path, page_num, config):
             project = projects[0]
             planka_logger.info(f"✅ Using project: {project.name}")
 
-            boards = project.boards
+            # Get boards with timeout
+            boards = run_with_timeout(lambda: project.boards, description="Get boards")
             planka_logger.debug(f"✅ Found {len(boards)} boards in project")
 
             target_board = next((b for b in boards if b.id == PLANKABAN_BOARD_IDENTIFIER), None)
@@ -177,7 +225,8 @@ def create_planka_card(pdf_path, page_num, config):
 
             planka_logger.info(f"✅ Using board: {target_board.name} (ID: {target_board.id})")
 
-            lists = target_board.lists
+            # Get lists with timeout
+            lists = run_with_timeout(lambda: target_board.lists, description="Get lists")
             planka_logger.debug(f"✅ Found {len(lists)} lists in board")
 
             cnc_list = next((l for l in lists if l.name == PLANKABAN_LIST_NAME), None)
@@ -192,7 +241,8 @@ def create_planka_card(pdf_path, page_num, config):
             card_name = f"BAD PART: {job_number} - {display_description}"
             planka_logger.info(f"📝 Creating card: '{card_name}'")
 
-            new_card = cnc_list.create_card(name=card_name)
+            # Create card with timeout
+            new_card = run_with_timeout(lambda: cnc_list.create_card(name=card_name), description="Create card")
             planka_logger.info(f"✅ Card created successfully: '{new_card.name}' (ID: {new_card.id})")
 
             tasks_data = [
@@ -212,7 +262,8 @@ def create_planka_card(pdf_path, page_num, config):
                     planka_logger.warning(f"   ⚠️ Task {i+1} failed: {e}")
 
             planka_logger.info(f"🏷️ Assigning 'AUTO ADDED' label to the card...")
-            board_labels = target_board.labels
+            # Get labels with timeout
+            board_labels = run_with_timeout(lambda: target_board.labels, description="Get labels")
             planka_logger.debug(f"✅ Found {len(board_labels)} labels in board")
 
             auto_added_label = next((l for l in board_labels if l.name == "AUTO ADDED"), None)

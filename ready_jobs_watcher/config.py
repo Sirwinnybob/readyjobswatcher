@@ -3,10 +3,12 @@ import json
 import datetime
 import logging
 import sys
+from typing import Dict, List, Optional
 
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
     # When running as a PyInstaller executable from 'dist' folder
-    BASE_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(sys.executable), '..'))
+    # Go up two levels: from dist/ReadyJobsWatcher/ReadyJobsWatcher.exe to project root
+    BASE_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(sys.executable), '..', '..'))
 else:
     # When running as a script in development
     BASE_DATA_DIR = r'C:\Scripts\Ready Jobs Watcher'
@@ -35,33 +37,154 @@ class Config:
         # Planka configuration
         self.planka_board_identifier = "1529904146918934223"  # Can be ID or name
         self.planka_list_name = "CNC"  # Default list name
+        self.planka_base_url = None  # URL for Planka server
+        self.planka_username = None  # Username for Planka (password stored in Windows Credential Manager)
+        # PDF conversion and folder processing delays
+        self.pdf_conversion_delay_seconds = 30  # Default: 30 seconds
+        self.new_folder_delay_seconds = 1200  # Default: 20 minutes
+        # Daily restart time (to prevent memory leaks and clear stale state)
+        self.daily_restart_time = '03:00'  # Default: 3 AM
         self.load()
 
-    def load(self):
+    def _validate_config(self, config: Dict) -> bool:
+        """Validate config structure and values."""
+        # Check required fields exist and have correct types
+        if 'backup_times' in config and not isinstance(config['backup_times'], list):
+            main_logger.error("Config validation failed: backup_times must be a list")
+            return False
+
+        # Validate backup times format
+        if 'backup_times' in config:
+            for time_str in config['backup_times']:
+                if not isinstance(time_str, str) or ':' not in time_str:
+                    main_logger.error(f"Config validation failed: invalid backup time format: {time_str}")
+                    return False
+                try:
+                    hour, minute = map(int, time_str.split(':'))
+                    if not (0 <= hour < 24 and 0 <= minute < 60):
+                        raise ValueError
+                except ValueError:
+                    main_logger.error(f"Config validation failed: invalid backup time: {time_str}")
+                    return False
+
+        # Validate delay values are positive integers
+        if 'pdf_conversion_delay_seconds' in config:
+            if not isinstance(config['pdf_conversion_delay_seconds'], (int, float)) or config['pdf_conversion_delay_seconds'] < 0:
+                main_logger.error("Config validation failed: pdf_conversion_delay_seconds must be a positive number")
+                return False
+
+        if 'new_folder_delay_seconds' in config:
+            if not isinstance(config['new_folder_delay_seconds'], (int, float)) or config['new_folder_delay_seconds'] < 0:
+                main_logger.error("Config validation failed: new_folder_delay_seconds must be a positive number")
+                return False
+
+        return True
+
+    def load(self) -> None:
         main_logger.debug(f"Loading config from {self.CONFIG_FILE}")
+        backup_file = self.CONFIG_FILE + '.backup'
+
         try:
             if os.path.exists(self.CONFIG_FILE):
                 with open(self.CONFIG_FILE, 'r') as f:
                     config = json.load(f)
-                    self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
-                    main_logger.info(f"Loaded backup times from config: {self.BACKUP_TIMES}")
+
+                # Validate config before using it
+                if not self._validate_config(config):
+                    # Try to restore from backup
+                    if os.path.exists(backup_file):
+                        main_logger.warning("Config file is invalid, attempting to restore from backup")
+                        with open(backup_file, 'r') as f:
+                            config = json.load(f)
+                        if self._validate_config(config):
+                            main_logger.info("Successfully restored config from backup")
+                            # Save restored config
+                            with open(self.CONFIG_FILE, 'w') as f:
+                                json.dump(config, f, indent=4)
+                        else:
+                            main_logger.error("Backup config is also invalid, using defaults")
+                            return
+                    else:
+                        main_logger.warning("No backup config available, using defaults")
+                        return
+
+                self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
+                self.planka_base_url = config.get('planka_base_url')
+                self.planka_username = config.get('planka_username')
+                self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
+                self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
+                self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
+                main_logger.info(f"Loaded backup times from config: {self.BACKUP_TIMES}")
+                if self.planka_username:
+                    main_logger.info(f"Loaded Planka settings: URL={self.planka_base_url}, Username={self.planka_username}")
             else:
                 main_logger.debug(f"No config file found at {self.CONFIG_FILE}, using default backup times")
+        except json.JSONDecodeError as e:
+            main_logger.error(f"Config file is corrupted (invalid JSON): {e}")
+            # Try to restore from backup
+            if os.path.exists(backup_file):
+                try:
+                    main_logger.warning("Attempting to restore from backup")
+                    with open(backup_file, 'r') as f:
+                        config = json.load(f)
+                    if self._validate_config(config):
+                        self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
+                        self.planka_base_url = config.get('planka_base_url')
+                        self.planka_username = config.get('planka_username')
+                        self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
+                        self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
+                        self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
+                        main_logger.info("Successfully restored config from backup")
+                        # Save restored config
+                        with open(self.CONFIG_FILE, 'w') as f:
+                            json.dump(config, f, indent=4)
+                    else:
+                        main_logger.warning("Backup config validation failed, using defaults")
+                except Exception as backup_error:
+                    main_logger.error(f"Failed to restore from backup: {backup_error}, using defaults")
+            else:
+                main_logger.warning("No backup config available, using defaults")
         except Exception as e:
-            main_logger.error(f"Failed to load config: {e}")
+            main_logger.error(f"Failed to load config: {e}, using defaults")
 
-    def save(self):
+    def save(self) -> None:
         main_logger.debug(f"Saving config to {self.CONFIG_FILE}")
+        backup_file = self.CONFIG_FILE + '.backup'
+
         try:
-            config = {'backup_times': self.BACKUP_TIMES}
+            config = {
+                'backup_times': self.BACKUP_TIMES,
+                'planka_base_url': self.planka_base_url,
+                'planka_username': self.planka_username,
+                'pdf_conversion_delay_seconds': self.pdf_conversion_delay_seconds,
+                'new_folder_delay_seconds': self.new_folder_delay_seconds,
+                'daily_restart_time': self.daily_restart_time
+            }
+
+            # Validate the config we're about to save
+            if not self._validate_config(config):
+                main_logger.error("Cannot save invalid config")
+                return
+
+            # Create backup of existing config before saving
+            if os.path.exists(self.CONFIG_FILE):
+                try:
+                    import shutil
+                    shutil.copy2(self.CONFIG_FILE, backup_file)
+                    main_logger.debug(f"Created config backup at {backup_file}")
+                except Exception as e:
+                    main_logger.warning(f"Failed to create config backup: {e}")
+
+            # Save new config
             with open(self.CONFIG_FILE, 'w') as f:
                 json.dump(config, f, indent=4)
             main_logger.info(f"Saved backup times to config: {self.BACKUP_TIMES}")
+            main_logger.info(f"Saved Planka settings: URL={self.planka_base_url}, Username={self.planka_username}")
         except Exception as e:
             main_logger.error(f"Failed to save config: {e}")
 
-    def get_next_backup_time(self):
-        logging.debug("Calculating next backup time")
+    def get_next_backup_time(self) -> datetime.datetime:
+        main_logger.debug("Calculating next backup time")
         now = datetime.datetime.now()
         today = now.date()
         backup_datetimes = []
@@ -73,5 +196,5 @@ class Config:
                     backup_time += datetime.timedelta(days=1)
                 backup_datetimes.append(backup_time)
             except ValueError:
-                logging.error(f"Invalid backup time format: {time_str}")
+                main_logger.error(f"Invalid backup time format: {time_str}")
         return min(backup_datetimes) if backup_datetimes else now + datetime.timedelta(days=1)

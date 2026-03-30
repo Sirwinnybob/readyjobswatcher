@@ -2,15 +2,63 @@ import os
 import re
 import logging
 import time
-from typing import Optional
+from typing import Optional, Set
 
-# Globals that are used by the JobProcessor
-PAUSE_PROCESSING = False
-PENDING_RENAMES = {}
+from .utils import is_hidden
+
+# Files to ignore during processing (system files, temp files, etc.)
+IGNORED_FILES: Set[str] = {
+    'thumbs.db',
+    'desktop.ini',
+    '.ds_store',
+    '~$',  # Office temp files prefix
+}
+
+# File extensions to ignore
+IGNORED_EXTENSIONS: Set[str] = {
+    '.tmp',
+    '.temp',
+    '.bak',
+    '.swp',
+}
+
+# Folder names to ignore (template folders that should be renamed to job numbers)
+IGNORED_FOLDER_NAMES: Set[str] = {
+    'face frame',
+    'frameless',
+}
+
+
+def should_ignore_file(filename: str) -> bool:
+    """Check if a file should be ignored during processing."""
+    lower_name = filename.lower()
+
+    # Check exact matches
+    if lower_name in IGNORED_FILES:
+        return True
+
+    # Check prefixes (like ~$ for Office temp files)
+    for prefix in IGNORED_FILES:
+        if prefix.startswith('~') and lower_name.startswith(prefix):
+            return True
+
+    # Check extensions
+    _, ext = os.path.splitext(lower_name)
+    if ext in IGNORED_EXTENSIONS:
+        return True
+
+    return False
+
+
+def should_ignore_folder(folder_name: str) -> bool:
+    """Check if a folder should be ignored (template folders waiting to be renamed)."""
+    return folder_name.lower() in IGNORED_FOLDER_NAMES
+
 
 class JobProcessor:
-    def __init__(self, config):
+    def __init__(self, config, app_state):
         self.config = config
+        self.app_state = app_state
 
     @staticmethod
     def extract_job_number(folder_name: str) -> Optional[str]:
@@ -29,7 +77,7 @@ class JobProcessor:
 
     def process_file(self, file_path: str, job_num: str, dir_path: str):
         logging.debug(f"Processing file {file_path}")
-        if PAUSE_PROCESSING:
+        if self.app_state.PAUSE_PROCESSING:
             logging.debug(f"Processing paused (GUI open): Skipping file {file_path}")
             return
         if not os.path.isfile(file_path):
@@ -37,6 +85,11 @@ class JobProcessor:
             return
 
         original_name = os.path.basename(file_path)
+
+        # Skip ignored files (Thumbs.db, desktop.ini, temp files, etc.)
+        if should_ignore_file(original_name):
+            logging.debug(f"Ignoring system/temp file: {file_path}")
+            return
         if ' - ' in original_name:
             prefix, rest = original_name.split(' - ', 1)
             if prefix == job_num:
@@ -50,21 +103,53 @@ class JobProcessor:
         new_path = os.path.join(dir_path, new_name)
 
         try:
+            # Check if file still exists before attempting rename
+            if not os.path.exists(file_path):
+                logging.warning(f"File no longer exists, skipping: {file_path}")
+                return
+
+            # Check if destination already exists
+            if os.path.exists(new_path):
+                logging.info(f"Destination already exists, skipping: {new_path}")
+                return
+
             os.rename(file_path, new_path)
             logging.info(f"Renamed: {file_path} -> {new_path}")
         except PermissionError:
             logging.warning(f"File locked: {file_path}. Scheduling retry.")
-            PENDING_RENAMES[file_path] = (job_num, dir_path, original_name, time.time() + (self.config.RETRY_INTERVAL_MINUTES * 60))
+            with self.app_state.pending_renames_lock:
+                self.app_state.PENDING_RENAMES[file_path] = (job_num, dir_path, original_name, time.time() + (self.config.RETRY_INTERVAL_MINUTES * 60))
+        except FileNotFoundError:
+            logging.warning(f"File disappeared during rename attempt: {file_path}")
+        except OSError as e:
+            # Handle various OS errors (file in use, etc.)
+            if hasattr(e, 'winerror') and e.winerror == 32:  # ERROR_SHARING_VIOLATION - file in use
+                logging.warning(f"File in use (sharing violation): {file_path}. Scheduling retry.")
+                with self.app_state.pending_renames_lock:
+                    self.app_state.PENDING_RENAMES[file_path] = (job_num, dir_path, original_name, time.time() + (self.config.RETRY_INTERVAL_MINUTES * 60))
+            else:
+                logging.error(f"OS error renaming {file_path}: {e}")
         except Exception as e:
             logging.error(f"Error renaming {file_path}: {e}")
 
     def process_job_folder(self, job_folder: str, include_cnc: bool = False):
         logging.debug(f"Processing job folder {job_folder}, include_cnc={include_cnc}")
-        if PAUSE_PROCESSING:
+        if self.app_state.PAUSE_PROCESSING:
             logging.debug(f"Processing paused (GUI open): Skipping folder {job_folder}")
             return
 
+        # Skip hidden folders
+        if is_hidden(job_folder):
+            logging.debug(f"Skipping hidden folder: {job_folder}")
+            return
+
         folder_base_name = os.path.basename(job_folder)
+
+        # Skip template folders (Face Frame, Frameless) until they're renamed to job numbers
+        if should_ignore_folder(folder_base_name):
+            logging.debug(f"Skipping template folder (waiting to be renamed): {job_folder}")
+            return
+
         job_num = self.extract_job_number(folder_base_name)
 
         if not job_num:
@@ -75,15 +160,35 @@ class JobProcessor:
             logging.warning(f"Path is not a directory: {job_folder}. Skipping.")
             return
 
-        for item in os.listdir(job_folder):
+        try:
+            items = os.listdir(job_folder)
+        except PermissionError:
+            logging.warning(f"Permission denied accessing folder: {job_folder}")
+            return
+        except OSError as e:
+            logging.error(f"Error listing folder {job_folder}: {e}")
+            return
+
+        for item in items:
             full_path = os.path.join(job_folder, item)
+            # Skip hidden files
+            if is_hidden(full_path):
+                logging.debug(f"Skipping hidden item: {full_path}")
+                continue
             if os.path.isfile(full_path):
                 self.process_file(full_path, job_num, job_folder)
 
         if include_cnc:
             cnc_path = os.path.join(job_folder, self.config.CNC_SUBDIR)
-            if os.path.isdir(cnc_path):
-                for item in os.listdir(cnc_path):
+            if os.path.isdir(cnc_path) and not is_hidden(cnc_path):
+                try:
+                    cnc_items = os.listdir(cnc_path)
+                except (PermissionError, OSError) as e:
+                    logging.warning(f"Cannot access CNC folder {cnc_path}: {e}")
+                    return
+                for item in cnc_items:
                     full_path = os.path.join(cnc_path, item)
+                    if is_hidden(full_path):
+                        continue
                     if os.path.isfile(full_path):
                         self.process_file(full_path, job_num, cnc_path)
