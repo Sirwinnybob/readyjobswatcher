@@ -1,0 +1,451 @@
+import logging
+import time
+import threading
+import os
+from watchdog.events import FileSystemEventHandler
+
+# This will be properly imported later
+from .bad_parts_checker import (
+    check_for_bad_parts_highlight, BAD_PART_LOG_FILE, BLACKLISTED_FILES, PERMANENTLY_IGNORED_FILES,
+    save_to_blacklist_internal, save_permanently_ignored_blacklist_internal,
+    BLACKLIST_LOCK, PERMANENTLY_IGNORED_LOCK
+)
+from .file_handler import should_ignore_folder, should_ignore_file
+from .utils import is_hidden
+
+
+main_logger = logging.getLogger('main')
+
+# Thread-safe lock for log file processing
+IS_PROCESSING_LOG_FILE_LOCK = threading.Lock()
+
+class RenameHandler(FileSystemEventHandler):
+    def __init__(self, config, job_processor, app_state, pending_queue=None, executor=None):
+        super().__init__()
+        self.config = config
+        self.job_processor = job_processor
+        self.app_state = app_state
+        self.pending_queue = pending_queue
+        self.executor = executor  # ThreadPoolExecutor for background tasks
+        self._pending_folders = {}  # Track folders waiting to be processed: {folder_path: scheduled_time}
+        self._pending_folders_lock = threading.Lock()  # Lock for thread-safe access
+        self._folder_delay_seconds = config.new_folder_delay_seconds
+
+    def _schedule_folder_processing(self, folder_path: str):
+        """Schedule a folder to be processed after a delay."""
+        scheduled_time = time.time() + self._folder_delay_seconds
+
+        with self._pending_folders_lock:
+            self._pending_folders[folder_path] = scheduled_time
+
+        main_logger.info(f"Scheduled folder processing in {self._folder_delay_seconds}s: {folder_path}")
+
+        # Save to persistent queue
+        if self.pending_queue:
+            self.pending_queue.add_pending_folder(folder_path, scheduled_time)
+
+        # Background task to process the folder after the delay
+        def _delayed_process():
+            try:
+                time.sleep(self._folder_delay_seconds)
+                # Check if still scheduled (might have been cancelled)
+                should_process = False
+                with self._pending_folders_lock:
+                    if folder_path in self._pending_folders:
+                        main_logger.info(f"Processing delayed folder: {folder_path}")
+                        del self._pending_folders[folder_path]
+                        should_process = True
+                    else:
+                        main_logger.debug(f"Folder processing was cancelled: {folder_path}")
+
+                if should_process:
+                    # Remove from persistent queue
+                    if self.pending_queue:
+                        self.pending_queue.remove_pending_folder(folder_path)
+                    self.job_processor.process_job_folder(folder_path)
+            except Exception as e:
+                main_logger.error(f"Error in delayed folder processing for {folder_path}: {e}", exc_info=True)
+
+        # Use executor if available, fallback to thread if not
+        if self.executor:
+            self.executor.submit(_delayed_process)
+        else:
+            thread = threading.Thread(target=_delayed_process, daemon=True, name=f"DelayedFolderProcess-{os.path.basename(folder_path)}")
+            thread.start()
+
+    def on_created(self, event):
+        try:
+            main_logger.debug(f"on_created triggered for {event.src_path}")
+            if self.app_state.PAUSE_PROCESSING:
+                main_logger.debug(f"Processing paused (GUI open): Ignoring created event for {event.src_path}")
+                return
+
+            # Skip hidden files/folders
+            if is_hidden(event.src_path):
+                main_logger.debug(f"Skipping hidden item: {event.src_path}")
+                return
+
+            if event.is_directory:
+                folder_name = os.path.basename(event.src_path)
+
+                # Skip template folders (Face Frame, Frameless) until renamed
+                if should_ignore_folder(folder_name):
+                    main_logger.debug(f"Skipping template folder: {event.src_path}")
+                    return
+
+                # New job folder created - schedule processing after delay
+                main_logger.info(f"New folder created: {event.src_path}")
+                self._schedule_folder_processing(event.src_path)
+            else:
+                file_name = os.path.basename(event.src_path)
+
+                # Skip ignored files (Thumbs.db, temp files, etc.)
+                if should_ignore_file(file_name):
+                    main_logger.debug(f"Skipping ignored file: {event.src_path}")
+                    return
+
+                # New file created in existing job folder - process just this file
+                parent_folder = os.path.dirname(event.src_path)
+                parent_base_name = os.path.basename(parent_folder)
+                job_num = self.job_processor.extract_job_number(parent_base_name)
+
+                if job_num:
+                    main_logger.info(f"File created in job folder: {event.src_path}")
+                    self.job_processor.process_file(event.src_path, job_num, parent_folder)
+        except Exception as e:
+            main_logger.error(f"Error in RenameHandler.on_created for {event.src_path}: {e}")
+
+    def on_modified(self, event):
+        try:
+            main_logger.debug(f"on_modified triggered for {event.src_path}")
+            if self.app_state.PAUSE_PROCESSING:
+                main_logger.debug(f"Processing paused (GUI open): Ignoring modified event for {event.src_path}")
+                return
+        except Exception as e:
+            main_logger.error(f"Error in RenameHandler.on_modified for {event.src_path}: {e}")
+
+    def on_moved(self, event):
+        try:
+            main_logger.debug(f"on_moved triggered for {event.src_path} -> {event.dest_path}")
+            if self.app_state.PAUSE_PROCESSING:
+                main_logger.debug(f"Processing paused (GUI open): Ignoring moved event for {event.src_path} -> {event.dest_path}")
+                return
+
+            # Skip hidden destinations
+            if is_hidden(event.dest_path):
+                main_logger.debug(f"Skipping hidden destination: {event.dest_path}")
+                return
+
+            main_logger.info(f"Moved/renamed event detected: {event.src_path} -> {event.dest_path} (is_directory={event.is_directory})")
+            if event.is_directory:
+                folder_name = os.path.basename(event.dest_path)
+
+                # Skip template folders
+                if should_ignore_folder(folder_name):
+                    main_logger.debug(f"Skipping template folder: {event.dest_path}")
+                    return
+
+                self.job_processor.process_job_folder(event.dest_path, include_cnc=True)
+        except Exception as e:
+            main_logger.error(f"Error in RenameHandler.on_moved for {event.src_path} -> {event.dest_path}: {e}")
+
+class PdfChangeHandler(FileSystemEventHandler):
+    """Handles recursive modifications to PDF files for bad part checking."""
+    def __init__(self, config, rename_handler=None, pending_queue=None, executor=None):
+        super().__init__()
+        self.config = config
+        self.rename_handler = rename_handler  # Reference to check pending folders
+        self.pending_queue = pending_queue
+        self.executor = executor  # ThreadPoolExecutor for background tasks
+        self._conversion_cooldown = {}  # Track last conversion time per file
+        self._cooldown_lock = threading.Lock()  # Lock for thread-safe access to cooldown dict
+        self._cooldown_seconds = config.pdf_conversion_delay_seconds
+        self._conversion_count = 0  # Track number of conversions for periodic cleanup
+        self._count_lock = threading.Lock()  # Lock for thread-safe counter increment
+
+    def _cleanup_old_cooldown_entries(self):
+        """Remove cooldown entries older than 1 hour to prevent dictionary from growing indefinitely."""
+        current_time = time.time()
+        one_hour_ago = current_time - 3600
+
+        # Remove entries older than 1 hour (with lock protection)
+        with self._cooldown_lock:
+            old_entries = [path for path, timestamp in self._conversion_cooldown.items() if timestamp < one_hour_ago]
+            for path in old_entries:
+                del self._conversion_cooldown[path]
+
+        if old_entries:
+            main_logger.debug(f"Cleaned up {len(old_entries)} old cooldown entries")
+
+    def _schedule_pdf_conversion(self, pdf_path: str, invert_images: bool):
+        """Schedule a PDF conversion after the cooldown period."""
+        # Periodic cleanup every 100 conversions (thread-safe)
+        with self._count_lock:
+            self._conversion_count += 1
+            should_cleanup = self._conversion_count % 100 == 0
+
+        if should_cleanup:
+            self._cleanup_old_cooldown_entries()
+
+        delay_seconds = self._cooldown_seconds
+        main_logger.info(f"Scheduling PDF conversion in {delay_seconds}s: {os.path.basename(pdf_path)}")
+
+        def _delayed_convert():
+            try:
+                main_logger.debug(f"Waiting {delay_seconds}s before converting: {os.path.basename(pdf_path)}")
+                time.sleep(delay_seconds)
+                main_logger.info(f"Wait complete, starting conversion: {os.path.basename(pdf_path)}")
+
+                # Check if file still exists before converting
+                if not os.path.exists(pdf_path):
+                    main_logger.warning(f"PDF no longer exists, skipping conversion: {pdf_path}")
+                    if self.pending_queue:
+                        self.pending_queue.remove_pending_pdf(pdf_path)
+                    return
+
+                # Remove from persistent queue when conversion runs
+                if self.pending_queue:
+                    self.pending_queue.remove_pending_pdf(pdf_path)
+
+                # Run the conversion (synchronous, we're already in a background thread)
+                from .pdf_dark_mode import run_dark_mode_conversion
+                run_dark_mode_conversion(specific_file=pdf_path, invert_images=invert_images)
+            except Exception as e:
+                main_logger.error(f"Error in delayed PDF conversion thread for {pdf_path}: {e}", exc_info=True)
+
+        # Use executor if available, fallback to thread if not
+        if self.executor:
+            self.executor.submit(_delayed_convert)
+        else:
+            thread = threading.Thread(target=_delayed_convert, daemon=True, name=f"DelayedPDFConvert-{os.path.basename(pdf_path)}")
+            thread.start()
+
+    def _should_convert_to_dark_mode(self, pdf_path: str) -> bool:
+        """Check if a PDF should be converted to dark mode (exclude CNC folders, DARK MODE folders, Cut List files, and pending job folders)."""
+        # Normalize path separators
+        normalized_path = pdf_path.replace('/', '\\')
+
+        # Check if the filename contains "Cut List" (case-insensitive)
+        filename = os.path.basename(pdf_path).lower()
+        if 'cut list' in filename:
+            main_logger.debug(f"Skipping dark mode conversion for Cut List PDF: {pdf_path}")
+            return False
+
+        # Check if the PDF is in a CNC subfolder
+        if '\\CNC\\' in normalized_path or normalized_path.endswith('\\CNC'):
+            return False
+
+        # Check if the PDF is in a DARK MODE subfolder
+        if '\\DARK MODE\\' in normalized_path:
+            main_logger.debug(f"Skipping dark mode conversion for PDF already in DARK MODE folder: {pdf_path}")
+            return False
+
+        # Check if the PDF is in a pending folder (recently created, waiting for template updates)
+        if self.rename_handler:
+            # Get the job folder (parent of the PDF)
+            pdf_dir = os.path.dirname(normalized_path)
+
+            # Thread-safe access to pending folders
+            with self.rename_handler._pending_folders_lock:
+                pending_folders_snapshot = list(self.rename_handler._pending_folders.keys())
+
+            # Check if this folder or any parent folder is pending
+            for pending_folder in pending_folders_snapshot:
+                normalized_pending = pending_folder.replace('/', '\\')
+                if pdf_dir == normalized_pending or pdf_dir.startswith(normalized_pending + '\\'):
+                    main_logger.debug(f"Skipping dark mode conversion for PDF in pending folder: {pdf_path}")
+                    return False
+
+        return True
+
+    def on_modified(self, event):
+        try:
+            if not event.is_directory and event.src_path.lower().endswith('.pdf'):
+                main_logger.debug(f"PDF modified event detected by recursive watcher: {event.src_path}")
+
+                # Only check for bad parts if the PDF is in a CNC folder
+                normalized_path = event.src_path.replace('/', '\\')
+                if '\\CNC\\' in normalized_path or normalized_path.endswith('\\CNC'):
+                    check_for_bad_parts_highlight(event.src_path, self.config)
+
+                # Convert specific PDF to dark mode (if not in CNC folder and cooldown elapsed)
+                if self._should_convert_to_dark_mode(event.src_path):
+                    current_time = time.time()
+
+                    # Thread-safe cooldown check
+                    with self._cooldown_lock:
+                        last_conversion = self._conversion_cooldown.get(event.src_path, 0)
+                        if current_time - last_conversion >= self._cooldown_seconds:
+                            self._conversion_cooldown[event.src_path] = current_time
+                            should_convert = True
+                        else:
+                            should_convert = False
+
+                    if should_convert:
+                        from .pdf_dark_mode import should_invert_images
+                        invert = should_invert_images(event.src_path)
+                        scheduled_time = current_time + self._cooldown_seconds
+                        main_logger.info(f"Triggering dark mode conversion for modified PDF: {event.src_path} (invert_images={invert})")
+                        main_logger.info(f"PDF conversion will run in {self._cooldown_seconds} seconds")
+
+                        # Save to persistent queue
+                        if self.pending_queue:
+                            self.pending_queue.add_pending_pdf(event.src_path, scheduled_time, invert)
+
+                        # Schedule the conversion
+                        self._schedule_pdf_conversion(event.src_path, invert)
+                    else:
+                        main_logger.debug(f"Skipping dark mode conversion (cooldown active): {event.src_path}")
+        except Exception as e:
+            main_logger.error(f"Error in PdfChangeHandler.on_modified for {event.src_path}: {e}")
+
+    def on_created(self, event):
+        try:
+            if not event.is_directory and event.src_path.lower().endswith('.pdf'):
+                main_logger.debug(f"PDF created event detected by recursive watcher: {event.src_path}")
+
+                # Only check for bad parts if the PDF is in a CNC folder
+                normalized_path = event.src_path.replace('/', '\\')
+                if '\\CNC\\' in normalized_path or normalized_path.endswith('\\CNC'):
+                    check_for_bad_parts_highlight(event.src_path, self.config)
+
+                # Convert specific PDF to dark mode (if not in CNC folder and cooldown elapsed)
+                if self._should_convert_to_dark_mode(event.src_path):
+                    current_time = time.time()
+
+                    # Thread-safe cooldown check
+                    with self._cooldown_lock:
+                        last_conversion = self._conversion_cooldown.get(event.src_path, 0)
+                        if current_time - last_conversion >= self._cooldown_seconds:
+                            self._conversion_cooldown[event.src_path] = current_time
+                            should_convert = True
+                        else:
+                            should_convert = False
+
+                    if should_convert:
+                        from .pdf_dark_mode import should_invert_images
+                        invert = should_invert_images(event.src_path)
+                        scheduled_time = current_time + self._cooldown_seconds
+                        main_logger.info(f"Triggering dark mode conversion for created PDF: {event.src_path} (invert_images={invert})")
+                        main_logger.info(f"PDF conversion will run in {self._cooldown_seconds} seconds")
+
+                        # Save to persistent queue
+                        if self.pending_queue:
+                            self.pending_queue.add_pending_pdf(event.src_path, scheduled_time, invert)
+
+                        # Schedule the conversion
+                        self._schedule_pdf_conversion(event.src_path, invert)
+                    else:
+                        main_logger.debug(f"Skipping dark mode conversion (cooldown active): {event.src_path}")
+        except Exception as e:
+            main_logger.error(f"Error in PdfChangeHandler.on_created for {event.src_path}: {e}")
+
+    def on_deleted(self, event):
+        try:
+            if not event.is_directory and event.src_path.lower().endswith('.pdf'):
+                main_logger.debug(f"PDF deleted event detected by recursive watcher: {event.src_path}")
+
+                # Normalize path
+                normalized_path = event.src_path.replace('/', '\\')
+
+                # If the deleted PDF is in a DARK MODE folder, do nothing
+                if '\\DARK MODE\\' in normalized_path:
+                    main_logger.debug(f"Deleted PDF was in DARK MODE folder, no cleanup needed: {event.src_path}")
+                    return
+
+                # If the deleted PDF is a light mode file, find and delete corresponding dark mode version
+                pdf_dir = os.path.dirname(normalized_path)
+                pdf_filename = os.path.basename(normalized_path)
+
+                # Check for DARK MODE subfolder
+                dark_mode_dir = os.path.join(pdf_dir, "DARK MODE")
+                if os.path.exists(dark_mode_dir):
+                    dark_mode_pdf = os.path.join(dark_mode_dir, pdf_filename)
+
+                    if os.path.exists(dark_mode_pdf):
+                        try:
+                            os.remove(dark_mode_pdf)
+                            main_logger.info(f"Deleted corresponding dark mode PDF: {dark_mode_pdf}")
+                        except Exception as e:
+                            main_logger.error(f"Failed to delete dark mode PDF {dark_mode_pdf}: {e}")
+                    else:
+                        main_logger.debug(f"No corresponding dark mode PDF found at: {dark_mode_pdf}")
+                else:
+                    main_logger.debug(f"No DARK MODE folder found at: {dark_mode_dir}")
+
+                # Also remove from cooldown tracking to prevent memory leak (thread-safe)
+                with self._cooldown_lock:
+                    if event.src_path in self._conversion_cooldown:
+                        del self._conversion_cooldown[event.src_path]
+                        main_logger.debug(f"Removed deleted PDF from cooldown tracking: {event.src_path}")
+
+                # Remove from pending queue if it was scheduled for conversion
+                if self.pending_queue:
+                    self.pending_queue.remove_pending_pdf(event.src_path)
+
+        except Exception as e:
+            main_logger.error(f"Error in PdfChangeHandler.on_deleted for {event.src_path}: {e}")
+
+class LogFileHandler(FileSystemEventHandler):
+    """
+    Handles modifications to the bad parts log file on the desktop.
+    When user marks a bad part as complete by appending 'y' after 'COMPLETE:'
+    in a log line, this moves the entry from temporary blacklist to permanent ignore.
+    Log format expected: "filename | full_path | page_num | Reported: timestamp | COMPLETE: "
+    """
+    def on_modified(self, event):
+        if event.src_path == BAD_PART_LOG_FILE:
+            # Try to acquire lock without blocking
+            if not IS_PROCESSING_LOG_FILE_LOCK.acquire(blocking=False):
+                main_logger.debug("Already processing log file, skipping.")
+                return
+
+            try:
+                main_logger.info(f"Change detected in {BAD_PART_LOG_FILE}. Processing...")
+                time.sleep(0.5)
+
+                with open(BAD_PART_LOG_FILE, 'r') as f:
+                    lines = f.readlines()
+
+                active_entries = []
+                has_changes = False
+
+                for line in lines:
+                    parts = line.split('|')
+                    # Expecting 5 parts now: filename | full_path | page_num | Reported: timestamp | COMPLETE:
+                    if len(parts) >= 5 and parts[4].strip().lower().startswith("complete: y"):
+                        full_path = parts[1].strip()
+                        try:
+                            page_num = int(parts[2].strip()) - 1  # Extract page number (0-indexed)
+                        except ValueError:
+                            main_logger.warning(f"Invalid page number in log line: {line.strip()}")
+                            active_entries.append(line)
+                            continue
+
+                        # Remove from blacklist (thread-safe)
+                        with BLACKLIST_LOCK:
+                            if (full_path, page_num) in BLACKLISTED_FILES:
+                                BLACKLISTED_FILES.remove((full_path, page_num))
+                                save_to_blacklist_internal() # Internal helper to save blacklist without re-adding
+                                main_logger.info(f"Removed {full_path} (page {page_num}) from blacklist.")
+
+                        # Add to permanently ignored blacklist (thread-safe)
+                        with PERMANENTLY_IGNORED_LOCK:
+                            PERMANENTLY_IGNORED_FILES.add((full_path, page_num))
+                            save_permanently_ignored_blacklist_internal()
+                            main_logger.info(f"Added {full_path} (page {page_num}) to permanently ignored blacklist.")
+
+                        main_logger.info(f"'{full_path}' (page {page_num}) marked as complete. Removing from log.")
+                        has_changes = True
+                    else:
+                        active_entries.append(line)
+
+                if has_changes:
+                    with open(BAD_PART_LOG_FILE, 'w') as f:
+                        f.writelines(active_entries)
+                    main_logger.info("Bad parts log file updated.")
+
+            except Exception as e:
+                main_logger.error(f"Error processing log file: {e}")
+            finally:
+                IS_PROCESSING_LOG_FILE_LOCK.release()

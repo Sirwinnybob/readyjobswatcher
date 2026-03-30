@@ -22,10 +22,12 @@ ENV/
 .idea/
 *.swp
 *.swo
+.claude/
 
 # OS files
 .DS_Store
 Thumbs.db
+nul
 
 # Blacklist files (may contain sensitive data)
 bad_parts_blacklist.json
@@ -36,3 +38,20 @@ config.json
 
 # Spec files
 *.spec
+
+# Runtime data files
+pending_queue.json
+pending_queue.json.backup
+
+# Backup directories
+backup_*/
+
+# Development library directories
+plankapy-dev/
+
+# Executables
+*.exe
+
+# Python egg info
+*.egg-info/
+*.egg

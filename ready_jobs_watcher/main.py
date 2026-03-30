@@ -1,0 +1,428 @@
+import os
+import sys
+import threading
+import logging
+import time
+import atexit
+import msvcrt
+import tkinter as tk
+from watchdog.observers import Observer
+from concurrent.futures import ThreadPoolExecutor
+import sv_ttk
+
+from .config import Config, BASE_DATA_DIR
+from .file_handler import JobProcessor
+from .utils import clear_old_logs, is_hidden
+from .bad_parts_checker import load_blacklist, load_permanently_ignored_blacklist
+from .watchers import RenameHandler, PdfChangeHandler, LogFileHandler
+from .scheduler import backup_scheduler, cnc_scan_scheduler, stats_logger_scheduler, daily_restart_scheduler
+from .gui import SettingsWindow, is_dark_mode
+from .tray_icon import create_tray_icon
+from .planka_credentials import initialize_planka_credentials
+
+# --- Global State ---
+# These globals are modified by different parts of the application (e.g., GUI, watchers)
+# A more advanced implementation might use a shared state object or a message queue.
+# PAUSE_PROCESSING = False
+# PENDING_RENAMES = {}
+# LAST_BACKUP_TIME = None
+
+# --- Logging Setup ---
+def setup_logging():
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    loggers = {
+        'main': 'ready_jobs_watcher.log',
+        'backup': 'backup.log',
+        'cnc': 'cnc_scan.log',
+        'badparts': 'bad_parts.log',
+        'planka': 'planka.log',
+        'pdf_darkmode': 'send_notification.log',
+        'pending_queue': 'ready_jobs_watcher.log'
+    }
+
+    for name, filename in loggers.items():
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.DEBUG)
+        handler = logging.FileHandler(os.path.join(BASE_DATA_DIR, filename))
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
+    # Console handler for higher-level info
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    console.setLevel(logging.INFO)
+    logging.getLogger('main').addHandler(console)
+
+    return logging.getLogger('main')
+
+# --- Core Application Class ---
+class Application:
+    def __init__(self):
+        self.config = Config()
+        self.stop_event = threading.Event()
+
+        self.PAUSE_PROCESSING = False
+        self.PENDING_RENAMES = {}
+        self.pending_renames_lock = threading.Lock()  # Lock for thread-safe access to PENDING_RENAMES
+        self.LAST_BACKUP_TIME = None
+
+        # Thread pool for background operations (prevents unbounded thread creation)
+        self.executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="RJW-Worker")
+
+        self.job_processor = JobProcessor(self.config, self)
+
+        # Initialize persistent pending queue
+        from .pending_queue import PendingQueue
+        queue_file = os.path.join(BASE_DATA_DIR, 'pending_queue.json')
+        self.pending_queue = PendingQueue(queue_file, executor=self.executor)
+
+        self.observer = Observer()
+        self.pdf_observer = Observer()
+        self.desktop_observer = Observer()
+
+        self.retry_thread = None
+        self.backup_thread = None
+        self.cnc_scan_thread = None
+        self.stats_thread = None
+        self.restart_thread = None
+        self.tray_thread = None
+
+        self.root = None
+        self.settings_window = None
+        self.icon = None
+
+    def start(self):
+        """Initializes and starts all application components."""
+        os.makedirs(self.config.BACKUP_DIR, exist_ok=True)
+        os.makedirs(BASE_DATA_DIR, exist_ok=True)
+
+        clear_old_logs()
+
+        if not self.acquire_lock():
+            logging.warning("Another instance is already running. Exiting.")
+            sys.exit(0)
+
+        # Initialize Planka credentials from config and keyring
+        initialize_planka_credentials(self.config)
+
+        load_blacklist()
+        load_permanently_ignored_blacklist()
+
+        self.start_threads()
+        self.start_observers()
+
+        self.setup_gui()
+
+    def stop(self):
+        """Stops all threads and observers gracefully."""
+        logging.info("Shutting down application...")
+        self.stop_event.set()
+
+        # Stop observers and wait for them to finish
+        observers = [
+            ('main_observer', self.observer),
+            ('pdf_observer', self.pdf_observer),
+            ('desktop_observer', self.desktop_observer)
+        ]
+
+        for name, obs in observers:
+            if obs and obs.is_alive():
+                try:
+                    obs.stop()
+                except Exception as e:
+                    logging.error(f"Error stopping {name}: {e}")
+
+        for name, obs in observers:
+            if obs and obs.is_alive():
+                try:
+                    obs.join(timeout=5)
+                except RuntimeError as e:
+                    logging.error(f"Error joining {name}: {e}")
+                if obs.is_alive():
+                    logging.warning(f"{name} did not stop within timeout")
+
+        # Wait for background threads
+        threads = [
+            ('retry_thread', self.retry_thread),
+            ('backup_thread', self.backup_thread),
+            ('cnc_scan_thread', self.cnc_scan_thread),
+            ('stats_thread', self.stats_thread),
+            ('restart_thread', self.restart_thread),
+            ('tray_thread', self.tray_thread)
+        ]
+
+        for name, thread in threads:
+            if thread and thread.is_alive():
+                try:
+                    thread.join(timeout=5)
+                except RuntimeError as e:
+                    logging.error(f"Error joining {name}: {e}")
+                if thread.is_alive():
+                    logging.warning(f"{name} did not stop within timeout")
+
+        # Stop thread pool executor
+        if self.executor:
+            try:
+                logging.info("Shutting down thread pool executor...")
+                self.executor.shutdown(wait=True, cancel_futures=False)
+                logging.info("Thread pool executor shut down successfully")
+            except Exception as e:
+                logging.error(f"Error shutting down executor: {e}")
+
+        # Stop tray icon and GUI
+        if self.icon:
+            try:
+                self.icon.stop()
+            except Exception as e:
+                logging.error(f"Error stopping tray icon: {e}")
+
+        if self.root:
+            try:
+                self.root.destroy()
+            except Exception as e:
+                logging.error(f"Error destroying GUI root: {e}")
+
+        logging.info("Shutdown complete.")
+
+    def _is_process_running(self, pid):
+        """Check if a process with given PID is running."""
+        try:
+            # On Windows, try to open the process
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_INFORMATION = 0x0400
+            handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            # If we can't check, assume it's not running
+            return False
+
+    def acquire_lock(self):
+        """
+        Acquires a single-instance lock using PID-based locking.
+        This is more robust than file locking and survives crashes.
+        """
+        lock_file = os.path.join(BASE_DATA_DIR, "ready_jobs_watcher.lock")
+        current_pid = os.getpid()
+
+        try:
+            # Check if lock file exists
+            if os.path.exists(lock_file):
+                try:
+                    with open(lock_file, 'r') as f:
+                        existing_pid = int(f.read().strip())
+
+                    # Check if the process with that PID is still running
+                    if self._is_process_running(existing_pid):
+                        logging.warning(f"Another instance is already running (PID: {existing_pid}). Exiting.")
+                        return False
+                    else:
+                        logging.info(f"Found stale lock file from PID {existing_pid}, removing it.")
+                        os.remove(lock_file)
+                except (ValueError, IOError) as e:
+                    logging.warning(f"Invalid or unreadable lock file, removing it: {e}")
+                    try:
+                        os.remove(lock_file)
+                    except Exception:
+                        pass
+
+            # Write our PID to the lock file
+            with open(lock_file, 'w') as f:
+                f.write(str(current_pid))
+
+            # Register cleanup handler
+            atexit.register(self.release_lock)
+
+            logging.info(f"Acquired single instance lock (PID: {current_pid}).")
+            return True
+
+        except Exception as e:
+            logging.error(f"Failed to acquire lock: {e}")
+            return False
+
+    def release_lock(self):
+        """Releases the single-instance lock by removing the PID file."""
+        lock_file = os.path.join(BASE_DATA_DIR, "ready_jobs_watcher.lock")
+        try:
+            if os.path.exists(lock_file):
+                # Verify it's our PID before removing
+                try:
+                    with open(lock_file, 'r') as f:
+                        existing_pid = int(f.read().strip())
+                    if existing_pid == os.getpid():
+                        os.remove(lock_file)
+                        logging.info("Released single instance lock.")
+                    else:
+                        logging.warning(f"Lock file contains different PID ({existing_pid} vs {os.getpid()}), not removing.")
+                except Exception:
+                    # If we can't read it, just try to remove it
+                    os.remove(lock_file)
+                    logging.info("Released single instance lock.")
+        except Exception as e:
+            logging.error(f"Error releasing lock: {e}")
+
+    def start_threads(self):
+        """Starts the background threads for retries and scheduled tasks."""
+        self.retry_thread = threading.Thread(target=self.retry_pending, daemon=True)
+        self.retry_thread.start()
+
+        self.backup_thread = threading.Thread(target=backup_scheduler, args=(self.config, self.stop_event, self), daemon=True)
+        self.backup_thread.start()
+
+        self.cnc_scan_thread = threading.Thread(target=cnc_scan_scheduler, args=(self.config, self.stop_event), daemon=True)
+        self.cnc_scan_thread.start()
+
+        self.stats_thread = threading.Thread(target=stats_logger_scheduler, args=(self.stop_event,), daemon=True)
+        self.stats_thread.start()
+
+        self.restart_thread = threading.Thread(target=daily_restart_scheduler, args=(self.config, self.stop_event, self), daemon=True)
+        self.restart_thread.start()
+        logging.info(f"Daily restart scheduled for {self.config.daily_restart_time}")
+
+    def restore_pending_operations(self, rename_handler, pdf_handler):
+        """Restore pending operations from the queue after a restart."""
+        # Use the improved resume method from PendingQueue which properly handles delays and uses synchronous conversion
+        self.pending_queue.resume_pending_operations(pdf_handler, rename_handler)
+
+    def start_observers(self):
+        """Starts the filesystem watchers."""
+        event_handler = RenameHandler(self.config, self.job_processor, self, pending_queue=self.pending_queue, executor=self.executor)
+        self.observer.schedule(event_handler, self.config.ROOT_DIR, recursive=True)
+        self.observer.start()
+        logging.info(f"Watching {self.config.ROOT_DIR} for folder changes...")
+
+        # Pass rename_handler reference so PDF handler can check for pending folders
+        pdf_event_handler = PdfChangeHandler(self.config, rename_handler=event_handler, pending_queue=self.pending_queue, executor=self.executor)
+        self.pdf_observer.schedule(pdf_event_handler, self.config.ROOT_DIR, recursive=True)
+        self.pdf_observer.start()
+        logging.info(f"Watching {self.config.ROOT_DIR} for PDF changes...")
+
+        # Restore pending operations from last session
+        self.restore_pending_operations(event_handler, pdf_event_handler)
+
+        desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
+        log_file_handler = LogFileHandler()
+        self.desktop_observer.schedule(log_file_handler, desktop_path, recursive=False)
+        self.desktop_observer.start()
+        logging.info(f"Watching {desktop_path} for log file changes...")
+
+    def setup_gui(self):
+        """Sets up the Tkinter root, settings window, and system tray icon."""
+        self.root = tk.Tk()
+        self.root.withdraw()
+
+        sv_ttk.set_theme("dark" if is_dark_mode() else "light")
+
+        self.settings_window = SettingsWindow(self.root, self.config, self)
+        self.icon = create_tray_icon(self.settings_window, self.config, self)
+
+        self.tray_thread = threading.Thread(target=self.icon.run, daemon=True)
+        self.tray_thread.start()
+
+        self.root.after(100, self.initial_scan)
+        self.root.mainloop()
+
+    def perform_backup(self):
+        from .scheduler import perform_backup
+        perform_backup(self.config, self)
+
+    def scan_cnc_pdfs_for_bad_parts(self):
+        from .scheduler import scan_cnc_pdfs_for_bad_parts
+        scan_cnc_pdfs_for_bad_parts(self.config)
+
+    def initial_scan(self):
+        """Performs an initial scan of the root directory."""
+        if self.PAUSE_PROCESSING:
+            logging.info("Initial scan skipped (GUI open).")
+            return
+        logging.info("Starting initial scan...")
+        for folder in os.listdir(self.config.ROOT_DIR):
+            full_path = os.path.join(self.config.ROOT_DIR, folder)
+            if is_hidden(full_path):
+                logging.info(f"Skipping hidden item: {full_path}")
+                continue
+            self.job_processor.process_job_folder(full_path)
+            time.sleep(0.05)
+        logging.info("Initial scan complete.")
+
+    def retry_pending(self):
+        """Periodically retries failed file rename operations."""
+        while not self.stop_event.is_set():
+            if self.PAUSE_PROCESSING:
+                self.stop_event.wait(5)
+                continue
+
+            current_time = time.time()
+            to_remove = []
+
+            # Create a snapshot with lock protection
+            with self.pending_renames_lock:
+                pending_snapshot = dict(self.PENDING_RENAMES)
+
+            for old_path, (job_num, dir_path, original_name, next_retry) in pending_snapshot.items():
+                if current_time >= next_retry:
+                    # Retry the rename operation
+                    new_name = job_num + ' - ' + original_name
+                    new_path = os.path.join(dir_path, new_name)
+                    try:
+                        # Check if source file exists
+                        if not os.path.exists(old_path):
+                            logging.warning(f"Retry skipped: {old_path} no longer exists.")
+                            to_remove.append(old_path)
+                            continue
+
+                        # Check if destination already exists (might have been renamed manually)
+                        if os.path.exists(new_path):
+                            logging.info(f"Retry skipped: destination already exists: {new_path}")
+                            to_remove.append(old_path)
+                            continue
+
+                        os.rename(old_path, new_path)
+                        logging.info(f"Retry successful: {old_path} -> {new_path}")
+                        to_remove.append(old_path)
+                    except PermissionError:
+                        # Still locked, reschedule
+                        next_retry_time = time.time() + (self.config.RETRY_INTERVAL_MINUTES * 60)
+                        with self.pending_renames_lock:
+                            self.PENDING_RENAMES[old_path] = (job_num, dir_path, original_name, next_retry_time)
+                        logging.warning(f"Retry failed (still locked): {old_path}. Will retry later.")
+                    except FileNotFoundError:
+                        logging.warning(f"Retry failed: file disappeared: {old_path}")
+                        to_remove.append(old_path)
+                    except OSError as e:
+                        # Handle sharing violations (file in use)
+                        if hasattr(e, 'winerror') and e.winerror == 32:
+                            next_retry_time = time.time() + (self.config.RETRY_INTERVAL_MINUTES * 60)
+                            with self.pending_renames_lock:
+                                self.PENDING_RENAMES[old_path] = (job_num, dir_path, original_name, next_retry_time)
+                            logging.warning(f"Retry failed (file in use): {old_path}. Will retry later.")
+                        else:
+                            logging.error(f"Retry failed for {old_path}: {e}")
+                            to_remove.append(old_path)
+                    except Exception as e:
+                        logging.error(f"Retry failed for {old_path}: {e}")
+                        to_remove.append(old_path)
+
+            # Remove successfully renamed files from pending (with lock protection)
+            with self.pending_renames_lock:
+                for path in to_remove:
+                    self.PENDING_RENAMES.pop(path, None)
+
+            self.stop_event.wait(60)
+
+# --- Entry Point ---
+if __name__ == "__main__":
+    setup_logging()
+    from . import __version__
+    logging.info(f"Ready Jobs Watcher v{__version__} starting...")
+    app = Application()
+    try:
+        app.start()
+    except KeyboardInterrupt:
+        logging.info("Keyboard interrupt received.")
+    finally:
+        app.stop()
