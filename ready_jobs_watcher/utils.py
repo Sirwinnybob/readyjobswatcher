@@ -26,8 +26,11 @@ def is_hidden(folder_path):
     try:
         attrs = ctypes.windll.kernel32.GetFileAttributesW(folder_path)
         return attrs != -1 and (attrs & 0x2) != 0
-    except Exception as e:
+    except OSError as e:
         logging.error(f"Failed to check hidden attribute for {folder_path}: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"Unexpected error checking hidden attribute for {folder_path}: {e}", exc_info=True)
         return False
 
 def set_hidden_attribute(folder_path):
@@ -44,8 +47,10 @@ def set_hidden_attribute(folder_path):
             logging.info(f"Set hidden attribute on {folder_path}")
         else:
             logging.error(f"Failed to set hidden attribute on {folder_path}: Error code {ctypes.GetLastError()}")
-    except Exception as e:
+    except OSError as e:
         logging.error(f"Failed to set hidden attribute on {folder_path}: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error setting hidden attribute on {folder_path}: {e}", exc_info=True)
 
 def delete_codebase_folders(directory_to_scan):
     """
@@ -62,8 +67,10 @@ def delete_codebase_folders(directory_to_scan):
                 shutil.rmtree(folder_to_delete)
                 logging.info(f"Successfully deleted 'codebase' folder: {folder_to_delete}")
                 dirs.remove('codebase')
-            except Exception as e:
+            except OSError as e:
                 logging.error(f"Failed to delete 'codebase' folder {folder_to_delete}: {e}")
+            except Exception as e:
+                logging.error(f"Unexpected error deleting 'codebase' folder {folder_to_delete}: {e}", exc_info=True)
 
 def clear_old_logs():
     """
@@ -94,8 +101,12 @@ def clear_old_logs():
                     with open(log_file, 'w') as f:
                         f.truncate(0)
                     print(f"Cleared log file from previous day: {log_file} (last modified: {mod_time.strftime('%Y-%m-%d %H:%M:%S')})")
-                except Exception as e:
+                except OSError as e:
                     print(f"Failed to clear log file {log_file}: {e}")
+                except Exception as e:
+                    import traceback
+                    print(f"Unexpected error clearing log file {log_file}: {e}")
+                    traceback.print_exc()
 
 def cleanup_nested_dark_mode_folders(base_dir: str):
     """
@@ -135,8 +146,10 @@ def cleanup_nested_dark_mode_folders(base_dir: str):
                             # Destination is newer, just delete the source
                             os.remove(source)
                             logging.info(f"Removed duplicate {file} from nested folder")
-                    except Exception as e:
+                    except OSError as e:
                         logging.error(f"Failed to move {source} to {dest}: {e}")
+                    except Exception as e:
+                        logging.error(f"Unexpected error moving {source} to {dest}: {e}", exc_info=True)
 
     # Second pass: remove empty nested DARK MODE folders
     for root, dirs, files in os.walk(base_dir, topdown=False):
@@ -187,4 +200,4 @@ def log_system_stats():
     except ImportError:
         logging.debug("psutil not available, skipping memory stats")
     except Exception as e:
-        logging.error(f"Failed to log system stats: {e}")
+        logging.error(f"Failed to log system stats: {e}", exc_info=True)

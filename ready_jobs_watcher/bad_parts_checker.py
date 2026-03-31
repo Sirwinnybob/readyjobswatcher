@@ -62,8 +62,10 @@ def load_blacklist() -> None:
     except json.JSONDecodeError:
         badparts_logger.warning(f"Blacklist file '{BLACKLIST_FILE}' is malformed. Initializing with empty blacklist.")
         BLACKLISTED_FILES = set()
+    except OSError as e:
+        badparts_logger.error(f"Failed to load blacklist file (OS error): {e}")
     except Exception as e:
-        badparts_logger.error(f"Failed to load blacklist file: {e}")
+        badparts_logger.error(f"Unexpected error loading blacklist file: {e}", exc_info=True)
 
 
 def save_to_blacklist(pdf_path: str, page_num: int) -> None:
@@ -83,8 +85,10 @@ def save_to_blacklist(pdf_path: str, page_num: int) -> None:
                 json.dump(list(list(item) for item in BLACKLISTED_FILES), f, indent=4)
             badparts_logger.info(f"Added {pdf_path} (page {page_num + 1}) to blacklist.")
             badparts_logger.debug(f"Current BLACKLISTED_FILES after add: {BLACKLISTED_FILES}")
+        except OSError as e:
+            badparts_logger.error(f"Failed to save blacklist file (OS error): {e}")
         except Exception as e:
-            badparts_logger.error(f"Failed to save blacklist file: {e}")
+            badparts_logger.error(f"Unexpected error saving blacklist file: {e}", exc_info=True)
 
 
 def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
@@ -190,7 +194,7 @@ def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
                         del pix
 
             except Exception as page_error:
-                badparts_logger.error(f"Error processing page {page_num + 1} of {pdf_path}: {page_error}")
+                badparts_logger.error(f"Unexpected error processing page {page_num + 1} of {pdf_path}: {page_error}", exc_info=True)
                 # Continue to next page even if this one fails
                 continue
 
@@ -205,7 +209,7 @@ def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
                 doc.close()
                 badparts_logger.debug(f"Closed PDF document: {pdf_path}")
             except Exception as close_error:
-                badparts_logger.error(f"Error closing PDF {pdf_path}: {close_error}")
+                badparts_logger.error(f"Unexpected error closing PDF {pdf_path}: {close_error}", exc_info=True)
 
 def save_to_blacklist_internal() -> None:
     """
@@ -227,13 +231,20 @@ def save_to_blacklist_internal() -> None:
             os.remove(BLACKLIST_FILE)
         os.rename(temp_file, BLACKLIST_FILE)
 
+    except OSError as e:
+        badparts_logger.error(f"OS Error saving blacklist file internally: {e}")
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
     except Exception as e:
         badparts_logger.error(f"Failed to save blacklist file internally: {e}", exc_info=True)
         # Clean up temp file on failure
         if temp_file and os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
-            except Exception:
+            except OSError:
                 pass
 
 def load_permanently_ignored_blacklist() -> None:
@@ -250,8 +261,12 @@ def load_permanently_ignored_blacklist() -> None:
                 loaded_list = json.load(f)
                 PERMANENTLY_IGNORED_FILES = set(tuple(item) for item in loaded_list)
                 badparts_logger.info(f"Loaded {len(PERMANENTLY_IGNORED_FILES)} entries from permanently ignored blacklist.")
+    except json.JSONDecodeError as e:
+        badparts_logger.error(f"JSON decode error loading permanently ignored blacklist file: {e}")
+    except OSError as e:
+        badparts_logger.error(f"OS error loading permanently ignored blacklist file: {e}")
     except Exception as e:
-        badparts_logger.error(f"Failed to load permanently ignored blacklist file: {e}")
+        badparts_logger.error(f"Failed to load permanently ignored blacklist file: {e}", exc_info=True)
 
 def save_permanently_ignored_blacklist_internal() -> None:
     """
@@ -272,11 +287,18 @@ def save_permanently_ignored_blacklist_internal() -> None:
             os.remove(PERMANENTLY_IGNORED_FILE)
         os.rename(temp_file, PERMANENTLY_IGNORED_FILE)
 
+    except OSError as e:
+        badparts_logger.error(f"OS Error saving permanently ignored blacklist file internally: {e}")
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
     except Exception as e:
         badparts_logger.error(f"Failed to save permanently ignored blacklist file internally: {e}", exc_info=True)
         # Clean up temp file on failure
         if temp_file and os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
-            except Exception:
+            except OSError:
                 pass

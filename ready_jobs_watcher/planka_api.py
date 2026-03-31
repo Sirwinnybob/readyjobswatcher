@@ -190,7 +190,7 @@ def resolve_board_id(planka: Planka) -> Optional[str]:
                 planka_logger.debug(f"Board resolved by ID: {PLANKABAN_BOARD_ID}")
                 return PLANKABAN_BOARD_ID
             except Exception as e:
-                planka_logger.debug(f"Direct board ID lookup failed: {e}. Trying name lookup.")
+                planka_logger.debug(f"Direct board ID lookup failed: {e}. Trying name lookup.", exc_info=True)
         if PLANKABAN_BOARD_IDENTIFIER:
             try:
                 planka_logger.debug(f"Attempting board lookup by name: {PLANKABAN_BOARD_IDENTIFIER}")
@@ -206,13 +206,13 @@ def resolve_board_id(planka: Planka) -> Optional[str]:
                                 planka_logger.info(f"Board resolved by name '{PLANKABAN_BOARD_IDENTIFIER}' -> ID: {PLANKABAN_BOARD_ID}")
                                 return PLANKABAN_BOARD_ID
                     except Exception as e:
-                        planka_logger.debug(f"Error accessing boards for project {proj.id}: {e}")
+                        planka_logger.debug(f"Error accessing boards for project {proj.id}: {e}", exc_info=True)
             except Exception as e:
-                planka_logger.error(f"Board name lookup failed: {e}")
+                planka_logger.error(f"Board name lookup failed: {e}", exc_info=True)
         PLANKABAN_BOARD_ID = "unknown"
         return None
     except Exception as e:
-        planka_logger.error(f"Board resolution failed completely: {e}")
+        planka_logger.error(f"Board resolution failed completely: {e}", exc_info=True)
         PLANKABAN_BOARD_ID = "unknown"
         return None
 
@@ -325,7 +325,7 @@ def create_planka_card(pdf_path: str, page_num: int, config: Config) -> None:
                     task = new_card.add_task(name=task_name, position=i, isCompleted=False)
                     planka_logger.info(f"   ✅ Task {i+1} added: '{task.name}' (ID: {task.id})")
                 except Exception as e:
-                    planka_logger.warning(f"   ⚠️ Task {i+1} failed: {e}")
+                    planka_logger.warning(f"   ⚠️ Task {i+1} failed: {e}", exc_info=True)
 
             planka_logger.info(f"🏷️ Assigning 'AUTO ADDED' label to the card...")
             # Get labels with timeout
@@ -340,7 +340,7 @@ def create_planka_card(pdf_path: str, page_num: int, config: Config) -> None:
                     auto_added_label = target_board.create_label(name="AUTO ADDED", color="lime-green")
                     planka_logger.info("✅ Created 'AUTO ADDED' label")
                 except Exception as e:
-                    planka_logger.warning(f"⚠️ Failed to create 'AUTO ADDED' label: {e}")
+                    planka_logger.warning(f"⚠️ Failed to create 'AUTO ADDED' label: {e}", exc_info=True)
 
             if auto_added_label:
                 planka_logger.info(f"🔖 Using label: '{auto_added_label.name}' (color: {auto_added_label.color})")
@@ -348,7 +348,7 @@ def create_planka_card(pdf_path: str, page_num: int, config: Config) -> None:
                     new_card.add_label(auto_added_label)
                     planka_logger.info(f"✅ Label '{auto_added_label.name}' assigned to card")
                 except Exception as e:
-                    planka_logger.warning(f"⚠️ Failed to assign label: {e}")
+                    planka_logger.warning(f"⚠️ Failed to assign label: {e}", exc_info=True)
 
             planka_logger.info("🎉 Planka card with checklist and label created successfully!")
 
@@ -359,7 +359,7 @@ def create_planka_card(pdf_path: str, page_num: int, config: Config) -> None:
             send_notification("Bad Part Alert", f"Bad Part Card Created: {job_number} - Planka card with checklist ready")
 
         except Exception as e_planka:
-            planka_logger.error(f"❌ Failed to create Planka card: {e_planka}")
+            planka_logger.error(f"❌ Failed to create Planka card: {e_planka}", exc_info=True)
 
             log_entry = f"BAD PART DETECTED: {job_number} | {job_description} | Page {page_num + 1} | {os.path.basename(pdf_path)} | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | MANUAL PLANKAR CARD NEEDED\n"
             log_entry += f"  💡 CREATE CARD: '{card_name}'\n"
@@ -372,14 +372,18 @@ def create_planka_card(pdf_path: str, page_num: int, config: Config) -> None:
                     f.write(log_entry + "\n")
                 planka_logger.info("✅ Bad part logged for manual Planka card creation")
                 send_notification("Bad Part Alert", f"Bad Part Detected: {job_number} - Manual Planka card required")
+            except OSError as e_log:
+                planka_logger.error(f"OS Error writing manual log: {e_log}")
             except Exception as e_log:
-                planka_logger.error(f"Failed to write manual log: {e_log}")
+                planka_logger.error(f"Failed to write manual log: {e_log}", exc_info=True)
 
     except Exception as e:
-        planka_logger.error(f"❌ Critical error in bad parts processing: {e}")
+        planka_logger.error(f"❌ Critical error in bad parts processing: {e}", exc_info=True)
         try:
             log_error = f"CRITICAL ERROR: Bad part processing failed - {str(e)}\n"
             with open(BAD_PART_LOG_FILE, 'a') as f:
                 f.write(log_error)
+        except OSError as e_log:
+            planka_logger.error(f"OS Error logging critical error: {e_log}")
         except Exception as e_log:
-            planka_logger.error(f"Failed to log critical error: {e_log}")
+            planka_logger.error(f"Failed to log critical error: {e_log}", exc_info=True)
