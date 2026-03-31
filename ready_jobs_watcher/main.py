@@ -340,13 +340,18 @@ class Application:
             logging.info("Initial scan skipped (GUI open).")
             return
         logging.info("Starting initial scan...")
-        for folder in os.listdir(self.config.ROOT_DIR):
-            full_path = os.path.join(self.config.ROOT_DIR, folder)
-            if is_hidden(full_path):
-                logging.info(f"Skipping hidden item: {full_path}")
-                continue
-            self.job_processor.process_job_folder(full_path)
-            time.sleep(0.05)
+        try:
+            with os.scandir(self.config.ROOT_DIR) as it:
+                for entry in it:
+                    if entry.is_dir():
+                        full_path = entry.path
+                        if is_hidden(full_path):
+                            logging.info(f"Skipping hidden item: {full_path}")
+                            continue
+                        self.job_processor.process_job_folder(full_path)
+                        time.sleep(0.05)
+        except OSError as e:
+            logging.error(f"Error during initial scan: {e}")
         logging.info("Initial scan complete.")
 
     def retry_pending(self):
