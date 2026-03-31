@@ -12,10 +12,6 @@ import sys
 import subprocess
 import threading
 
-# These will be imported from other modules
-# from . import main
-# from .scheduler import perform_backup
-# from .bad_parts_checker import scan_cnc_pdfs_for_bad_parts
 from .config import BASE_DATA_DIR
 
 def create_image():
