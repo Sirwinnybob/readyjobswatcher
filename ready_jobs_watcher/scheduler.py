@@ -59,14 +59,19 @@ def perform_backup(config: Config, app: 'ReadyJobsWatcherApp') -> None:
 def delete_old_backups(config: Config) -> None:
     backup_logger.debug("Deleting old backups")
     threshold = datetime.datetime.now() - datetime.timedelta(days=7)
+
+    if not os.path.exists(config.BACKUP_DIR):
+        return
+
     try:
+        # Optimized using os.scandir instead of os.listdir and os.path.isdir
         with os.scandir(config.BACKUP_DIR) as it:
             for entry in it:
                 if entry.is_dir():
                     parts = entry.name.split('_')
                     if len(parts) >= 4:
                         try:
-                            date_str = parts[-2] + '_' + parts[-1]
+                            date_str = f"{parts[-2]}_{parts[-1]}"
                             backup_date = datetime.datetime.strptime(date_str, '%Y-%m-%d_%H-%M')
                             if backup_date < threshold:
                                 shutil.rmtree(entry.path)
