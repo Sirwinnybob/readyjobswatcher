@@ -15,8 +15,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .main import ReadyJobsWatcherApp
 
-# These will be imported from other modules
-# from .bad_parts_checker import scan_cnc_pdfs_for_bad_parts
 from .utils import is_hidden, set_hidden_attribute, delete_codebase_folders, log_system_stats
 from .file_handler import JobProcessor
 from .config import Config
