@@ -1,3 +1,10 @@
+"""
+Graphical User Interface Module.
+
+Provides the `SettingsWindow` class for the application, built with `tkinter`.
+Allows users to configure backup schedules, Planka integrations, and operation
+delays, as well as trigger manual application tasks.
+"""
 import tkinter as tk
 from tkinter import ttk, messagebox
 import logging
@@ -16,7 +23,22 @@ import keyring
 KEYRING_SERVICE = "ReadyJobsWatcher"
 
 class SettingsWindow:
+    """
+    Main configuration interface for Ready Jobs Watcher.
+
+    Provides a scrollable window with sections for Backup Status, Backup Scheduling,
+    Planka Integrations, Processing Delays, and Manual Actions. Handles saving and
+    validating user input.
+    """
     def __init__(self, root, config, app):
+        """
+        Initialize the SettingsWindow.
+
+        Args:
+            root (tk.Tk): The root tkinter window instance.
+            config (Config): The application configuration context.
+            app (Application): The main application orchestrator context.
+        """
         logging.debug("Initializing SettingsWindow")
         self.root = root
         self.config = config
@@ -125,6 +147,9 @@ class SettingsWindow:
         self.window.update_idletasks()
 
     def show_window(self):
+        """
+        Reveal the GUI window and pause background file processing.
+        """
         try:
             logging.debug("Showing GUI window")
             self.app.PAUSE_PROCESSING = True
@@ -139,6 +164,9 @@ class SettingsWindow:
             messagebox.showerror("Error", "Failed to open settings window.")
 
     def hide_window(self):
+        """
+        Hide the GUI window and resume background file processing operations.
+        """
         try:
             logging.debug("Hiding GUI window")
             self.app.PAUSE_PROCESSING = False
@@ -149,7 +177,10 @@ class SettingsWindow:
             logging.error(f"Failed to close GUI: {e}")
 
     def update_status(self):
-        """Update status labels - must be called from main thread or via schedule_update."""
+        """
+        Update the labels reflecting application status (like Last Backup time).
+        Must be called from main thread or via schedule_update.
+        """
         try:
             logging.debug("Updating GUI status")
             if self.app.LAST_BACKUP_TIME:
@@ -163,13 +194,18 @@ class SettingsWindow:
             logging.error(f"Failed to update GUI status: {e}")
 
     def schedule_update(self):
-        """Thread-safe method to schedule a GUI update on the main thread."""
+        """
+        Thread-safe method to schedule a GUI update on the main thread.
+        """
         try:
             self.window.after(0, self.update_status)
         except Exception as e:
             logging.error(f"Failed to schedule GUI update: {e}")
 
     def update_pending_replacements_count(self):
+        """
+        Update the label displaying the number of files awaiting renaming.
+        """
         try:
             count = len(self.app.PENDING_RENAMES)
             self.pending_replacements_label.config(text=f"Count: {count}")
@@ -177,12 +213,18 @@ class SettingsWindow:
             logging.error(f"Failed to update pending replacements count: {e}")
 
     def update_status_periodic(self):
+        """
+        Periodically polls and updates application status in the GUI window while open.
+        """
         if self.window.winfo_viewable():
             self.update_status()
             self.update_pending_replacements_count()
             self.window.after(60000, self.update_status_periodic)
 
     def save_schedule(self):
+        """
+        Validate and save the user's preferred backup scheduling times.
+        """
         time1 = self.time1_entry.get().strip()
         time2 = self.time2_entry.get().strip()
 
@@ -253,7 +295,9 @@ class SettingsWindow:
             logging.error(f"Unexpected error saving schedule: {e}")
 
     def save_planka_settings(self):
-        """Save Planka settings with secure password storage."""
+        """
+        Validate and save Planka settings with secure password storage via keyring.
+        """
         try:
             url = self.planka_url_entry.get().strip()
             username = self.planka_username_entry.get().strip()
@@ -289,7 +333,9 @@ class SettingsWindow:
             messagebox.showerror("Error", f"Failed to save Planka settings: {e}")
 
     def save_delay_settings(self):
-        """Save delay configuration settings."""
+        """
+        Validate and save delay configuration settings for background operations.
+        """
         try:
             pdf_delay = self.pdf_delay_entry.get().strip()
             folder_delay = self.folder_delay_entry.get().strip()
@@ -344,7 +390,9 @@ class SettingsWindow:
             logging.error(f"Unexpected error saving delay settings: {e}")
 
     def run_dark_mode_conversion(self):
-        """Run PDF dark mode conversion in background."""
+        """
+        Trigger an asynchronous PDF dark mode conversion task.
+        """
         try:
             from .pdf_dark_mode import run_dark_mode_conversion_async
             logging.info("User triggered PDF dark mode conversion from GUI")
@@ -355,7 +403,9 @@ class SettingsWindow:
             messagebox.showerror("Error", f"Failed to start PDF dark mode conversion: {e}")
 
     def run_dark_mode_conversion_force(self):
-        """Force convert all PDFs to dark mode, ignoring modification dates."""
+        """
+        Force convert all PDFs to dark mode, ignoring modification dates and bypassing skips.
+        """
         try:
             # Confirm with user since this will reconvert ALL PDFs
             result = messagebox.askyesno(
@@ -375,6 +425,12 @@ class SettingsWindow:
             messagebox.showerror("Error", f"Failed to start force conversion: {e}")
 
 def is_dark_mode():
+    """
+    Determine if the Windows OS is currently using a Dark Mode theme.
+
+    Returns:
+        bool: True if OS is in Dark Mode, False otherwise.
+    """
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
         value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
@@ -384,7 +440,15 @@ def is_dark_mode():
 
 # Secure credential storage functions using Windows Credential Manager
 def get_planka_password(username: str) -> str:
-    """Retrieve Planka password from Windows Credential Manager."""
+    """
+    Retrieve a Planka password from the Windows Credential Manager.
+
+    Args:
+        username (str): The Planka username to look up.
+
+    Returns:
+        str: The retrieved password, or an empty string if not found.
+    """
     if not username:
         return ""
     try:
@@ -394,7 +458,13 @@ def get_planka_password(username: str) -> str:
         return ""
 
 def set_planka_password(username: str, password: str) -> None:
-    """Store Planka password in Windows Credential Manager."""
+    """
+    Securely store a Planka password in the Windows Credential Manager.
+
+    Args:
+        username (str): Planka account username.
+        password (str): Planka account password.
+    """
     try:
         keyring.set_password(KEYRING_SERVICE, username, password)
     except Exception as e:
@@ -402,7 +472,12 @@ def set_planka_password(username: str, password: str) -> None:
         raise
 
 def delete_planka_password(username: str) -> None:
-    """Delete Planka password from Windows Credential Manager."""
+    """
+    Remove a stored Planka password from the Windows Credential Manager.
+
+    Args:
+        username (str): The username of the password to delete.
+    """
     try:
         keyring.delete_password(KEYRING_SERVICE, username)
     except keyring.errors.PasswordDeleteError:

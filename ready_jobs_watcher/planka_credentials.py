@@ -1,5 +1,9 @@
 """
-Planka credential management using secure Windows Credential Manager storage.
+Planka Credential Management Module.
+
+Handles loading and retrieving Planka authentication credentials using secure
+system-level storage (e.g., Windows Credential Manager via the `keyring` library),
+with a fallback to environment variables.
 """
 import os
 import logging
@@ -17,13 +21,18 @@ PLANKABAN_USERNAME = None
 PLANKABAN_PASSWORD = None
 
 def initialize_planka_credentials(config: Config) -> bool:
-    """Initialize Planka credentials from config and keyring.
+    """
+    Initialize Planka credentials from config and the system keyring.
+
+    Attempts to load the base URL and username from the provided configuration,
+    then securely retrieves the associated password from the system keyring.
+    Falls back to environment variables if config settings are absent.
 
     Args:
-        config: Configuration object containing Planka settings
+        config (Config): Configuration object containing Planka settings.
 
     Returns:
-        True if credentials are configured, False otherwise
+        bool: True if valid credentials were successfully configured, False otherwise.
     """
     global PLANKABAN_BASE_URL, PLANKABAN_USERNAME, PLANKABAN_PASSWORD
 
@@ -63,9 +72,11 @@ def initialize_planka_credentials(config: Config) -> bool:
     return False
 
 def get_planka_credentials():
-    """Get the current Planka credentials.
+    """
+    Get the current Planka credentials initialized in the global state.
 
     Returns:
-        Tuple of (base_url, username, password) or (None, None, None) if not configured
+        tuple: A tuple of (base_url, username, password). If not configured,
+               returns (None, None, None).
     """
     return (PLANKABAN_BASE_URL, PLANKABAN_USERNAME, PLANKABAN_PASSWORD)

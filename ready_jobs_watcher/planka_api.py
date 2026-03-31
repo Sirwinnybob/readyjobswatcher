@@ -1,3 +1,10 @@
+"""
+Planka API Integration Module.
+
+Provides custom compatible wrapper classes around `plankapy` for interacting
+with Planka boards. Specifically handles creating cards with checklists and labels
+when a "bad part" is detected.
+"""
 import os
 import re
 import logging
@@ -23,6 +30,9 @@ PLANKABAN_LIST_NAME = None
 
 # Custom compatible classes
 class CompatibleProject(interfaces.Project):
+    """
+    Custom wrapper for Planka Project to handle missing or unexpected fields gracefully.
+    """
     def __init__(self, *args, **kwargs):
         known_fields = {'id', 'name', 'background', 'backgroundImage', 'position'}
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in known_fields}
@@ -30,6 +40,12 @@ class CompatibleProject(interfaces.Project):
 
     @property
     def boards(self) -> interfaces.QueryableList[interfaces.Board]:
+        """
+        Retrieve a list of boards associated with this project.
+
+        Returns:
+            interfaces.QueryableList[interfaces.Board]: A list of compatible boards.
+        """
         board_objects = []
         for board in self._included['boards']:
             known_fields = {'id', 'name', 'position', 'projectId'}
@@ -38,6 +54,9 @@ class CompatibleProject(interfaces.Project):
         return interfaces.QueryableList(board_objects)
 
 class CompatibleBoard(interfaces.Board):
+    """
+    Custom wrapper for Planka Board to handle missing or unexpected fields gracefully.
+    """
     def __init__(self, *args, **kwargs):
         known_fields = {'id', 'name', 'position', 'projectId'}
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in known_fields}
@@ -45,6 +64,12 @@ class CompatibleBoard(interfaces.Board):
 
     @property
     def lists(self) -> interfaces.QueryableList[interfaces.List]:
+        """
+        Retrieve a list of lists associated with this board.
+
+        Returns:
+            interfaces.QueryableList[interfaces.List]: A list of compatible lists.
+        """
         list_objects = []
         for _list in self._included['lists']:
             known_fields = {'id', 'name', 'position', 'boardId'}
@@ -53,7 +78,17 @@ class CompatibleBoard(interfaces.Board):
         return interfaces.QueryableList(list_objects)
 
 class CompatibleList(interfaces.List):
+    """
+    Custom wrapper for Planka List to handle missing or unexpected fields
+    when creating new cards.
+    """
     def create_card(self, *args, **kwargs):
+        """
+        Creates a new card in this list.
+
+        Returns:
+            interfaces.Card: The created card object.
+        """
         from plankapy.interfaces import Card
         overload = parse_overload(args, kwargs, model='card', options=('name', 'position', 'description', 'dueDate', 'isDueDateCompleted', 'stopwatch', 'creatorUserId', 'coverAttachmentId', 'isSubscribed'), required=('name',))
         overload['boardId'] = self.boardId
@@ -67,8 +102,17 @@ class CompatibleList(interfaces.List):
         return Card(**card_filtered).bind(self.routes)
 
 class CompatiblePlanka(Planka):
+    """
+    Custom wrapper for the main Planka client.
+    """
     @property
     def projects(self) -> interfaces.QueryableList[interfaces.Project]:
+        """
+        Retrieve all projects accessible to the authenticated user.
+
+        Returns:
+            interfaces.QueryableList[interfaces.Project]: A list of compatible projects.
+        """
         route = self.routes.get_project_index()
         project_objects = []
         for project in route()['items']:
@@ -78,6 +122,7 @@ class CompatiblePlanka(Planka):
         return interfaces.QueryableList(project_objects)
 
 def internal_parse_overload(args: tuple, kwargs: dict, model: str, options: tuple, required: tuple = (), noarg: Optional[Dict[str, Any]] = None) -> dict:
+    """Fallback utility function for parsing method arguments dynamically."""
     if isinstance(options, str):
         options = (options,)
     if isinstance(required, str):
@@ -123,6 +168,15 @@ def run_with_timeout(func, timeout_seconds: int = None, description: str = "oper
             raise TimeoutError(f"{description} timed out after {timeout_seconds} seconds")
 
 def resolve_board_id(planka: Planka) -> Optional[str]:
+    """
+    Resolve the target Planka board ID using either its configured ID or its name.
+
+    Args:
+        planka (Planka): The authenticated Planka client instance.
+
+    Returns:
+        Optional[str]: The resolved board ID if found, otherwise None.
+    """
     global PLANKABAN_BOARD_ID
     if PLANKABAN_BOARD_ID and PLANKABAN_BOARD_ID != "unknown":
         return PLANKABAN_BOARD_ID
@@ -163,6 +217,18 @@ def resolve_board_id(planka: Planka) -> Optional[str]:
         return None
 
 def create_planka_card(pdf_path: str, page_num: int, config: Config) -> None:
+    """
+    Creates a new card on the Planka board when a bad part is detected.
+
+    The card includes a predefined checklist and is labeled automatically.
+    If network or authentication errors occur, the failure is logged and a
+    fallback manual instruction is written to the bad parts log.
+
+    Args:
+        pdf_path (str): The path to the PDF where the bad part was found.
+        page_num (int): The page number containing the bad part.
+        config (Config): Application configuration containing Planka settings.
+    """
     # Get credentials from the credential helper
     PLANKABAN_BASE_URL, PLANKABAN_USERNAME, PLANKABAN_PASSWORD = planka_credentials.get_planka_credentials()
 

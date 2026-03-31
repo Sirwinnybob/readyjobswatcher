@@ -1,3 +1,9 @@
+"""
+Core Application Module for Ready Jobs Watcher.
+
+This module contains the primary Application class responsible for coordinating
+file watchers, background tasks, GUI elements, and the system tray icon.
+"""
 import os
 import sys
 import threading
@@ -29,6 +35,12 @@ from .planka_credentials import initialize_planka_credentials
 
 # --- Logging Setup ---
 def setup_logging():
+    """
+    Configure multiple loggers for distinct application components.
+
+    Returns:
+        logging.Logger: The configured main logger instance.
+    """
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
     loggers = {
@@ -58,7 +70,14 @@ def setup_logging():
 
 # --- Core Application Class ---
 class Application:
+    """
+    Main application controller managing background threads, observers, and state.
+
+    Responsibilities include initializing the file system observers, coordinating
+    configuration state, executing scheduled tasks, and properly acquiring system locks.
+    """
     def __init__(self):
+        """Initialize the Application instance with default state and component setup."""
         self.config = Config()
         self.stop_event = threading.Event()
 
@@ -186,7 +205,15 @@ class Application:
         logging.info("Shutdown complete.")
 
     def _is_process_running(self, pid):
-        """Check if a process with given PID is running."""
+        """
+        Check if a process with given PID is running.
+
+        Args:
+            pid (int): The process ID to check.
+
+        Returns:
+            bool: True if running, False otherwise.
+        """
         try:
             # On Windows, try to open the process
             import ctypes
@@ -205,6 +232,9 @@ class Application:
         """
         Acquires a single-instance lock using PID-based locking.
         This is more robust than file locking and survives crashes.
+
+        Returns:
+            bool: True if lock was acquired, False if another instance exists.
         """
         lock_file = os.path.join(BASE_DATA_DIR, "ready_jobs_watcher.lock")
         current_pid = os.getpid()
@@ -284,7 +314,13 @@ class Application:
         logging.info(f"Daily restart scheduled for {self.config.daily_restart_time}")
 
     def restore_pending_operations(self, rename_handler, pdf_handler):
-        """Restore pending operations from the queue after a restart."""
+        """
+        Restore pending operations from the queue after a restart.
+
+        Args:
+            rename_handler (RenameHandler): Event handler for tracking folder changes.
+            pdf_handler (PdfChangeHandler): Event handler for scheduling PDF conversions.
+        """
         # Use the improved resume method from PendingQueue which properly handles delays and uses synchronous conversion
         self.pending_queue.resume_pending_operations(pdf_handler, rename_handler)
 
@@ -327,15 +363,17 @@ class Application:
         self.root.mainloop()
 
     def perform_backup(self):
+        """Execute an immediate manual backup based on configured paths."""
         from .scheduler import perform_backup
         perform_backup(self.config, self)
 
     def scan_cnc_pdfs_for_bad_parts(self):
+        """Trigger an immediate scan of all existing CNC PDFs."""
         from .scheduler import scan_cnc_pdfs_for_bad_parts
         scan_cnc_pdfs_for_bad_parts(self.config)
 
     def initial_scan(self):
-        """Performs an initial scan of the root directory."""
+        """Performs an initial scan of the root directory to handle any backlog."""
         if self.PAUSE_PROCESSING:
             logging.info("Initial scan skipped (GUI open).")
             return
@@ -355,7 +393,7 @@ class Application:
         logging.info("Initial scan complete.")
 
     def retry_pending(self):
-        """Periodically retries failed file rename operations."""
+        """Periodically retries failed file rename operations using a background thread."""
         while not self.stop_event.is_set():
             if self.PAUSE_PROCESSING:
                 self.stop_event.wait(5)

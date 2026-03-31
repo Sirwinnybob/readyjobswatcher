@@ -1,3 +1,9 @@
+"""
+File Handling Module.
+
+Provides functionality for processing job folders and standardizing
+file names according to configured naming conventions.
+"""
 import os
 import re
 import logging
@@ -30,7 +36,15 @@ IGNORED_FOLDER_NAMES: Set[str] = {
 
 
 def should_ignore_file(filename: str) -> bool:
-    """Check if a file should be ignored during processing."""
+    """
+    Check if a file should be ignored during processing based on its name or extension.
+
+    Args:
+        filename (str): Name of the file to check.
+
+    Returns:
+        bool: True if the file should be skipped, False otherwise.
+    """
     lower_name = filename.lower()
 
     # Check exact matches
@@ -51,17 +65,44 @@ def should_ignore_file(filename: str) -> bool:
 
 
 def should_ignore_folder(folder_name: str) -> bool:
-    """Check if a folder should be ignored (template folders waiting to be renamed)."""
+    """
+    Check if a folder should be ignored (e.g., unrenamed template folders).
+
+    Args:
+        folder_name (str): The folder name to verify.
+
+    Returns:
+        bool: True if the folder should be ignored, False otherwise.
+    """
     return folder_name.lower() in IGNORED_FOLDER_NAMES
 
 
 class JobProcessor:
+    """
+    Handles processing of job folders, including standardizing file names.
+    """
     def __init__(self, config, app_state):
+        """
+        Initialize the JobProcessor.
+
+        Args:
+            config (Config): Configuration object containing operational settings.
+            app_state (Application): Reference to the core application state.
+        """
         self.config = config
         self.app_state = app_state
 
     @staticmethod
     def extract_job_number(folder_name: str) -> Optional[str]:
+        """
+        Extract the job number prefix from a folder name.
+
+        Args:
+            folder_name (str): The full folder name.
+
+        Returns:
+            Optional[str]: The extracted job number if matched, otherwise None.
+        """
         logging.debug(f"Extracting job number from {folder_name}")
         match = re.match(r"^(\d+-\d+|\d+[a-zA-Z]?)", folder_name)
         if match:
@@ -70,12 +111,31 @@ class JobProcessor:
 
     @staticmethod
     def is_job_folder(folder_path: str) -> bool:
+        """
+        Verify if a given path conforms to the expected job folder format.
+
+        Args:
+            folder_path (str): The full directory path.
+
+        Returns:
+            bool: True if the folder format matches job structure, False otherwise.
+        """
         folder_name = os.path.basename(folder_path)
         job_num = JobProcessor.extract_job_number(folder_name)
         logging.debug(f"Checking folder: {folder_path}, job_num: {job_num}")
         return job_num is not None
 
     def process_file(self, file_path: str, job_num: str, dir_path: str):
+        """
+        Process an individual file, renaming it to include the job number prefix.
+
+        If the file is locked or cannot be renamed, it schedules a retry.
+
+        Args:
+            file_path (str): Original full path of the file.
+            job_num (str): Job number to prepend to the filename.
+            dir_path (str): The directory containing the file.
+        """
         logging.debug(f"Processing file {file_path}")
         if self.app_state.PAUSE_PROCESSING:
             logging.debug(f"Processing paused (GUI open): Skipping file {file_path}")
@@ -133,6 +193,13 @@ class JobProcessor:
             logging.error(f"Error renaming {file_path}: {e}")
 
     def process_job_folder(self, job_folder: str, include_cnc: bool = False):
+        """
+        Scan a job folder and process all applicable files within it.
+
+        Args:
+            job_folder (str): Full path to the job folder directory.
+            include_cnc (bool): Whether to recursively process the CNC subdirectory.
+        """
         logging.debug(f"Processing job folder {job_folder}, include_cnc={include_cnc}")
         if self.app_state.PAUSE_PROCESSING:
             logging.debug(f"Processing paused (GUI open): Skipping folder {job_folder}")

@@ -1,3 +1,9 @@
+"""
+Scheduling and Background Tasks Module.
+
+Manages periodic background tasks such as system backups, routine PDF scans
+for bad parts, system health logging, and scheduled daily application restarts.
+"""
 import logging
 import datetime
 import threading
@@ -24,6 +30,17 @@ cnc_logger = logging.getLogger('cnc')
 LAST_BACKUP_TIME = None
 
 def perform_backup(config: Config, app: 'ReadyJobsWatcherApp') -> None:
+    """
+    Execute the system backup routine.
+
+    This function runs a preliminary PDF dark mode conversion pass, then
+    copies configured source directories to the backup location while stripping
+    unnecessary specific folders (e.g., 'codebase').
+
+    Args:
+        config (Config): System configuration.
+        app (ReadyJobsWatcherApp): Running application instance for state updates.
+    """
     backup_logger.info("Starting backup...")
 
     # Run PDF dark mode conversion before backup
@@ -57,6 +74,12 @@ def perform_backup(config: Config, app: 'ReadyJobsWatcherApp') -> None:
         app.settings_window.root.after(0, app.settings_window.update_status)
 
 def delete_old_backups(config: Config) -> None:
+    """
+    Remove backups that exceed the configured retention threshold (7 days).
+
+    Args:
+        config (Config): Configuration containing the target backup directory.
+    """
     backup_logger.debug("Deleting old backups")
     threshold = datetime.datetime.now() - datetime.timedelta(days=7)
 
@@ -82,7 +105,12 @@ def delete_old_backups(config: Config) -> None:
         backup_logger.error(f"Error scanning backup directory {config.BACKUP_DIR}: {e}")
 
 def scan_cnc_pdfs_for_bad_parts(config: Config) -> None:
-    """Scans all CNC PDFs recursively for bad parts."""
+    """
+    Perform a complete recursive scan of all CNC PDF files to check for bad parts.
+
+    Args:
+        config (Config): System configuration containing relevant directory paths.
+    """
     from .bad_parts_checker import check_for_bad_parts_highlight
     from .file_handler import JobProcessor
 
@@ -114,6 +142,14 @@ def scan_cnc_pdfs_for_bad_parts(config: Config) -> None:
         cnc_logger.error(f"Fatal error during CNC scan: {e}")
 
 def backup_scheduler(config: Config, stop_event: threading.Event, app: 'ReadyJobsWatcherApp') -> None:
+    """
+    Background worker loop to periodically trigger system backups.
+
+    Args:
+        config (Config): Configuration containing backup schedules.
+        stop_event (threading.Event): Signal used to cleanly exit the loop.
+        app (ReadyJobsWatcherApp): Application context.
+    """
     while not stop_event.is_set():
         next_time = config.get_next_backup_time()
         sleep_seconds = (next_time - datetime.datetime.now()).total_seconds()
@@ -125,6 +161,13 @@ def backup_scheduler(config: Config, stop_event: threading.Event, app: 'ReadyJob
         perform_backup(config, app)
 
 def cnc_scan_scheduler(config: Config, stop_event: threading.Event) -> None:
+    """
+    Background worker loop to periodically scan CNC PDFs according to schedule.
+
+    Args:
+        config (Config): Configuration containing daily scan schedules.
+        stop_event (threading.Event): Signal used to cleanly exit the loop.
+    """
     while not stop_event.is_set():
         now = datetime.datetime.now()
         today_weekday = now.strftime('%a').lower()
@@ -171,7 +214,12 @@ def cnc_scan_scheduler(config: Config, stop_event: threading.Event) -> None:
     cnc_logger.info("CNC scan scheduler stopped.")
 
 def stats_logger_scheduler(stop_event: threading.Event) -> None:
-    """Logs system statistics hourly for monitoring application health."""
+    """
+    Logs system statistics hourly for monitoring application health.
+
+    Args:
+        stop_event (threading.Event): Signal used to cleanly exit the loop.
+    """
     main_logger.info("Stats logger scheduler started")
 
     while not stop_event.is_set():
@@ -191,7 +239,14 @@ def stats_logger_scheduler(stop_event: threading.Event) -> None:
 def daily_restart_scheduler(config: Config, stop_event: threading.Event, app: 'ReadyJobsWatcherApp') -> None:
     """
     Scheduler that restarts the application daily at a configured time.
-    This helps prevent memory leaks, clear stale state, and ensure stability.
+
+    This helps prevent memory leaks, clear stale state, and ensure stability over
+    long continuous runs.
+
+    Args:
+        config (Config): Configuration containing restart time.
+        stop_event (threading.Event): Signal used to cleanly exit the loop.
+        app (ReadyJobsWatcherApp): Application instance to gracefully stop.
     """
     import sys
     import subprocess

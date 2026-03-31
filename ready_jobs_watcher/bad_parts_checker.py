@@ -1,3 +1,10 @@
+"""
+Bad Parts Detection Module.
+
+Provides functionality for scanning PDFs to identify quality control issues marked
+by users in a specific "BAD PART(S)" bounding box. Manages blacklists to prevent
+redundant processing.
+"""
 import os
 import json
 import logging
@@ -34,7 +41,13 @@ BAD_PART_LOG_LOCK = threading.Lock()  # Lock for writing to the bad parts log fi
 
 
 def load_blacklist() -> None:
-    """Loads the blacklist file into the global set for fast lookups."""
+    """
+    Loads the temporary blacklist file into the global set for fast lookups.
+
+    This function reads a JSON file representing a list of previously identified
+    bad parts, converting it into a globally accessible set of tuples to avoid
+    redundant processing on subsequent scans.
+    """
     global BLACKLISTED_FILES
     try:
         if os.path.exists(BLACKLIST_FILE) and os.path.getsize(BLACKLIST_FILE) > 0:
@@ -54,7 +67,13 @@ def load_blacklist() -> None:
 
 
 def save_to_blacklist(pdf_path: str, page_num: int) -> None:
-    """Adds a file and page number to the blacklist and saves it to the JSON file."""
+    """
+    Adds a specific file and page number to the blacklist and saves it to the JSON file.
+
+    Args:
+        pdf_path (str): The full path to the PDF file.
+        page_num (int): The 0-indexed page number containing the bad part.
+    """
     badparts_logger.debug(f"Attempting to add ({pdf_path}, {page_num}) to blacklist.")
     with BLACKLIST_LOCK:
         BLACKLISTED_FILES.add((pdf_path, page_num))
@@ -69,7 +88,18 @@ def save_to_blacklist(pdf_path: str, page_num: int) -> None:
 
 
 def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
-    """Checks a PDF for non-grayscale marks in the 'BAD PART(S)' area."""
+    """
+    Checks a PDF document for non-grayscale marks in the designated 'BAD PART(S)' area.
+
+    Iterates through all pages of the given PDF. For pages not already blacklisted
+    or permanently ignored, it extracts a specific rectangular area and scans it
+    for colored pixels indicating user markup. If found, it triggers notification,
+    logging, and Planka card creation.
+
+    Args:
+        pdf_path (str): The path to the PDF to scan.
+        config (Config): The application configuration, used for Planka integration.
+    """
     badparts_logger.debug(f"Current BLACKLISTED_FILES at start of check: {BLACKLISTED_FILES}")
 
     doc = None
@@ -179,8 +209,11 @@ def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
 
 def save_to_blacklist_internal() -> None:
     """
-    Internal helper - assumes caller already holds BLACKLIST_LOCK.
-    Uses atomic write (temp file + rename) to prevent corruption.
+    Internal helper to perform an atomic save of the blacklist.
+
+    Assumes the caller already holds BLACKLIST_LOCK. Writes to a temporary
+    file and then performs an atomic rename to prevent corruption in the event
+    of an application crash or abrupt shutdown.
     """
     temp_file = None
     try:
@@ -204,7 +237,12 @@ def save_to_blacklist_internal() -> None:
                 pass
 
 def load_permanently_ignored_blacklist() -> None:
-    """Loads the permanently ignored blacklist file into the global set for fast lookups."""
+    """
+    Loads the permanently ignored blacklist file into the global set for fast lookups.
+
+    This function reads a JSON file representing a list of bad parts that have
+    been marked as resolved or ignored by the user.
+    """
     global PERMANENTLY_IGNORED_FILES
     try:
         if os.path.exists(PERMANENTLY_IGNORED_FILE):
@@ -217,8 +255,10 @@ def load_permanently_ignored_blacklist() -> None:
 
 def save_permanently_ignored_blacklist_internal() -> None:
     """
-    Internal helper - assumes caller already holds PERMANENTLY_IGNORED_LOCK.
-    Uses atomic write (temp file + rename) to prevent corruption.
+    Internal helper to perform an atomic save of the permanently ignored blacklist.
+
+    Assumes the caller already holds PERMANENTLY_IGNORED_LOCK. Uses a temporary
+    file to ensure atomicity.
     """
     temp_file = None
     try:

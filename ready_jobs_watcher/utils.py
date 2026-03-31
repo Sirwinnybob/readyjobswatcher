@@ -1,3 +1,9 @@
+"""
+Utility Functions Module.
+
+Contains common helper functions used across the application,
+including file system operations, log rotation, and system monitoring.
+"""
 import logging
 import ctypes
 import os
@@ -7,6 +13,15 @@ import datetime
 from .config import BASE_DATA_DIR
 
 def is_hidden(folder_path):
+    """
+    Check if a file or folder has the Windows hidden attribute set.
+
+    Args:
+        folder_path (str): Path to the file or directory.
+
+    Returns:
+        bool: True if the hidden attribute is set, False otherwise.
+    """
     logging.debug(f"Checking if hidden: {folder_path}")
     try:
         attrs = ctypes.windll.kernel32.GetFileAttributesW(folder_path)
@@ -16,6 +31,12 @@ def is_hidden(folder_path):
         return False
 
 def set_hidden_attribute(folder_path):
+    """
+    Set the Windows hidden attribute on a file or folder.
+
+    Args:
+        folder_path (str): Path to the file or directory to hide.
+    """
     logging.debug(f"Setting hidden attribute on {folder_path}")
     try:
         result = ctypes.windll.kernel32.SetFileAttributesW(folder_path, 0x2)
@@ -27,7 +48,12 @@ def set_hidden_attribute(folder_path):
         logging.error(f"Failed to set hidden attribute on {folder_path}: {e}")
 
 def delete_codebase_folders(directory_to_scan):
-    """Walks through a directory and deletes any folder named 'codebase'."""
+    """
+    Walks through a directory and deletes any folder named 'codebase'.
+
+    Args:
+        directory_to_scan (str): The root directory to scan for 'codebase' folders.
+    """
     logging.info(f"Scanning for 'codebase' folders to delete in {directory_to_scan}...")
     for root, dirs, files in os.walk(directory_to_scan, topdown=True):
         if 'codebase' in dirs:
@@ -40,7 +66,11 @@ def delete_codebase_folders(directory_to_scan):
                 logging.error(f"Failed to delete 'codebase' folder {folder_to_delete}: {e}")
 
 def clear_old_logs():
-    """Clear log files from previous days (keep only today's logs)."""
+    """
+    Clear log files from previous days (keep only today's logs).
+
+    Iterates over predefined log files and truncates any that were last modified before today.
+    """
     log_files = [
         os.path.join(BASE_DATA_DIR, 'ready_jobs_watcher.log'),
         os.path.join(BASE_DATA_DIR, 'backup.log'),
@@ -73,7 +103,7 @@ def cleanup_nested_dark_mode_folders(base_dir: str):
     Moves PDFs from nested DARK MODE folders to the first-level DARK MODE folder.
 
     Args:
-        base_dir: The base directory to scan (e.g., Y:\\Ready Jobs)
+        base_dir (str): The base directory to scan (e.g., Y:\\Ready Jobs)
     """
     logging.info(f"Scanning for nested DARK MODE folders in {base_dir}...")
     folders_cleaned = 0
