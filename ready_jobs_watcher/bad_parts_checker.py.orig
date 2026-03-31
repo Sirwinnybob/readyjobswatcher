@@ -121,14 +121,14 @@ def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
                     cropped_img = img.crop((crop_left, crop_upper, crop_right, crop_lower))
 
                     is_bad_part = False
-                    width = cropped_img.width
-
-                    for i, (r, g, b) in enumerate(list(cropped_img.getdata())):
-                        if not (abs(r - g) <= COLOR_TOLERANCE and abs(r - b) <= COLOR_TOLERANCE and abs(g - b) <= COLOR_TOLERANCE):
-                            is_bad_part = True
-                            x = i % width
-                            y = i // width
-                            badparts_logger.debug(f"Non-grayscale pixel detected at ({x}, {y}) with RGB({r},{g},{b}) on page {page_num + 1}.")
+                    for x in range(cropped_img.width):
+                        for y in range(cropped_img.height):
+                            r, g, b = cropped_img.getpixel((x, y))
+                            if not (abs(r - g) <= COLOR_TOLERANCE and abs(r - b) <= COLOR_TOLERANCE and abs(g - b) <= COLOR_TOLERANCE):
+                                is_bad_part = True
+                                badparts_logger.debug(f"Non-grayscale pixel detected at ({x}, {y}) with RGB({r},{g},{b}) on page {page_num + 1}.")
+                                break
+                        if is_bad_part:
                             break
 
                     if is_bad_part:

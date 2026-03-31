@@ -1,0 +1,26 @@
+--- ready_jobs_watcher/bad_parts_checker.py
++++ ready_jobs_watcher/bad_parts_checker.py
+@@ -124,14 +124,14 @@
+                     cropped_img = img.crop((crop_left, crop_upper, crop_right, crop_lower))
+
+                     is_bad_part = False
+-                    for x in range(cropped_img.width):
+-                        for y in range(cropped_img.height):
+-                            r, g, b = cropped_img.getpixel((x, y))
+-                            if not (abs(r - g) <= COLOR_TOLERANCE and abs(r - b) <= COLOR_TOLERANCE and abs(g - b) <= COLOR_TOLERANCE):
+-                                is_bad_part = True
+-                                badparts_logger.debug(f"Non-grayscale pixel detected at ({x}, {y}) with RGB({r},{g},{b}) on page {page_num + 1}.")
+-                                break
+-                        if is_bad_part:
+-                            break
++                    width = cropped_img.width
++
++                    for i, (r, g, b) in enumerate(list(cropped_img.getdata())):
++                        if not (abs(r - g) <= COLOR_TOLERANCE and abs(r - b) <= COLOR_TOLERANCE and abs(g - b) <= COLOR_TOLERANCE):
++                            is_bad_part = True
++                            x = i % width
++                            y = i // width
++                            badparts_logger.debug(f"Non-grayscale pixel detected at ({x}, {y}) with RGB({r},{g},{b}) on page {page_num + 1}.")
++                            break
+
+                     if is_bad_part:
