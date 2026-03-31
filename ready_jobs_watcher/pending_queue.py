@@ -1,3 +1,10 @@
+"""
+Pending Queue Module.
+
+Manages persistent tracking of scheduled background operations, such as
+PDF conversions and delayed folder processing. This ensures that tasks
+scheduled before a restart are resumed properly when the application starts up.
+"""
 import json
 import logging
 import os
@@ -10,7 +17,9 @@ pending_queue_logger = logging.getLogger('pending_queue')
 class PendingQueue:
     """
     Persistent queue for tracking pending operations (PDF conversions, folder processing).
-    Saves pending operations to disk so they can be resumed after program restarts.
+
+    Saves pending operations to disk atomically so they can be resumed after program restarts.
+    Provides thread-safe access to the underlying scheduling data.
     """
 
     def __init__(self, queue_file: str, executor=None):
@@ -18,8 +27,8 @@ class PendingQueue:
         Initialize the pending queue.
 
         Args:
-            queue_file: Path to the JSON file where pending operations are stored
-            executor: ThreadPoolExecutor for background tasks (optional)
+            queue_file (str): Path to the JSON file where pending operations are stored.
+            executor (ThreadPoolExecutor, optional): Executor for running background tasks.
         """
         self.queue_file = queue_file
         self.lock = threading.Lock()
@@ -34,7 +43,13 @@ class PendingQueue:
         self.load()
 
     def load(self):
-        """Load pending operations from disk."""
+        """
+        Load pending operations from disk.
+
+        Attempts to read the primary queue file. If successful, creates a backup.
+        Also cleans up any entries older than 24 hours to prevent stale processing.
+        If the primary file is corrupted, attempts to restore from the backup.
+        """
         if not os.path.exists(self.queue_file):
             pending_queue_logger.info(f"No existing pending queue found at {self.queue_file}")
             return
@@ -100,8 +115,11 @@ class PendingQueue:
     def save(self):
         """
         Save pending operations to disk atomically.
-        NOTE: Caller must hold self.lock before calling this method.
-        Uses a safer atomic write pattern for Windows.
+
+        Uses a temp-file-and-rename pattern to ensure data consistency,
+        especially on Windows environments where overwriting can fail.
+
+        NOTE: Caller must hold `self.lock` before calling this method.
         """
         temp_file = self.queue_file + '.tmp'
         backup_file = self.queue_file + '.save_backup'
@@ -169,9 +187,9 @@ class PendingQueue:
         Add a PDF to the pending conversion queue.
 
         Args:
-            file_path: Full path to the PDF file
-            scheduled_time: Unix timestamp when conversion should occur
-            invert_images: Whether to invert images during conversion
+            file_path (str): Full path to the PDF file.
+            scheduled_time (float): Unix timestamp when conversion should occur.
+            invert_images (bool): Whether to invert images during conversion.
         """
         with self.lock:
             self.pending_pdfs[file_path] = {
@@ -186,8 +204,8 @@ class PendingQueue:
         Add a folder to the pending processing queue.
 
         Args:
-            folder_path: Full path to the folder
-            scheduled_time: Unix timestamp when processing should occur
+            folder_path (str): Full path to the folder.
+            scheduled_time (float): Unix timestamp when processing should occur.
         """
         with self.lock:
             self.pending_folders[folder_path] = {
@@ -197,7 +215,12 @@ class PendingQueue:
             pending_queue_logger.debug(f"Added pending folder: {folder_path} (scheduled: {scheduled_time})")
 
     def remove_pending_pdf(self, file_path: str):
-        """Remove a PDF from the pending queue."""
+        """
+        Remove a PDF from the pending queue.
+
+        Args:
+            file_path (str): Full path to the PDF file.
+        """
         with self.lock:
             if file_path in self.pending_pdfs:
                 del self.pending_pdfs[file_path]
@@ -205,7 +228,12 @@ class PendingQueue:
                 pending_queue_logger.debug(f"Removed pending PDF: {file_path}")
 
     def remove_pending_folder(self, folder_path: str):
-        """Remove a folder from the pending queue."""
+        """
+        Remove a folder from the pending queue.
+
+        Args:
+            folder_path (str): Full path to the folder.
+        """
         with self.lock:
             if folder_path in self.pending_folders:
                 del self.pending_folders[folder_path]
@@ -213,43 +241,87 @@ class PendingQueue:
                 pending_queue_logger.debug(f"Removed pending folder: {folder_path}")
 
     def get_pending_pdf(self, file_path: str) -> Optional[Dict]:
-        """Get pending PDF info if it exists."""
+        """
+        Get pending PDF info if it exists.
+
+        Args:
+            file_path (str): Path of the pending PDF.
+
+        Returns:
+            Optional[Dict]: Data dict representing the scheduled task, or None.
+        """
         with self.lock:
             return self.pending_pdfs.get(file_path)
 
     def get_pending_folder(self, folder_path: str) -> Optional[Dict]:
-        """Get pending folder info if it exists."""
+        """
+        Get pending folder info if it exists.
+
+        Args:
+            folder_path (str): Path of the pending folder.
+
+        Returns:
+            Optional[Dict]: Data dict representing the scheduled task, or None.
+        """
         with self.lock:
             return self.pending_folders.get(folder_path)
 
     def get_all_pending_pdfs(self) -> Dict[str, Dict]:
-        """Get all pending PDFs."""
+        """
+        Get all pending PDFs.
+
+        Returns:
+            Dict[str, Dict]: Dictionary of all pending PDFs and their scheduling data.
+        """
         with self.lock:
             return dict(self.pending_pdfs)
 
     def get_all_pending_folders(self) -> Dict[str, Dict]:
-        """Get all pending folders."""
+        """
+        Get all pending folders.
+
+        Returns:
+            Dict[str, Dict]: Dictionary of all pending folders and their scheduling data.
+        """
         with self.lock:
             return dict(self.pending_folders)
 
     def is_pdf_pending(self, file_path: str) -> bool:
-        """Check if a PDF is in the pending queue."""
+        """
+        Check if a PDF is in the pending queue.
+
+        Args:
+            file_path (str): Path of the PDF.
+
+        Returns:
+            bool: True if the PDF is queued, False otherwise.
+        """
         with self.lock:
             return file_path in self.pending_pdfs
 
     def is_folder_pending(self, folder_path: str) -> bool:
-        """Check if a folder is in the pending queue."""
+        """
+        Check if a folder is in the pending queue.
+
+        Args:
+            folder_path (str): Path of the folder.
+
+        Returns:
+            bool: True if the folder is queued, False otherwise.
+        """
         with self.lock:
             return folder_path in self.pending_folders
 
     def resume_pending_operations(self, pdf_handler, rename_handler):
         """
         Resume pending operations after program restart.
-        Schedules conversions for pending PDFs and processing for pending folders.
+
+        Schedules conversions for pending PDFs and processing for pending folders,
+        adjusting delays based on the current timestamp.
 
         Args:
-            pdf_handler: PdfChangeHandler instance to schedule PDF conversions
-            rename_handler: RenameHandler instance to schedule folder processing
+            pdf_handler (PdfChangeHandler): Instance to schedule PDF conversions.
+            rename_handler (RenameHandler): Instance to schedule folder processing.
         """
         current_time = time.time()
 

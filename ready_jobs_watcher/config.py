@@ -1,3 +1,10 @@
+"""
+Configuration Management Module.
+
+This module provides the `Config` class, which handles loading, validating,
+and saving application configuration settings, including backup schedules,
+Planka integration credentials, and processing delays.
+"""
 import os
 import json
 import datetime
@@ -17,7 +24,14 @@ main_logger = logging.getLogger('main')
 
 
 class Config:
+    """
+    Manages application configuration settings.
+
+    Responsible for persisting user settings to a local JSON file, restoring
+    from backups if corrupted, and calculating future scheduled events.
+    """
     def __init__(self):
+        """Initializes default configuration settings and loads user overrides."""
         self.ROOT_DIR = r'Y:\Ready Jobs'
         self.CNC_SUBDIR = 'CNC'
         self.RETRY_INTERVAL_MINUTES = 15
@@ -47,7 +61,15 @@ class Config:
         self.load()
 
     def _validate_config(self, config: Dict) -> bool:
-        """Validate config structure and values."""
+        """
+        Validate config structure and values.
+
+        Args:
+            config (Dict): The parsed JSON configuration dictionary.
+
+        Returns:
+            bool: True if valid, False otherwise.
+        """
         # Check required fields exist and have correct types
         if 'backup_times' in config and not isinstance(config['backup_times'], list):
             main_logger.error("Config validation failed: backup_times must be a list")
@@ -81,6 +103,12 @@ class Config:
         return True
 
     def load(self) -> None:
+        """
+        Loads the configuration from the JSON file.
+
+        If the primary file is invalid or corrupted, it attempts to load from
+        a backup configuration file.
+        """
         main_logger.debug(f"Loading config from {self.CONFIG_FILE}")
         backup_file = self.CONFIG_FILE + '.backup'
 
@@ -148,6 +176,12 @@ class Config:
             main_logger.error(f"Failed to load config: {e}, using defaults")
 
     def save(self) -> None:
+        """
+        Saves the current configuration to the JSON file.
+
+        Creates a `.backup` file of the existing configuration before overwriting.
+        Validates the new configuration state prior to saving.
+        """
         main_logger.debug(f"Saving config to {self.CONFIG_FILE}")
         backup_file = self.CONFIG_FILE + '.backup'
 
@@ -184,6 +218,12 @@ class Config:
             main_logger.error(f"Failed to save config: {e}")
 
     def get_next_backup_time(self) -> datetime.datetime:
+        """
+        Calculates the next scheduled backup time.
+
+        Returns:
+            datetime.datetime: The closest upcoming backup time.
+        """
         main_logger.debug("Calculating next backup time")
         now = datetime.datetime.now()
         today = now.date()

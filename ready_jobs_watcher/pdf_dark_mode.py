@@ -1,3 +1,10 @@
+"""
+PDF Dark Mode Conversion Module.
+
+Provides integration with an external PDF Dark Mode Converter CLI tool.
+Handles both standard vector-based color inversion and direct rasterization
+for complex documents like cover sheets.
+"""
 import os
 import subprocess
 import logging
@@ -22,10 +29,10 @@ def should_use_direct_inversion(pdf_filename: str) -> bool:
     as an image, invert it, and create a new PDF.
 
     Args:
-        pdf_filename: The full path or just the filename of the PDF
+        pdf_filename (str): The full path or just the filename of the PDF
 
     Returns:
-        True if the PDF should use direct inversion (COVER SHEET)
+        bool: True if the PDF should use direct inversion (e.g., COVER SHEET)
     """
     filename_upper = os.path.basename(pdf_filename).upper()
     return "COVER SHEET" in filename_upper
@@ -39,12 +46,12 @@ def run_direct_inversion(input_path: str, output_path: str, dpi: int = 150) -> b
     Best for cover sheets and documents with full-page images.
 
     Args:
-        input_path: Path to the input PDF file
-        output_path: Path to save the output PDF file
-        dpi: Resolution for rendering (higher = better quality but larger file)
+        input_path (str): Path to the input PDF file
+        output_path (str): Path to save the output PDF file
+        dpi (int): Resolution for rendering (higher = better quality but larger file)
 
     Returns:
-        True if conversion was successful, False otherwise
+        bool: True if conversion was successful, False otherwise
     """
     try:
         import fitz  # PyMuPDF
@@ -120,16 +127,21 @@ def should_invert_images(pdf_filename: str) -> bool:
     Check if a PDF should have images inverted based on its filename.
 
     Args:
-        pdf_filename: The full path or just the filename of the PDF
+        pdf_filename (str): The full path or just the filename of the PDF
 
     Returns:
-        True if the PDF should have images inverted (Island Wings or COVER SHEET)
+        bool: True if the PDF should have images inverted (Island Wings or COVER SHEET)
     """
     filename_upper = os.path.basename(pdf_filename).upper()
     return "ISLAND WINGS" in filename_upper or "COVER SHEET" in filename_upper
 
 def is_dark_mode_available() -> bool:
-    """Check if the PDF dark mode converter CLI is available."""
+    """
+    Check if the external PDF dark mode converter CLI is available.
+
+    Returns:
+        bool: True if the CLI tool exists at the configured path, False otherwise.
+    """
     if not os.path.exists(PDF_DARK_MODE_CLI_PATH):
         pdf_darkmode_logger.warning(f"PDF Dark Mode CLI not found at {PDF_DARK_MODE_CLI_PATH}")
         return False
@@ -140,14 +152,14 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
     Run the PDF dark mode converter on the Ready Jobs folder or a specific file.
 
     Args:
-        dry_run: If True, only preview what would be converted without actually converting
-        theme: The dark mode theme to use (classic, claude, chatgpt, sepia, midnight, forest)
-        specific_file: If provided, only convert this specific PDF file instead of scanning the entire folder
-        force: If True, reconvert all files regardless of modification date
-        invert_images: If True, invert images (for PDFs with white background images)
+        dry_run (bool): If True, only preview what would be converted without actually converting.
+        theme (str): The dark mode theme to use (classic, claude, chatgpt, sepia, midnight, forest).
+        specific_file (Optional[str]): If provided, only convert this specific PDF file instead of scanning the entire folder.
+        force (bool): If True, reconvert all files regardless of modification date.
+        invert_images (bool): If True, invert images (for PDFs with white background images).
 
     Returns:
-        True if the conversion was successful, False otherwise
+        bool: True if the conversion was successful, False otherwise.
     """
     if not is_dark_mode_available():
         pdf_darkmode_logger.error("PDF Dark Mode converter not available, skipping conversion")
@@ -321,14 +333,15 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
 def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic", specific_file: Optional[str] = None, force: bool = False, invert_images: bool = False) -> None:
     """
     Run the PDF dark mode converter asynchronously in a separate thread.
-    This is useful for running the conversion without blocking the main application.
+
+    This is useful for running the conversion without blocking the main application flow.
 
     Args:
-        dry_run: If True, only preview what would be converted without actually converting
-        theme: The dark mode theme to use
-        specific_file: If provided, only convert this specific PDF file
-        force: If True, reconvert all files regardless of modification date
-        invert_images: If True, invert images (for PDFs with white background images)
+        dry_run (bool): If True, only preview what would be converted without actually converting.
+        theme (str): The dark mode theme to use.
+        specific_file (Optional[str]): If provided, only convert this specific PDF file.
+        force (bool): If True, reconvert all files regardless of modification date.
+        invert_images (bool): If True, invert images (for PDFs with white background images).
     """
     import threading
 

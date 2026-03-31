@@ -1,3 +1,10 @@
+"""
+File System Watchers Module.
+
+Implements `watchdog` event handlers to actively monitor configured directories
+for file creations, modifications, deletions, and moves. Triggers automated
+renaming, PDF scanning, and log file processing.
+"""
 import logging
 import time
 import threading
@@ -20,7 +27,23 @@ main_logger = logging.getLogger('main')
 IS_PROCESSING_LOG_FILE_LOCK = threading.Lock()
 
 class RenameHandler(FileSystemEventHandler):
+    """
+    Event handler for file and directory creation or movement events.
+
+    Detects new job folders and files, scheduling them for delayed renaming
+    and processing to ensure template files are not renamed prematurely.
+    """
     def __init__(self, config, job_processor, app_state, pending_queue=None, executor=None):
+        """
+        Initialize the RenameHandler.
+
+        Args:
+            config (Config): Application configuration.
+            job_processor (JobProcessor): Processor instance for handling logic.
+            app_state (Application): Core application state.
+            pending_queue (PendingQueue, optional): Queue for persisting scheduled tasks.
+            executor (ThreadPoolExecutor, optional): Executor for background task offloading.
+        """
         super().__init__()
         self.config = config
         self.job_processor = job_processor
@@ -32,7 +55,12 @@ class RenameHandler(FileSystemEventHandler):
         self._folder_delay_seconds = config.new_folder_delay_seconds
 
     def _schedule_folder_processing(self, folder_path: str):
-        """Schedule a folder to be processed after a delay."""
+        """
+        Schedule a folder to be processed after a configured delay.
+
+        Args:
+            folder_path (str): Full path to the detected folder.
+        """
         scheduled_time = time.time() + self._folder_delay_seconds
 
         with self._pending_folders_lock:
@@ -74,6 +102,12 @@ class RenameHandler(FileSystemEventHandler):
             thread.start()
 
     def on_created(self, event):
+        """
+        Triggered when a file or directory is created.
+
+        Args:
+            event (FileSystemEvent): The watchdog event instance.
+        """
         try:
             main_logger.debug(f"on_created triggered for {event.src_path}")
             if self.app_state.PAUSE_PROCESSING:
@@ -116,6 +150,12 @@ class RenameHandler(FileSystemEventHandler):
             main_logger.error(f"Error in RenameHandler.on_created for {event.src_path}: {e}")
 
     def on_modified(self, event):
+        """
+        Triggered when a file or directory is modified.
+
+        Args:
+            event (FileSystemEvent): The watchdog event instance.
+        """
         try:
             main_logger.debug(f"on_modified triggered for {event.src_path}")
             if self.app_state.PAUSE_PROCESSING:
@@ -125,6 +165,12 @@ class RenameHandler(FileSystemEventHandler):
             main_logger.error(f"Error in RenameHandler.on_modified for {event.src_path}: {e}")
 
     def on_moved(self, event):
+        """
+        Triggered when a file or directory is moved or renamed.
+
+        Args:
+            event (FileSystemEvent): The watchdog event instance.
+        """
         try:
             main_logger.debug(f"on_moved triggered for {event.src_path} -> {event.dest_path}")
             if self.app_state.PAUSE_PROCESSING:
@@ -150,8 +196,19 @@ class RenameHandler(FileSystemEventHandler):
             main_logger.error(f"Error in RenameHandler.on_moved for {event.src_path} -> {event.dest_path}: {e}")
 
 class PdfChangeHandler(FileSystemEventHandler):
-    """Handles recursive modifications to PDF files for bad part checking."""
+    """
+    Handles recursive modifications to PDF files for bad part checking and dark mode conversion.
+    """
     def __init__(self, config, rename_handler=None, pending_queue=None, executor=None):
+        """
+        Initialize the PdfChangeHandler.
+
+        Args:
+            config (Config): Application configuration.
+            rename_handler (RenameHandler, optional): Reference to check if folders are pending.
+            pending_queue (PendingQueue, optional): Queue for persisting scheduled conversions.
+            executor (ThreadPoolExecutor, optional): Executor for background task offloading.
+        """
         super().__init__()
         self.config = config
         self.rename_handler = rename_handler  # Reference to check pending folders
@@ -178,7 +235,13 @@ class PdfChangeHandler(FileSystemEventHandler):
             main_logger.debug(f"Cleaned up {len(old_entries)} old cooldown entries")
 
     def _schedule_pdf_conversion(self, pdf_path: str, invert_images: bool):
-        """Schedule a PDF conversion after the cooldown period."""
+        """
+        Schedule a PDF conversion after the cooldown period.
+
+        Args:
+            pdf_path (str): Full path to the PDF.
+            invert_images (bool): Whether images should be inverted during conversion.
+        """
         # Periodic cleanup every 100 conversions (thread-safe)
         with self._count_lock:
             self._conversion_count += 1
@@ -221,7 +284,17 @@ class PdfChangeHandler(FileSystemEventHandler):
             thread.start()
 
     def _should_convert_to_dark_mode(self, pdf_path: str) -> bool:
-        """Check if a PDF should be converted to dark mode (exclude CNC folders, DARK MODE folders, Cut List files, and pending job folders)."""
+        """
+        Check if a PDF should be converted to dark mode.
+
+        Excludes CNC folders, DARK MODE folders, Cut List files, and files within pending job folders.
+
+        Args:
+            pdf_path (str): Full path to the PDF.
+
+        Returns:
+            bool: True if it should be converted, False otherwise.
+        """
         # Normalize path separators
         normalized_path = pdf_path.replace('/', '\\')
 
@@ -259,6 +332,12 @@ class PdfChangeHandler(FileSystemEventHandler):
         return True
 
     def on_modified(self, event):
+        """
+        Triggered when a PDF file is modified.
+
+        Args:
+            event (FileSystemEvent): The watchdog event instance.
+        """
         try:
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF modified event detected by recursive watcher: {event.src_path}")
@@ -300,6 +379,12 @@ class PdfChangeHandler(FileSystemEventHandler):
             main_logger.error(f"Error in PdfChangeHandler.on_modified for {event.src_path}: {e}")
 
     def on_created(self, event):
+        """
+        Triggered when a PDF file is created.
+
+        Args:
+            event (FileSystemEvent): The watchdog event instance.
+        """
         try:
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF created event detected by recursive watcher: {event.src_path}")
@@ -341,6 +426,12 @@ class PdfChangeHandler(FileSystemEventHandler):
             main_logger.error(f"Error in PdfChangeHandler.on_created for {event.src_path}: {e}")
 
     def on_deleted(self, event):
+        """
+        Triggered when a PDF file is deleted. Cleans up associated files.
+
+        Args:
+            event (FileSystemEvent): The watchdog event instance.
+        """
         try:
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF deleted event detected by recursive watcher: {event.src_path}")
@@ -389,11 +480,18 @@ class PdfChangeHandler(FileSystemEventHandler):
 class LogFileHandler(FileSystemEventHandler):
     """
     Handles modifications to the bad parts log file on the desktop.
+
     When user marks a bad part as complete by appending 'y' after 'COMPLETE:'
     in a log line, this moves the entry from temporary blacklist to permanent ignore.
     Log format expected: "filename | full_path | page_num | Reported: timestamp | COMPLETE: "
     """
     def on_modified(self, event):
+        """
+        Triggered when the log file is modified.
+
+        Args:
+            event (FileSystemEvent): The watchdog event instance.
+        """
         if event.src_path == BAD_PART_LOG_FILE:
             # Try to acquire lock without blocking
             if not IS_PROCESSING_LOG_FILE_LOCK.acquire(blocking=False):
