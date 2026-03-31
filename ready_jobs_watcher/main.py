@@ -26,12 +26,6 @@ from .gui import SettingsWindow, is_dark_mode
 from .tray_icon import create_tray_icon
 from .planka_credentials import initialize_planka_credentials
 
-# --- Global State ---
-# These globals are modified by different parts of the application (e.g., GUI, watchers)
-# A more advanced implementation might use a shared state object or a message queue.
-# PAUSE_PROCESSING = False
-# PENDING_RENAMES = {}
-# LAST_BACKUP_TIME = None
 
 # --- Logging Setup ---
 def setup_logging():

@@ -14,10 +14,6 @@ import re
 import sv_ttk
 import keyring
 
-# These will be imported from other modules
-# from . import main
-# from .scheduler import perform_backup
-# from .file_handler import manual_scan
 
 # Keyring service name for secure credential storage
 KEYRING_SERVICE = "ReadyJobsWatcher"
