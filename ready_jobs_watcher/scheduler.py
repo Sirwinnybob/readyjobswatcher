@@ -59,19 +59,22 @@ def perform_backup(config: Config, app: 'ReadyJobsWatcherApp') -> None:
 def delete_old_backups(config: Config) -> None:
     backup_logger.debug("Deleting old backups")
     threshold = datetime.datetime.now() - datetime.timedelta(days=7)
-    for item in os.listdir(config.BACKUP_DIR):
-        full_path = os.path.join(config.BACKUP_DIR, item)
-        if os.path.isdir(full_path):
-            parts = item.split('_')
-            if len(parts) >= 4:
-                try:
-                    date_str = parts[-2] + '_' + parts[-1]
-                    backup_date = datetime.datetime.strptime(date_str, '%Y-%m-%d_%H-%M')
-                    if backup_date < threshold:
-                        shutil.rmtree(full_path)
-                        backup_logger.info(f"Deleted old backup: {full_path}")
-                except ValueError:
-                    pass
+    try:
+        with os.scandir(config.BACKUP_DIR) as it:
+            for entry in it:
+                if entry.is_dir():
+                    parts = entry.name.split('_')
+                    if len(parts) >= 4:
+                        try:
+                            date_str = parts[-2] + '_' + parts[-1]
+                            backup_date = datetime.datetime.strptime(date_str, '%Y-%m-%d_%H-%M')
+                            if backup_date < threshold:
+                                shutil.rmtree(entry.path)
+                                backup_logger.info(f"Deleted old backup: {entry.path}")
+                        except ValueError:
+                            pass
+    except OSError as e:
+        backup_logger.error(f"Error scanning backup directory {config.BACKUP_DIR}: {e}")
 
 def scan_cnc_pdfs_for_bad_parts(config: Config) -> None:
     """Scans all CNC PDFs recursively for bad parts."""
@@ -82,23 +85,24 @@ def scan_cnc_pdfs_for_bad_parts(config: Config) -> None:
     scanned_count = 0
 
     try:
-        for folder in os.listdir(config.ROOT_DIR):
-            full_path = os.path.join(config.ROOT_DIR, folder)
+        with os.scandir(config.ROOT_DIR) as it:
+            for entry in it:
+                if not entry.is_dir():
+                    continue
 
-            if not os.path.isdir(full_path):
-                continue
-
-            if JobProcessor.is_job_folder(full_path):
-                cnc_path = os.path.join(full_path, config.CNC_SUBDIR)
-                if os.path.isdir(cnc_path):
-                    for item in os.listdir(cnc_path):
-                        if item.lower().endswith('.pdf'):
-                            pdf_path = os.path.join(cnc_path, item)
-                            try:
-                                check_for_bad_parts_highlight(pdf_path, config)
-                                scanned_count += 1
-                            except Exception as e:
-                                cnc_logger.error(f"Error scanning {pdf_path}: {e}")
+                full_path = entry.path
+                if JobProcessor.is_job_folder(full_path):
+                    cnc_path = os.path.join(full_path, config.CNC_SUBDIR)
+                    if os.path.isdir(cnc_path):
+                        with os.scandir(cnc_path) as cnc_it:
+                            for cnc_entry in cnc_it:
+                                if cnc_entry.is_file() and cnc_entry.name.lower().endswith('.pdf'):
+                                    pdf_path = cnc_entry.path
+                                    try:
+                                        check_for_bad_parts_highlight(pdf_path, config)
+                                        scanned_count += 1
+                                    except Exception as e:
+                                        cnc_logger.error(f"Error scanning {pdf_path}: {e}")
 
         cnc_logger.info(f"CNC PDF scan complete. Scanned {scanned_count} PDFs.")
     except Exception as e:

@@ -161,7 +161,14 @@ class JobProcessor:
             return
 
         try:
-            items = os.listdir(job_folder)
+            with os.scandir(job_folder) as it:
+                for entry in it:
+                    # Skip hidden files
+                    if is_hidden(entry.path):
+                        logging.debug(f"Skipping hidden item: {entry.path}")
+                        continue
+                    if entry.is_file():
+                        self.process_file(entry.path, job_num, job_folder)
         except PermissionError:
             logging.warning(f"Permission denied accessing folder: {job_folder}")
             return
@@ -169,26 +176,16 @@ class JobProcessor:
             logging.error(f"Error listing folder {job_folder}: {e}")
             return
 
-        for item in items:
-            full_path = os.path.join(job_folder, item)
-            # Skip hidden files
-            if is_hidden(full_path):
-                logging.debug(f"Skipping hidden item: {full_path}")
-                continue
-            if os.path.isfile(full_path):
-                self.process_file(full_path, job_num, job_folder)
-
         if include_cnc:
             cnc_path = os.path.join(job_folder, self.config.CNC_SUBDIR)
             if os.path.isdir(cnc_path) and not is_hidden(cnc_path):
                 try:
-                    cnc_items = os.listdir(cnc_path)
+                    with os.scandir(cnc_path) as it:
+                        for entry in it:
+                            if is_hidden(entry.path):
+                                continue
+                            if entry.is_file():
+                                self.process_file(entry.path, job_num, cnc_path)
                 except (PermissionError, OSError) as e:
                     logging.warning(f"Cannot access CNC folder {cnc_path}: {e}")
                     return
-                for item in cnc_items:
-                    full_path = os.path.join(cnc_path, item)
-                    if is_hidden(full_path):
-                        continue
-                    if os.path.isfile(full_path):
-                        self.process_file(full_path, job_num, cnc_path)
