@@ -1,5 +1,8 @@
 import pytest
-from ready_jobs_watcher.file_handler import JobProcessor
+from ready_jobs_watcher.file_handler import JobProcessor, should_ignore_file
+
+
+# ==================== extract_job_number tests ====================
 
 @pytest.mark.parametrize("folder_name, expected", [
     # Standard job numbers
@@ -18,15 +21,29 @@ from ready_jobs_watcher.file_handler import JobProcessor
     ("Project 123", None),
     ("A123", None),
     ("-123", None),
-    ("123-", "123"),  # Matches \d+ part of \d+[a-zA-Z]?
-    ("123-A", "123"), # Matches \d+ part of \d+[a-zA-Z]?
+    ("123-", "123"),
+    ("123-A", "123"),
     ("123-456-789", "123-456"),
-    ("123AB", "123A"), # Matches \d+[a-zA-Z] part
+    ("123AB", "123A"),
+    ("123ABC", "123A"),
+    ("123-456A", "123-456"),
+    (" 123-456", None),           # leading whitespace
+    ("!123", None),
+    ("abc-123", None),
+    ("123_456", "123"),
+    ("123.456", "123"),
 ])
 def test_extract_job_number(folder_name, expected):
     assert JobProcessor.extract_job_number(folder_name) == expected
 
-from ready_jobs_watcher.file_handler import should_ignore_file
+
+def test_extract_job_number_none_input():
+    """Ensure it raises TypeError when passed None (as expected by the implementation)."""
+    with pytest.raises(TypeError):
+        JobProcessor.extract_job_number(None)
+
+
+# ==================== should_ignore_file tests ====================
 
 @pytest.mark.parametrize("filename, expected", [
     # Exact matches (IGNORED_FILES)
@@ -41,6 +58,7 @@ from ready_jobs_watcher.file_handler import should_ignore_file
     ("~$document.docx", True),
     ("~$spreadsheet.xlsx", True),
     ("~$temp", True),
+    ("~$", True),
 
     # Extension matches (IGNORED_EXTENSIONS)
     ("file.tmp", True),
@@ -52,13 +70,12 @@ from ready_jobs_watcher.file_handler import should_ignore_file
     # Files that should NOT be ignored
     ("document.docx", False),
     ("image.jpg", False),
-    ("Thumbs_backup.db", False), # Not exact match or extension
+    ("Thumbs_backup.db", False),
     ("desktop_ini.txt", False),
-    ("~not_ignored.txt", False), # Doesn't start with ~$
+    ("~not_ignored.txt", False),
     ("file.txt", False),
     ("file_without_extension", False),
-    (".hidden_file", False), # Not in exact matches or ignored extensions
-    ("~$", True), # Exact match to prefix
+    (".hidden_file", False),
 ])
 def test_should_ignore_file(filename, expected):
     assert should_ignore_file(filename) == expected
