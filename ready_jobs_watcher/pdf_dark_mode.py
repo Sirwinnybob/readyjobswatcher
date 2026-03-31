@@ -110,7 +110,7 @@ def run_direct_inversion(input_path: str, output_path: str, dpi: int = 150) -> b
     except ImportError as e:
         pdf_darkmode_logger.error(f"PyMuPDF (fitz) not available for direct inversion: {e}")
         return False
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         pdf_darkmode_logger.error(f"Direct inversion failed: {e}", exc_info=True)
         return False
 
@@ -314,8 +314,8 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
     except subprocess.TimeoutExpired:
         pdf_darkmode_logger.error("PDF dark mode conversion timed out after 10 minutes")
         return False
-    except Exception as e:
-        pdf_darkmode_logger.error(f"Failed to run PDF dark mode conversion: {e}")
+    except (OSError, RuntimeError) as e:
+        pdf_darkmode_logger.error(f"Failed to run PDF dark mode conversion: {e}", exc_info=True)
         return False
 
 def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic", specific_file: Optional[str] = None, force: bool = False, invert_images: bool = False) -> None:
@@ -336,7 +336,7 @@ def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic"
         try:
             run_dark_mode_conversion(dry_run=dry_run, theme=theme, specific_file=specific_file, force=force, invert_images=invert_images)
         except Exception as e:
-            pdf_darkmode_logger.error(f"Error in async dark mode conversion: {e}")
+            pdf_darkmode_logger.error(f"Error in async dark mode conversion: {e}", exc_info=True)
 
     thread = threading.Thread(target=_run, daemon=True, name="PDFDarkModeConversion")
     thread.start()
