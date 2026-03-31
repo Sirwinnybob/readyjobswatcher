@@ -1,38 +1,12 @@
-"""
-PDF Dark Mode Conversion Module.
+import re
 
-Provides integration with an external PDF Dark Mode Converter CLI tool.
-Handles both standard vector-based color inversion and direct rasterization
-for complex documents like cover sheets.
-"""
-import os
-import subprocess
-import logging
-from typing import Optional
+with open("ready_jobs_watcher/pdf_dark_mode.py", "r") as f:
+    content = f.read()
 
-pdf_darkmode_logger = logging.getLogger('pdf_darkmode')
-
-# PDF Dark Mode Converter configuration
-PDF_DARK_MODE_CLI_PATH = r"C:\Scripts\PDF DARK MODE\pdf-dark-mode-converter\cli.py"
-PDF_DARK_MODE_READY_JOBS_PATH = r"Y:\Ready Jobs"
-
-# Paths to exclude from dark mode conversion
-EXCLUDED_PATHS = [r"Y:\Ready Jobs\*\CNC"]
-
-def is_dark_mode_available() -> bool:
-    """
-    Check if the external PDF dark mode converter CLI is available.
-
-    Returns:
-        bool: True if the CLI tool exists at the configured path, False otherwise.
-    """
-    if not os.path.exists(PDF_DARK_MODE_CLI_PATH):
-        pdf_darkmode_logger.warning(f"PDF Dark Mode CLI not found at {PDF_DARK_MODE_CLI_PATH}")
-        return False
-    return True
-
+# Replace run_dark_mode_conversion
+new_run_dark_mode = """
 def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", specific_file: Optional[str] = None, force: bool = False) -> bool:
-    """
+    \"\"\"
     Run the PDF dark mode converter on the Ready Jobs folder or a specific file.
 
     Args:
@@ -43,15 +17,15 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
 
     Returns:
         bool: True if the conversion was successful, False otherwise.
-    """
+    \"\"\"
     if not is_dark_mode_available():
         pdf_darkmode_logger.error("PDF Dark Mode converter not available, skipping conversion")
         return False
 
     # Skip conversion if the specific file is already in a DARK MODE folder
     if specific_file:
-        normalized_path = os.path.abspath(specific_file).replace('/', '\\')
-        path_parts = [part.upper() for part in normalized_path.split('\\')]
+        normalized_path = os.path.abspath(specific_file).replace('/', '\\\\')
+        path_parts = [part.upper() for part in normalized_path.split('\\\\')]
         if 'DARK MODE' in path_parts:
             pdf_darkmode_logger.debug(f"Skipping dark mode conversion for PDF in DARK MODE folder: {specific_file}")
             return True
@@ -146,7 +120,7 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
         return False
 
 def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic", specific_file: Optional[str] = None, force: bool = False) -> None:
-    """
+    \"\"\"
     Run the PDF dark mode converter asynchronously in a separate thread.
 
     This is useful for running the conversion without blocking the main application flow.
@@ -156,7 +130,7 @@ def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic"
         theme (str): The dark mode theme to use.
         specific_file (Optional[str]): If provided, only convert this specific PDF file.
         force (bool): If True, reconvert all files regardless of modification date.
-    """
+    \"\"\"
     import threading
 
     def _run():
@@ -173,3 +147,9 @@ def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic"
     else:
         force_msg = " (force reconvert all)" if force else ""
         pdf_darkmode_logger.info(f"Started PDF dark mode conversion for all files{force_msg} in background thread")
+"""
+
+content = re.sub(r'def run_dark_mode_conversion\(.*?started PDF dark mode conversion for all files.*?\n', new_run_dark_mode, content, flags=re.DOTALL|re.IGNORECASE)
+
+with open("ready_jobs_watcher/pdf_dark_mode.py", "w") as f:
+    f.write(content)
