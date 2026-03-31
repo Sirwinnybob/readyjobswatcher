@@ -25,3 +25,40 @@ from ready_jobs_watcher.file_handler import JobProcessor
 ])
 def test_extract_job_number(folder_name, expected):
     assert JobProcessor.extract_job_number(folder_name) == expected
+
+from ready_jobs_watcher.file_handler import should_ignore_file
+
+@pytest.mark.parametrize("filename, expected", [
+    # Exact matches (IGNORED_FILES)
+    ("thumbs.db", True),
+    ("Thumbs.db", True),
+    ("THUMBS.DB", True),
+    ("desktop.ini", True),
+    (".ds_store", True),
+    (".DS_Store", True),
+
+    # Prefix matches (Office temp files)
+    ("~$document.docx", True),
+    ("~$spreadsheet.xlsx", True),
+    ("~$temp", True),
+
+    # Extension matches (IGNORED_EXTENSIONS)
+    ("file.tmp", True),
+    ("FILE.TMP", True),
+    ("backup.bak", True),
+    ("data.temp", True),
+    ("code.swp", True),
+
+    # Files that should NOT be ignored
+    ("document.docx", False),
+    ("image.jpg", False),
+    ("Thumbs_backup.db", False), # Not exact match or extension
+    ("desktop_ini.txt", False),
+    ("~not_ignored.txt", False), # Doesn't start with ~$
+    ("file.txt", False),
+    ("file_without_extension", False),
+    (".hidden_file", False), # Not in exact matches or ignored extensions
+    ("~$", True), # Exact match to prefix
+])
+def test_should_ignore_file(filename, expected):
+    assert should_ignore_file(filename) == expected
