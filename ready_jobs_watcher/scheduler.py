@@ -54,15 +54,22 @@ def perform_backup(config: Config, app: 'ReadyJobsWatcherApp') -> None:
         backup_name = os.path.basename(source).replace(' ', '_') + '_' + timestamp
         backup_subdir = os.path.join(config.BACKUP_DIR, backup_name)
         try:
-            shutil.copytree(source, backup_subdir, dirs_exist_ok=True, copy_function=shutil.copy2)
+            hidden_dirs = []
+
+            def copy_hook(src, names):
+                """Hook to identify hidden directories during copytree."""
+                if src != source and is_hidden(src):
+                    hidden_dirs.append(os.path.relpath(src, source))
+                return set()
+
+            shutil.copytree(source, backup_subdir, dirs_exist_ok=True,
+                            copy_function=shutil.copy2, ignore=copy_hook)
             backup_logger.info(f"Backed up {source} to {backup_subdir}")
 
-            for root, dirs, _ in os.walk(backup_subdir):
-                for dir_name in dirs:
-                    backup_dir = os.path.join(root, dir_name)
-                    source_dir = os.path.join(source, os.path.relpath(backup_dir, backup_subdir))
-                    if os.path.exists(source_dir) and is_hidden(source_dir):
-                        set_hidden_attribute(backup_dir)
+            # Apply hidden attribute to backup directories
+            for rel_path in hidden_dirs:
+                backup_dir = os.path.join(backup_subdir, rel_path)
+                set_hidden_attribute(backup_dir)
         except Exception as e:
             backup_logger.error(f"Backup failed for {source}: {e}")
     delete_old_backups(config)
