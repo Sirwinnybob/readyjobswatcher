@@ -10,7 +10,6 @@ import json
 import logging
 import datetime
 import threading
-from typing import Set, Tuple
 import fitz  # PyMuPDF
 from PIL import Image
 
