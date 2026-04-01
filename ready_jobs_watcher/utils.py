@@ -54,23 +54,41 @@ def set_hidden_attribute(folder_path):
 
 def delete_codebase_folders(directory_to_scan):
     """
-    Walks through a directory and deletes any folder named 'codebase'.
+    Walks through a directory and deletes any folder named 'codebase' using os.scandir for better performance.
 
     Args:
         directory_to_scan (str): The root directory to scan for 'codebase' folders.
     """
     logging.info(f"Scanning for 'codebase' folders to delete in {directory_to_scan}...")
-    for root, dirs, files in os.walk(directory_to_scan, topdown=True):
-        if 'codebase' in dirs:
-            folder_to_delete = os.path.join(root, 'codebase')
-            try:
-                shutil.rmtree(folder_to_delete)
-                logging.info(f"Successfully deleted 'codebase' folder: {folder_to_delete}")
-                dirs.remove('codebase')
-            except OSError as e:
-                logging.error(f"Failed to delete 'codebase' folder {folder_to_delete}: {e}")
-            except Exception as e:
-                logging.error(f"Unexpected error deleting 'codebase' folder {folder_to_delete}: {e}", exc_info=True)
+
+    # Optimized using an iterative os.scandir approach instead of os.walk
+    # This reduces overhead by avoiding full directory tree generation in memory
+    stack = [directory_to_scan]
+
+    while stack:
+        current_dir = stack.pop()
+        try:
+            with os.scandir(current_dir) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name == 'codebase':
+                            folder_to_delete = entry.path
+                            try:
+                                shutil.rmtree(folder_to_delete)
+                                logging.info(f"Successfully deleted 'codebase' folder: {folder_to_delete}")
+                            except OSError as e:
+                                logging.error(f"Failed to delete 'codebase' folder {folder_to_delete}: {e}")
+                            except Exception as e:
+                                logging.error(f"Unexpected error deleting 'codebase' folder {folder_to_delete}: {e}", exc_info=True)
+                        else:
+                            # Only add non-'codebase' directories to the stack for further scanning
+                            stack.append(entry.path)
+        except PermissionError:
+            logging.warning(f"Permission denied accessing directory for codebase cleanup: {current_dir}")
+        except OSError as e:
+            logging.error(f"Error accessing directory for codebase cleanup {current_dir}: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error scanning directory for codebase cleanup {current_dir}: {e}", exc_info=True)
 
 def clear_old_logs():
     """
@@ -120,51 +138,67 @@ def cleanup_nested_dark_mode_folders(base_dir: str):
     folders_cleaned = 0
     files_moved = 0
 
-    for root, dirs, files in os.walk(base_dir):
+    # Track nested dark mode folders for the second pass
+    nested_dark_mode_folders = []
+
+    # First pass: use iterative os.scandir for better performance than os.walk
+    stack = [base_dir]
+
+    while stack:
+        current_dir = stack.pop()
+
         # Check if we're in a nested DARK MODE folder (more than one DARK MODE in path)
-        path_parts = root.split(os.sep)
+        path_parts = current_dir.split(os.sep)
         dark_mode_count = sum(1 for part in path_parts if part.upper() == "DARK MODE")
 
-        if dark_mode_count > 1:
+        is_nested = dark_mode_count > 1
+        if is_nested:
+            nested_dark_mode_folders.append(current_dir)
             # Find the first DARK MODE folder in the path
             first_dark_mode_idx = next(i for i, part in enumerate(path_parts) if part.upper() == "DARK MODE")
             correct_dark_mode_path = os.sep.join(path_parts[:first_dark_mode_idx + 1])
 
-            # Move all PDFs to the correct DARK MODE folder
-            for file in files:
-                if file.lower().endswith('.pdf'):
-                    source = os.path.join(root, file)
-                    dest = os.path.join(correct_dark_mode_path, file)
+        try:
+            with os.scandir(current_dir) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    elif entry.is_file() and is_nested and entry.name.lower().endswith('.pdf'):
+                        source = entry.path
+                        dest = os.path.join(correct_dark_mode_path, entry.name)
 
-                    try:
-                        # Only move if destination doesn't exist or is older
-                        if not os.path.exists(dest) or os.path.getmtime(source) > os.path.getmtime(dest):
-                            shutil.move(source, dest)
-                            logging.info(f"Moved {file} from nested folder to {correct_dark_mode_path}")
-                            files_moved += 1
-                        else:
-                            # Destination is newer, just delete the source
-                            os.remove(source)
-                            logging.info(f"Removed duplicate {file} from nested folder")
-                    except OSError as e:
-                        logging.error(f"Failed to move {source} to {dest}: {e}")
-                    except Exception as e:
-                        logging.error(f"Unexpected error moving {source} to {dest}: {e}", exc_info=True)
+                        try:
+                            # Only move if destination doesn't exist or is older
+                            if not os.path.exists(dest) or entry.stat().st_mtime > os.path.getmtime(dest):
+                                shutil.move(source, dest)
+                                logging.info(f"Moved {entry.name} from nested folder to {correct_dark_mode_path}")
+                                files_moved += 1
+                            else:
+                                # Destination is newer, just delete the source
+                                os.remove(source)
+                                logging.info(f"Removed duplicate {entry.name} from nested folder")
+                        except OSError as e:
+                            logging.error(f"Failed to move {source} to {dest}: {e}")
+                        except Exception as e:
+                            logging.error(f"Unexpected error moving {source} to {dest}: {e}", exc_info=True)
+        except PermissionError:
+            logging.warning(f"Permission denied accessing directory for dark mode cleanup: {current_dir}")
+        except OSError as e:
+            logging.error(f"Error accessing directory for dark mode cleanup {current_dir}: {e}")
 
     # Second pass: remove empty nested DARK MODE folders
-    for root, dirs, files in os.walk(base_dir, topdown=False):
-        path_parts = root.split(os.sep)
-        dark_mode_count = sum(1 for part in path_parts if part.upper() == "DARK MODE")
+    # Process from deepest to shallowest to ensure empty parents can be deleted
+    nested_dark_mode_folders.sort(key=lambda x: len(x.split(os.sep)), reverse=True)
 
-        if dark_mode_count > 1:
-            try:
-                # Try to remove the directory (will only succeed if empty)
-                os.rmdir(root)
-                logging.info(f"Removed empty nested DARK MODE folder: {root}")
-                folders_cleaned += 1
-            except OSError:
-                # Directory not empty or other error, skip it
-                pass
+    for folder_path in nested_dark_mode_folders:
+        try:
+            # Try to remove the directory (will only succeed if empty)
+            os.rmdir(folder_path)
+            logging.info(f"Removed empty nested DARK MODE folder: {folder_path}")
+            folders_cleaned += 1
+        except OSError:
+            # Directory not empty or other error, skip it
+            pass
 
     logging.info(f"Cleanup complete: {files_moved} files moved, {folders_cleaned} empty nested folders removed")
 
