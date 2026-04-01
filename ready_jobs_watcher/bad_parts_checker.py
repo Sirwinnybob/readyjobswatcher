@@ -140,18 +140,12 @@ def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
                     continue
 
                 pix = None
-                img = None
                 cropped_img = None
                 try:
-                    pix = page.get_pixmap()
-                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-                    crop_left = max(0, int(bad_parts_rect.x0))
-                    crop_upper = max(0, int(bad_parts_rect.y0))
-                    crop_right = min(img.width, int(bad_parts_rect.x1))
-                    crop_lower = min(img.height, int(bad_parts_rect.y1))
-
-                    cropped_img = img.crop((crop_left, crop_upper, crop_right, crop_lower))
+                    # Optimized: clip directly in PyMuPDF instead of rendering full page and cropping in PIL
+                    # This is significantly faster and uses less memory
+                    pix = page.get_pixmap(clip=bad_parts_rect)
+                    cropped_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
                     is_bad_part = False
                     width = cropped_img.width
@@ -189,9 +183,6 @@ def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
                     if cropped_img is not None:
                         cropped_img.close()
                         del cropped_img
-                    if img is not None:
-                        img.close()
-                        del img
                     if pix is not None:
                         del pix
 
