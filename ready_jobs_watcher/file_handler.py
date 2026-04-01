@@ -20,6 +20,9 @@ IGNORED_FILES: Set[str] = {
     '~$',  # Office temp files prefix
 }
 
+# Pre-computed tuple of prefixes to check (faster than iterating)
+IGNORED_PREFIXES = tuple(p for p in IGNORED_FILES if p.startswith('~'))
+
 # File extensions to ignore
 IGNORED_EXTENSIONS: Set[str] = {
     '.tmp',
@@ -51,10 +54,9 @@ def should_ignore_file(filename: str) -> bool:
     if lower_name in IGNORED_FILES:
         return True
 
-    # Check prefixes (like ~$ for Office temp files)
-    for prefix in IGNORED_FILES:
-        if prefix.startswith('~') and lower_name.startswith(prefix):
-            return True
+    # Optimized prefix checking: use pre-computed tuple of prefixes
+    if lower_name.startswith(IGNORED_PREFIXES):
+        return True
 
     # Check extensions
     _, ext = os.path.splitext(lower_name)
