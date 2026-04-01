@@ -96,12 +96,12 @@ class SettingsWindow:
         ttk.Separator(scrollable_frame, orient='horizontal').pack(fill='x', pady=10)
         ttk.Label(scrollable_frame, text="Planka Integration", font=("Segoe UI", 12, "bold")).pack(pady=5)
 
-        ttk.Label(scrollable_frame, text="Base URL:", font=("Segoe UI", 9)).pack(anchor='w', padx=20)
+        ttk.Label(scrollable_frame, text="Base URL (e.g. https://your-planka.com):", font=("Segoe UI", 9)).pack(anchor='w', padx=20)
         self.planka_url_entry = ttk.Entry(scrollable_frame, width=35)
         self.planka_url_entry.insert(0, self.config.planka_base_url or "")
         self.planka_url_entry.pack(padx=20)
 
-        ttk.Label(scrollable_frame, text="Username:", font=("Segoe UI", 9)).pack(anchor='w', padx=20, pady=(5,0))
+        ttk.Label(scrollable_frame, text="Username (email address):", font=("Segoe UI", 9)).pack(anchor='w', padx=20, pady=(5,0))
         self.planka_username_entry = ttk.Entry(scrollable_frame, width=35)
         self.planka_username_entry.insert(0, self.config.planka_username or "")
         self.planka_username_entry.pack(padx=20)
