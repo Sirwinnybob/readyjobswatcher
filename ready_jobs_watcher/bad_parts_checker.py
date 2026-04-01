@@ -156,13 +156,16 @@ def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
                     is_bad_part = False
                     width = cropped_img.width
 
-                    for i, (r, g, b) in enumerate(list(cropped_img.getdata())):
-                        if not (abs(r - g) <= COLOR_TOLERANCE and abs(r - b) <= COLOR_TOLERANCE and abs(g - b) <= COLOR_TOLERANCE):
-                            is_bad_part = True
-                            x = i % width
-                            y = i // width
-                            badparts_logger.debug(f"Non-grayscale pixel detected at ({x}, {y}) with RGB({r},{g},{b}) on page {page_num + 1}.")
-                            break
+                    # Optimized pixel scanning using getcolors() instead of getdata()
+                    # getcolors() groups duplicate colors, making scanning orders of magnitude faster
+                    max_colors = cropped_img.width * cropped_img.height
+                    colors = cropped_img.getcolors(max_colors)
+                    if colors:
+                        for count, (r, g, b) in colors:
+                            if not (abs(r - g) <= COLOR_TOLERANCE and abs(r - b) <= COLOR_TOLERANCE and abs(g - b) <= COLOR_TOLERANCE):
+                                is_bad_part = True
+                                badparts_logger.debug(f"Non-grayscale color detected with RGB({r},{g},{b}) on page {page_num + 1}.")
+                                break
 
                     if is_bad_part:
                         msg = f"BAD PART(S) marked on page {page_num + 1} of\n{os.path.basename(pdf_path)}"
