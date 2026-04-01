@@ -132,4 +132,4 @@ def test_load_blacklist_generic_error(reset_blacklist):
             bad_parts_checker.load_blacklist()
             assert len(bad_parts_checker.BLACKLISTED_FILES) == 0
             mock_log_error.assert_called_once()
-            assert "Failed to load blacklist file" in mock_log_error.call_args[0][0]
+            assert "Unexpected error loading blacklist file" in mock_log_error.call_args[0][0]
