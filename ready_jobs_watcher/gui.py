@@ -114,6 +114,15 @@ class SettingsWindow:
             self.planka_password_entry.insert(0, stored_password)
         self.planka_password_entry.pack(padx=20)
 
+        # Show password toggle
+        self.show_password_var = tk.BooleanVar(value=False)
+        self.show_password_check = ttk.Checkbutton(
+            scrollable_frame, text="Show password",
+            variable=self.show_password_var,
+            command=self.toggle_password_visibility
+        )
+        self.show_password_check.pack(anchor='w', padx=20, pady=(2, 5))
+
         ttk.Button(scrollable_frame, text="Save Planka Settings", command=self.save_planka_settings).pack(pady=5)
 
         # Delay Configuration Section
@@ -141,6 +150,14 @@ class SettingsWindow:
 
         self.window.withdraw()
         self.window.update_idletasks()
+
+
+    def toggle_password_visibility(self):
+        """Toggle the visibility of the Planka password entry."""
+        if self.show_password_var.get():
+            self.planka_password_entry.config(show="")
+        else:
+            self.planka_password_entry.config(show="*")
 
     def show_window(self):
         """
