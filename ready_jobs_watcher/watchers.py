@@ -485,65 +485,89 @@ class LogFileHandler(FileSystemEventHandler):
     in a log line, this moves the entry from temporary blacklist to permanent ignore.
     Log format expected: "filename | full_path | page_num | Reported: timestamp | COMPLETE: "
     """
+    def __init__(self, executor=None):
+        """
+        Initialize the LogFileHandler.
+
+        Args:
+            executor (ThreadPoolExecutor, optional): Executor for background task offloading.
+        """
+        super().__init__()
+        self.executor = executor
+
     def on_modified(self, event):
         """
-        Triggered when the log file is modified.
+        Triggered when the log file is modified. Offloads processing to a background task.
 
         Args:
             event (FileSystemEvent): The watchdog event instance.
         """
         if event.src_path == BAD_PART_LOG_FILE:
-            # Try to acquire lock without blocking
-            if not IS_PROCESSING_LOG_FILE_LOCK.acquire(blocking=False):
-                main_logger.debug("Already processing log file, skipping.")
+            # Use executor if available, fallback to daemon thread if not
+            if self.executor:
+                self.executor.submit(self._process_log_file)
+            else:
+                thread = threading.Thread(target=self._process_log_file, daemon=True, name="LogFileProcessing")
+                thread.start()
+
+    def _process_log_file(self):
+        """Core logic for processing the bad parts log file in a background thread."""
+        # Try to acquire lock without blocking to avoid redundant concurrent processing
+        if not IS_PROCESSING_LOG_FILE_LOCK.acquire(blocking=False):
+            main_logger.debug("Already processing log file, skipping.")
+            return
+
+        try:
+            main_logger.info(f"Processing change in {BAD_PART_LOG_FILE}...")
+            # Short delay to allow file write to complete
+            time.sleep(0.5)
+
+            if not os.path.exists(BAD_PART_LOG_FILE):
+                main_logger.warning(f"Log file {BAD_PART_LOG_FILE} no longer exists.")
                 return
 
-            try:
-                main_logger.info(f"Change detected in {BAD_PART_LOG_FILE}. Processing...")
-                time.sleep(0.5)
+            with open(BAD_PART_LOG_FILE, 'r') as f:
+                lines = f.readlines()
 
-                with open(BAD_PART_LOG_FILE, 'r') as f:
-                    lines = f.readlines()
+            active_entries = []
+            has_changes = False
 
-                active_entries = []
-                has_changes = False
-
-                for line in lines:
-                    parts = line.split('|')
-                    # Expecting 5 parts now: filename | full_path | page_num | Reported: timestamp | COMPLETE:
-                    if len(parts) >= 5 and parts[4].strip().lower().startswith("complete: y"):
-                        full_path = parts[1].strip()
-                        try:
-                            page_num = int(parts[2].strip()) - 1  # Extract page number (0-indexed)
-                        except ValueError:
-                            main_logger.warning(f"Invalid page number in log line: {line.strip()}")
-                            active_entries.append(line)
-                            continue
-
-                        # Remove from blacklist (thread-safe)
-                        with BLACKLIST_LOCK:
-                            if (full_path, page_num) in BLACKLISTED_FILES:
-                                BLACKLISTED_FILES.remove((full_path, page_num))
-                                save_to_blacklist_internal() # Internal helper to save blacklist without re-adding
-                                main_logger.info(f"Removed {full_path} (page {page_num}) from blacklist.")
-
-                        # Add to permanently ignored blacklist (thread-safe)
-                        with PERMANENTLY_IGNORED_LOCK:
-                            PERMANENTLY_IGNORED_FILES.add((full_path, page_num))
-                            save_permanently_ignored_blacklist_internal()
-                            main_logger.info(f"Added {full_path} (page {page_num}) to permanently ignored blacklist.")
-
-                        main_logger.info(f"'{full_path}' (page {page_num}) marked as complete. Removing from log.")
-                        has_changes = True
-                    else:
+            for line in lines:
+                parts = line.split('|')
+                # Expecting 5 parts: filename | full_path | page_num | Reported: timestamp | COMPLETE:
+                if len(parts) >= 5 and parts[4].strip().lower().startswith("complete: y"):
+                    full_path = parts[1].strip()
+                    try:
+                        page_num = int(parts[2].strip()) - 1  # Extract page number (0-indexed)
+                    except ValueError:
+                        main_logger.warning(f"Invalid page number in log line: {line.strip()}")
                         active_entries.append(line)
+                        continue
 
-                if has_changes:
-                    with open(BAD_PART_LOG_FILE, 'w') as f:
-                        f.writelines(active_entries)
-                    main_logger.info("Bad parts log file updated.")
+                    # Remove from blacklist (thread-safe)
+                    with BLACKLIST_LOCK:
+                        if (full_path, page_num) in BLACKLISTED_FILES:
+                            BLACKLISTED_FILES.remove((full_path, page_num))
+                            save_to_blacklist_internal()
+                            main_logger.info(f"Removed {full_path} (page {page_num}) from blacklist.")
 
-            except Exception as e:
-                main_logger.error(f"Error processing log file: {e}")
-            finally:
-                IS_PROCESSING_LOG_FILE_LOCK.release()
+                    # Add to permanently ignored blacklist (thread-safe)
+                    with PERMANENTLY_IGNORED_LOCK:
+                        PERMANENTLY_IGNORED_FILES.add((full_path, page_num))
+                        save_permanently_ignored_blacklist_internal()
+                        main_logger.info(f"Added {full_path} (page {page_num}) to permanently ignored blacklist.")
+
+                    main_logger.info(f"'{full_path}' (page {page_num}) marked as complete. Removing from log.")
+                    has_changes = True
+                else:
+                    active_entries.append(line)
+
+            if has_changes:
+                with open(BAD_PART_LOG_FILE, 'w') as f:
+                    f.writelines(active_entries)
+                main_logger.info("Bad parts log file updated.")
+
+        except Exception as e:
+            main_logger.error(f"Error processing log file: {e}", exc_info=True)
+        finally:
+            IS_PROCESSING_LOG_FILE_LOCK.release()

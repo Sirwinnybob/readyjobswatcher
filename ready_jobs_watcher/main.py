@@ -335,7 +335,7 @@ class Application:
         self.restore_pending_operations(event_handler, pdf_event_handler)
 
         desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-        log_file_handler = LogFileHandler()
+        log_file_handler = LogFileHandler(executor=self.executor)
         self.desktop_observer.schedule(log_file_handler, desktop_path, recursive=False)
         self.desktop_observer.start()
         logging.info(f"Watching {desktop_path} for log file changes...")
