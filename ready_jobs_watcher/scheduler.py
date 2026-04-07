@@ -13,7 +13,7 @@ import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .main import ReadyJobsWatcherApp
+    from .main import Application
 
 from .utils import is_hidden, set_hidden_attribute, delete_codebase_folders, log_system_stats
 from .file_handler import JobProcessor
@@ -27,7 +27,7 @@ cnc_logger = logging.getLogger('cnc')
 
 LAST_BACKUP_TIME = None
 
-def perform_backup(config: Config, app: 'ReadyJobsWatcherApp') -> None:
+def perform_backup(config: Config, app: 'Application') -> None:
     """
     Execute the system backup routine.
 
@@ -37,7 +37,7 @@ def perform_backup(config: Config, app: 'ReadyJobsWatcherApp') -> None:
 
     Args:
         config (Config): System configuration.
-        app (ReadyJobsWatcherApp): Running application instance for state updates.
+        app (Application): Running application instance for state updates.
     """
     backup_logger.info("Starting backup...")
 
@@ -146,14 +146,14 @@ def scan_cnc_pdfs_for_bad_parts(config: Config) -> None:
     except Exception as e:
         cnc_logger.error(f"Fatal error during CNC scan: {e}")
 
-def backup_scheduler(config: Config, stop_event: threading.Event, app: 'ReadyJobsWatcherApp') -> None:
+def backup_scheduler(config: Config, stop_event: threading.Event, app: 'Application') -> None:
     """
     Background worker loop to periodically trigger system backups.
 
     Args:
         config (Config): Configuration containing backup schedules.
         stop_event (threading.Event): Signal used to cleanly exit the loop.
-        app (ReadyJobsWatcherApp): Application context.
+        app (Application): Application context.
     """
     while not stop_event.is_set():
         next_time = config.get_next_backup_time()
@@ -241,7 +241,7 @@ def stats_logger_scheduler(stop_event: threading.Event) -> None:
     main_logger.info("Stats logger scheduler stopped")
 
 
-def daily_restart_scheduler(config: Config, stop_event: threading.Event, app: 'ReadyJobsWatcherApp') -> None:
+def daily_restart_scheduler(config: Config, stop_event: threading.Event, app: 'Application') -> None:
     """
     Scheduler that restarts the application daily at a configured time.
 
@@ -251,7 +251,7 @@ def daily_restart_scheduler(config: Config, stop_event: threading.Event, app: 'R
     Args:
         config (Config): Configuration containing restart time.
         stop_event (threading.Event): Signal used to cleanly exit the loop.
-        app (ReadyJobsWatcherApp): Application instance to gracefully stop.
+        app (Application): Application instance to gracefully stop.
     """
     import sys
     import subprocess
