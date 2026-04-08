@@ -509,21 +509,34 @@ class LogFileHandler(FileSystemEventHandler):
         """
         super().__init__()
         self.executor = executor
+        self._timer = None
+        self._timer_lock = threading.Lock()
 
     def on_modified(self, event):
         """
         Triggered when the log file is modified. Offloads processing to a background task.
+        Uses debouncing to wait 0.5s after the last modification before processing.
 
         Args:
             event (FileSystemEvent): The watchdog event instance.
         """
         if event.src_path == BAD_PART_LOG_FILE:
-            # Use executor if available, fallback to daemon thread if not
-            if self.executor:
-                self.executor.submit(self._process_log_file)
-            else:
-                thread = threading.Thread(target=self._process_log_file, daemon=True, name="LogFileProcessing")
-                thread.start()
+            with self._timer_lock:
+                if self._timer is not None:
+                    self._timer.cancel()
+
+                # Debounce for 0.5 seconds to wait for file writes to finish
+                self._timer = threading.Timer(0.5, self._submit_processing)
+                self._timer.name = "LogFileDebounceTimer"
+                self._timer.start()
+
+    def _submit_processing(self):
+        """Submit the actual processing task."""
+        if self.executor:
+            self.executor.submit(self._process_log_file)
+        else:
+            thread = threading.Thread(target=self._process_log_file, daemon=True, name="LogFileProcessing")
+            thread.start()
 
     def _process_log_file(self):
         """Core logic for processing the bad parts log file in a background thread."""
@@ -534,8 +547,6 @@ class LogFileHandler(FileSystemEventHandler):
 
         try:
             main_logger.info(f"Processing change in {BAD_PART_LOG_FILE}...")
-            # Short delay to allow file write to complete
-            time.sleep(0.5)
 
             if not os.path.exists(BAD_PART_LOG_FILE):
                 main_logger.warning(f"Log file {BAD_PART_LOG_FILE} no longer exists.")
