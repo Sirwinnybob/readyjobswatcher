@@ -1,0 +1,10 @@
+{
+    "backup_times": [
+        "16:25",
+        "12:00"
+    ],
+    "planka_base_url": "https://planka.kustomkraftcabinets.ddns.net/",
+    "planka_username": "bad_parts",
+    "pdf_conversion_delay_seconds": 30,
+    "new_folder_delay_seconds": 1200
+}
