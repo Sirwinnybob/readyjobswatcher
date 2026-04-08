@@ -113,21 +113,7 @@ def restart_app(icon, item, main_app):
         main_app (Application): The main application instance.
     """
     logging.debug("Restart triggered from tray")
-    logging.info("Restarting application...")
-
-    # Stop the current instance
-    main_app.stop()
-    icon.stop()
-
-    # Restart using the same executable or Python script
-    if hasattr(sys, '_MEIPASS'):
-        # Running as PyInstaller executable
-        subprocess.Popen([sys.executable])
-    else:
-        # Running as Python script
-        subprocess.Popen([sys.executable] + sys.argv)
-
-    sys.exit(0)
+    main_app.restart()
 
 def quit_app(icon, item, main_app):
     """
