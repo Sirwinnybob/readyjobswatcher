@@ -11,10 +11,10 @@ import logging
 import time
 import atexit
 import msvcrt
-import tkinter as tk
+
 from watchdog.observers import Observer
 from concurrent.futures import ThreadPoolExecutor
-import sv_ttk
+
 
 from .config import Config, BASE_DATA_DIR
 from .file_handler import JobProcessor
@@ -22,7 +22,7 @@ from .utils import clear_old_logs, is_hidden
 from .bad_parts_checker import load_blacklist, load_permanently_ignored_blacklist
 from .watchers import RenameHandler, PdfChangeHandler, LogFileHandler
 from .scheduler import backup_scheduler, cnc_scan_scheduler, stats_logger_scheduler, daily_restart_scheduler
-from .gui import SettingsWindow, is_dark_mode
+from .gui import SettingsWindow
 from .tray_icon import create_tray_icon
 from .planka_credentials import initialize_planka_credentials
 
@@ -101,7 +101,7 @@ class Application:
         self.restart_thread = None
         self.tray_thread = None
 
-        self.root = None
+        self.qapp = None
         self.settings_window = None
         self.icon = None
 
@@ -193,10 +193,13 @@ class Application:
         # Stop tray icon and GUI
         if self.icon:
             try:
-                self.icon.stop()
+                self.icon.hide()
             except Exception as e:
                 logging.error(f"Error stopping tray icon: {e}")
 
+        if hasattr(self, 'qapp') and self.qapp:
+            try:
+                self.qapp.quit()
         logging.info("Shutdown complete.")
 
     def restart(self):
@@ -417,20 +420,25 @@ class Application:
         logging.info(f"Watching {desktop_path} for log file changes...")
 
     def setup_gui(self):
-        """Sets up the Tkinter root, settings window, and system tray icon."""
-        self.root = tk.Tk()
-        self.root.withdraw()
+        """Sets up the PyQt6 QApplication, settings window, and system tray icon."""
+        # QApplication must be created before any QWidget or QSystemTrayIcon
+        if not QApplication.instance():
+            self.qapp = QApplication(sys.argv)
+        else:
+            self.qapp = QApplication.instance()
 
-        sv_ttk.set_theme("dark" if is_dark_mode() else "light")
+        self.qapp.setQuitOnLastWindowClosed(False)
 
-        self.settings_window = SettingsWindow(self.root, self.config, self)
+        self.settings_window = SettingsWindow(self.config, self)
         self.icon = create_tray_icon(self.settings_window, self.config, self)
+        self.icon.show()
 
-        self.tray_thread = threading.Thread(target=self.icon.run, daemon=True)
-        self.tray_thread.start()
+        # We start the initial scan slightly delayed similar to Tkinter's after
+        import threading
+        threading.Timer(0.1, self.initial_scan).start()
 
-        self.root.after(100, self.initial_scan)
-        self.root.mainloop()
+        # Start the event loop
+        sys.exit(self.qapp.exec())
 
     def perform_backup(self):
         """Execute an immediate manual backup based on configured paths."""

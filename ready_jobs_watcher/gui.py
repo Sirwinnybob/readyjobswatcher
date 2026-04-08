@@ -1,500 +1,412 @@
 """
 Graphical User Interface Module.
 
-Provides the `SettingsWindow` class for the application, built with `tkinter`.
-Allows users to configure backup schedules, Planka integrations, and operation
-delays, as well as trigger manual application tasks.
+Provides the `SettingsWindow` class for the application, built with `PyQt6`.
+Allows users to configure paths, backup schedules, Planka integrations, and operation
+delays, as well as view running logs.
 """
-import tkinter as tk
-from tkinter import ttk, messagebox
 import logging
-import threading
-import winreg
-import re
-import sv_ttk
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QTabWidget, QListWidget, QTimeEdit, QSpinBox, QTextEdit, QMessageBox,
+    QFormLayout, QGroupBox, QInputDialog, QApplication
+)
+from PyQt6.QtCore import Qt, QTime, QObject, pyqtSignal
+from PyQt6.QtGui import QTextCursor
+from PyQt6.QtCore import QTimer
 import keyring
 
-
-# Keyring service name for secure credential storage
 KEYRING_SERVICE = "ReadyJobsWatcher"
 
-class SettingsWindow:
-    """
-    Main configuration interface for Ready Jobs Watcher.
+main_logger = logging.getLogger('main')
 
-    Provides a scrollable window with sections for Backup Status, Backup Scheduling,
-    Planka Integrations, Processing Delays, and Manual Actions. Handles saving and
-    validating user input.
-    """
-    def __init__(self, root, config, app):
-        """
-        Initialize the SettingsWindow.
+class LogSignal(QObject):
+    new_log = pyqtSignal(str)
 
-        Args:
-            root (tk.Tk): The root tkinter window instance.
-            config (Config): The application configuration context.
-            app (Application): The main application orchestrator context.
-        """
-        logging.debug("Initializing SettingsWindow")
-        self.root = root
+class QtLogHandler(logging.Handler):
+    def __init__(self, log_signal):
+        super().__init__()
+        self.log_signal = log_signal
+
+    def emit(self, record):
+        log_entry = self.format(record)
+        self.log_signal.new_log.emit(log_entry)
+
+class SettingsWindow(QWidget):
+    """
+    Main configuration interface for Ready Jobs Watcher using PyQt6.
+    """
+    def __init__(self, config, app_instance=None):
+        super().__init__()
         self.config = config
-        self.app = app
-        self.window = tk.Toplevel(root)
-        self.window.title("Ready Jobs Watcher Settings")
-        self.window.geometry("400x600")
-        self.window.resizable(False, False)
-        self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
+        self.app_instance = app_instance
 
-        self.window.update_idletasks()
-        width = self.window.winfo_width()
-        height = self.window.winfo_height()
-        x = (self.window.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.window.winfo_screenheight() // 2) - (height // 2)
-        self.window.geometry(f'{width}x{height}+{x}+{y}')
+        self.setWindowTitle("Ready Jobs Watcher Settings")
+        self.resize(600, 500)
 
-        self.window.configure(bg='#2b2b2b' if is_dark_mode() else '#ffffff')
+        # Setup Logger Signal for UI updates
+        self.log_signal = LogSignal()
+        self.log_signal.new_log.connect(self.append_log)
 
-        # Create canvas with scrollbar
-        canvas = tk.Canvas(self.window, bg='#2b2b2b' if is_dark_mode() else '#ffffff', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self.window, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas, padding="10")
+        self.qt_handler = QtLogHandler(self.log_signal)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        self.qt_handler.setFormatter(formatter)
+        logging.getLogger().addHandler(self.qt_handler)
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        self.init_ui()
+        self.load_settings()
 
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # Status refresh timer
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.update_status)
+        self.status_timer.start(10000) # Update every 10 seconds
 
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
 
-        # Backup Status Section
-        ttk.Label(scrollable_frame, text="Backup Status", font=("Segoe UI", 12, "bold")).pack(pady=5)
-        self.last_backup_label = ttk.Label(scrollable_frame, text="Last Backup: None", font=("Segoe UI", 10))
-        self.last_backup_label.pack()
-        self.next_backup_label = ttk.Label(scrollable_frame, text="Next Backup: Calculating...", font=("Segoe UI", 10))
-        self.next_backup_label.pack()
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
 
-        ttk.Label(scrollable_frame, text="Pending Replacements", font=("Segoe UI", 12, "bold")).pack(pady=5)
-        self.pending_replacements_label = ttk.Label(scrollable_frame, text="Count: 0", font=("Segoe UI", 10))
-        self.pending_replacements_label.pack()
+        self.setup_status_tab()
+        self.setup_paths_tab()
+        self.setup_schedule_tab()
+        self.setup_planka_tab()
+        self.setup_actions_tab()
+        self.setup_log_tab()
 
-        # Backup Times Section
-        ttk.Label(scrollable_frame, text="Backup Times (HH:MM, 24-hour)", font=("Segoe UI", 10, "bold")).pack(pady=5)
-        self.time1_entry = ttk.Entry(scrollable_frame, width=15)
-        self.time1_entry.insert(0, self.config.BACKUP_TIMES[0])
-        self.time1_entry.pack()
-        self.time2_entry = ttk.Entry(scrollable_frame, width=15)
-        self.time2_entry.insert(0, self.config.BACKUP_TIMES[1])
-        self.time2_entry.pack()
+        # Bottom Buttons
+        button_layout = QHBoxLayout()
+        self.save_btn = QPushButton("Save")
+        self.save_btn.clicked.connect(self.save_settings)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.close)
 
-        ttk.Button(scrollable_frame, text="Save Schedule", command=self.save_schedule).pack(pady=5)
+        button_layout.addStretch()
+        button_layout.addWidget(self.save_btn)
+        button_layout.addWidget(self.cancel_btn)
 
-        # Planka Settings Section
-        ttk.Separator(scrollable_frame, orient='horizontal').pack(fill='x', pady=10)
-        ttk.Label(scrollable_frame, text="Planka Integration", font=("Segoe UI", 12, "bold")).pack(pady=5)
-
-        ttk.Label(scrollable_frame, text="Base URL (e.g. https://your-planka.com):", font=("Segoe UI", 9)).pack(anchor='w', padx=20)
-        self.planka_url_entry = ttk.Entry(scrollable_frame, width=35)
-        self.planka_url_entry.insert(0, self.config.planka_base_url or "")
-        self.planka_url_entry.pack(padx=20)
-
-        ttk.Label(scrollable_frame, text="Username (email address):", font=("Segoe UI", 9)).pack(anchor='w', padx=20, pady=(5,0))
-        self.planka_username_entry = ttk.Entry(scrollable_frame, width=35)
-        self.planka_username_entry.insert(0, self.config.planka_username or "")
-        self.planka_username_entry.pack(padx=20)
-
-        ttk.Label(scrollable_frame, text="Password:", font=("Segoe UI", 9)).pack(anchor='w', padx=20, pady=(5,0))
-        self.planka_password_entry = ttk.Entry(scrollable_frame, width=35, show="*")
-        # Load password from keyring
-        stored_password = get_planka_password(self.config.planka_username)
-        if stored_password:
-            self.planka_password_entry.insert(0, stored_password)
-        self.planka_password_entry.pack(padx=20)
-
-        # Show password toggle
-        self.show_password_var = tk.BooleanVar(value=False)
-        self.show_password_check = ttk.Checkbutton(
-            scrollable_frame, text="Show password",
-            variable=self.show_password_var,
-            command=self.toggle_password_visibility
-        )
-        self.show_password_check.pack(anchor='w', padx=20, pady=(2, 5))
-
-        ttk.Button(scrollable_frame, text="Save Planka Settings", command=self.save_planka_settings).pack(pady=5)
-
-        # Delay Configuration Section
-        ttk.Separator(scrollable_frame, orient='horizontal').pack(fill='x', pady=10)
-        ttk.Label(scrollable_frame, text="Processing Delays", font=("Segoe UI", 12, "bold")).pack(pady=5)
-
-        ttk.Label(scrollable_frame, text="PDF Conversion Delay (seconds):", font=("Segoe UI", 9)).pack(anchor='w', padx=20)
-        self.pdf_delay_entry = ttk.Entry(scrollable_frame, width=15)
-        self.pdf_delay_entry.insert(0, str(self.config.pdf_conversion_delay_seconds))
-        self.pdf_delay_entry.pack(padx=20)
-
-        ttk.Label(scrollable_frame, text="New Folder Delay (seconds):", font=("Segoe UI", 9)).pack(anchor='w', padx=20, pady=(5,0))
-        self.folder_delay_entry = ttk.Entry(scrollable_frame, width=15)
-        self.folder_delay_entry.insert(0, str(self.config.new_folder_delay_seconds))
-        self.folder_delay_entry.pack(padx=20)
-
-        ttk.Button(scrollable_frame, text="Save Delay Settings", command=self.save_delay_settings).pack(pady=5)
-
-        # Action Buttons Section
-        ttk.Separator(scrollable_frame, orient='horizontal').pack(fill='x', pady=10)
-        ttk.Button(scrollable_frame, text="Backup Now", command=lambda: threading.Thread(target=self.app.perform_backup, daemon=True).start()).pack(pady=5)
-        ttk.Button(scrollable_frame, text="Scan Ready Jobs Now", command=lambda: threading.Thread(target=self.app.initial_scan, daemon=True).start()).pack(pady=5)
-        ttk.Button(scrollable_frame, text="Convert PDFs to Dark Mode", command=self.run_dark_mode_conversion).pack(pady=5)
-        ttk.Button(scrollable_frame, text="Force Convert All PDFs", command=self.run_dark_mode_conversion_force).pack(pady=5)
-
-        self.window.withdraw()
-        self.window.update_idletasks()
+        main_layout.addLayout(button_layout)
 
 
-    def toggle_password_visibility(self):
-        """Toggle the visibility of the Planka password entry."""
-        if self.show_password_var.get():
-            self.planka_password_entry.config(show="")
-        else:
-            self.planka_password_entry.config(show="*")
+    def setup_status_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
 
-    def show_window(self):
-        """
-        Reveal the GUI window and pause background file processing.
-        """
-        try:
-            logging.debug("Showing GUI window")
-            self.app.PAUSE_PROCESSING = True
-            logging.info("GUI opened: Pausing file processing.")
-            self.update_status()
-            self.window.deiconify()
-            self.window.update_idletasks()
-            self.window.update()
-            self.window.after(60000, self.update_status_periodic)
-        except Exception as e:
-            logging.error(f"Failed to open GUI: {e}")
-            messagebox.showerror("Error", "Failed to open settings window.")
+        status_group = QGroupBox("Application Status")
+        status_layout = QVBoxLayout()
 
-    def hide_window(self):
-        """
-        Hide the GUI window and resume background file processing operations.
-        """
-        try:
-            logging.debug("Hiding GUI window")
-            self.app.PAUSE_PROCESSING = False
-            logging.info("GUI closed: Resuming file processing.")
-            self.window.withdraw()
-            threading.Thread(target=self.app.initial_scan, daemon=True).start()
-        except Exception as e:
-            logging.error(f"Failed to close GUI: {e}")
+        self.last_backup_label = QLabel("Last Backup: None")
+        self.next_backup_label = QLabel("Next Backup: Calculating...")
+        self.pending_replacements_label = QLabel("Pending Replacements: 0")
+
+        status_layout.addWidget(self.last_backup_label)
+        status_layout.addWidget(self.next_backup_label)
+        status_layout.addWidget(self.pending_replacements_label)
+
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
+        layout.addStretch()
+
+        self.tabs.addTab(tab, "Status")
 
     def update_status(self):
-        """
-        Update the labels reflecting application status (like Last Backup time).
-        Must be called from main thread or via schedule_update.
-        """
-        try:
-            logging.debug("Updating GUI status")
-            if self.app.LAST_BACKUP_TIME:
-                self.last_backup_label.config(text=f"Last Backup: {self.app.LAST_BACKUP_TIME.strftime('%Y-%m-%d %H:%M')}")
-            else:
-                self.last_backup_label.config(text="Last Backup: None")
-            next_time = self.config.get_next_backup_time()
-            self.next_backup_label.config(text=f"Next Backup: {next_time.strftime('%Y-%m-%d %H:%M')}")
-            self.update_pending_replacements_count()
-        except Exception as e:
-            logging.error(f"Failed to update GUI status: {e}")
+        if not self.app_instance:
+            return
 
-    def schedule_update(self):
-        """
-        Thread-safe method to schedule a GUI update on the main thread.
-        """
-        try:
-            self.window.after(0, self.update_status)
-        except Exception as e:
-            logging.error(f"Failed to schedule GUI update: {e}")
+        # Update Backup Status
+        if getattr(self.app_instance, 'LAST_BACKUP_TIME', None):
+            self.last_backup_label.setText(f"Last Backup: {self.app_instance.LAST_BACKUP_TIME.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            self.last_backup_label.setText("Last Backup: None")
 
-    def update_pending_replacements_count(self):
-        """
-        Update the label displaying the number of files awaiting renaming.
-        """
-        try:
-            count = len(self.app.PENDING_RENAMES)
-            self.pending_replacements_label.config(text=f"Count: {count}")
-        except Exception as e:
-            logging.error(f"Failed to update pending replacements count: {e}")
+        next_time = self.config.get_next_backup_time()
+        self.next_backup_label.setText(f"Next Backup: {next_time.strftime('%Y-%m-%d %H:%M')}")
 
-    def update_status_periodic(self):
-        """
-        Periodically polls and updates application status in the GUI window while open.
-        """
-        if self.window.winfo_viewable():
-            self.update_status()
-            self.update_pending_replacements_count()
-            self.window.after(60000, self.update_status_periodic)
+        # Update Pending Replacements
+        if hasattr(self.app_instance, 'pending_queue'):
+            count = self.app_instance.pending_queue.qsize()
+            self.pending_replacements_label.setText(f"Pending Replacements: {count}")
 
-    def save_schedule(self):
-        """
-        Validate and save the user's preferred backup scheduling times.
-        """
-        time1 = self.time1_entry.get().strip()
-        time2 = self.time2_entry.get().strip()
+    def setup_paths_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        form_layout = QFormLayout()
 
-        # Pattern for HH:MM format (24-hour time)
-        time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
+        self.root_dir_input = QLineEdit()
+        self.cnc_subdir_input = QLineEdit()
+        self.backup_dir_input = QLineEdit()
 
-        try:
-            logging.debug(f"Saving schedule: {time1}, {time2}")
+        form_layout.addRow("Root Directory:", self.root_dir_input)
+        form_layout.addRow("CNC Subdirectory:", self.cnc_subdir_input)
+        form_layout.addRow("Backup Destination:", self.backup_dir_input)
 
-            # Validate each time entry
-            for t in [time1, time2]:
-                if t:  # Skip empty entries
-                    # Check format with regex
-                    if not time_pattern.match(t):
-                        messagebox.showerror(
-                            "Invalid Format",
-                            f"Time '{t}' has invalid format.\nExpected format: HH:MM (e.g., 09:30, 14:00)"
-                        )
-                        logging.error(f"Time format validation failed for '{t}'")
-                        return
+        layout.addLayout(form_layout)
 
-                    # Parse and validate hour and minute ranges
-                    try:
-                        hour, minute = map(int, t.split(':'))
-                    except ValueError:
-                        messagebox.showerror(
-                            "Invalid Format",
-                            f"Time '{t}' could not be parsed.\nEnsure hours and minutes are numeric."
-                        )
-                        logging.error(f"Time parsing failed for '{t}'")
-                        return
+        folders_group = QGroupBox("Folders to Backup")
+        folders_layout = QVBoxLayout()
+        self.backup_folders_list = QListWidget()
+        folders_layout.addWidget(self.backup_folders_list)
 
-                    if not (0 <= hour <= 23):
-                        messagebox.showerror(
-                            "Invalid Hour",
-                            f"Hour in '{t}' must be between 0 and 23.\nReceived: {hour}"
-                        )
-                        logging.error(f"Hour validation failed: {hour} not in range 0-23")
-                        return
+        btn_layout = QHBoxLayout()
+        add_folder_btn = QPushButton("Add Folder")
+        add_folder_btn.clicked.connect(self.add_backup_folder)
+        remove_folder_btn = QPushButton("Remove Selected")
+        remove_folder_btn.clicked.connect(self.remove_backup_folder)
 
-                    if not (0 <= minute <= 59):
-                        messagebox.showerror(
-                            "Invalid Minute",
-                            f"Minute in '{t}' must be between 0 and 59.\nReceived: {minute}"
-                        )
-                        logging.error(f"Minute validation failed: {minute} not in range 0-59")
-                        return
+        btn_layout.addWidget(add_folder_btn)
+        btn_layout.addWidget(remove_folder_btn)
+        folders_layout.addLayout(btn_layout)
+        folders_group.setLayout(folders_layout)
 
-            # Ensure at least one time is specified
-            new_times = [t for t in [time1, time2] if t]
-            if not new_times:
-                messagebox.showerror(
-                    "No Times Specified",
-                    "At least one backup time must be specified."
-                )
-                logging.error("No backup times specified")
-                return
+        layout.addWidget(folders_group)
+        self.tabs.addTab(tab, "Paths")
 
-            # Save validated times
-            self.config.BACKUP_TIMES = new_times
-            self.config.save()
-            logging.info(f"Backup schedule updated: {self.config.BACKUP_TIMES}")
-            messagebox.showinfo("Success", "Backup schedule updated successfully.")
-            self.update_status()
+    def setup_schedule_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
 
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save schedule: {e}")
-            logging.error(f"Unexpected error saving schedule: {e}")
+        # Backup Times Group
+        backup_group = QGroupBox("Backup Times")
+        backup_layout = QVBoxLayout()
+        self.backup_times_list = QListWidget()
+        backup_layout.addWidget(self.backup_times_list)
 
-    def save_planka_settings(self):
-        """
-        Validate and save Planka settings with secure password storage via keyring.
-        """
-        try:
-            url = self.planka_url_entry.get().strip()
-            username = self.planka_username_entry.get().strip()
-            password = self.planka_password_entry.get()
+        btn_layout = QHBoxLayout()
+        self.time_edit = QTimeEdit()
+        self.time_edit.setDisplayFormat("HH:mm")
+        add_time_btn = QPushButton("Add Time")
+        add_time_btn.clicked.connect(self.add_backup_time)
+        remove_time_btn = QPushButton("Remove Selected")
+        remove_time_btn.clicked.connect(self.remove_backup_time)
 
-            # Validate URL format
-            if url and not (url.startswith('http://') or url.startswith('https://')):
-                messagebox.showerror(
-                    "Invalid URL",
-                    "Planka URL must start with http:// or https://"
-                )
-                return
+        btn_layout.addWidget(self.time_edit)
+        btn_layout.addWidget(add_time_btn)
+        btn_layout.addWidget(remove_time_btn)
+        backup_layout.addLayout(btn_layout)
+        backup_group.setLayout(backup_layout)
 
-            # Update config
-            self.config.planka_base_url = url if url else None
-            self.config.planka_username = username if username else None
+        # Restart Time
+        form_layout = QFormLayout()
+        self.restart_time_edit = QTimeEdit()
+        self.restart_time_edit.setDisplayFormat("HH:mm")
+        form_layout.addRow("Daily Restart Time:", self.restart_time_edit)
 
-            # Store password securely in Windows Credential Manager
-            if username and password:
-                set_planka_password(username, password)
-                logging.info(f"Planka credentials saved securely for user: {username}")
-            elif username:
-                # Clear password if username exists but password is empty
-                delete_planka_password(username)
-                logging.info(f"Planka password cleared for user: {username}")
+        layout.addWidget(backup_group)
+        layout.addLayout(form_layout)
+        layout.addStretch()
+        self.tabs.addTab(tab, "Schedule")
 
-            self.config.save()
-            logging.info("Planka settings saved successfully")
-            messagebox.showinfo("Success", "Planka settings saved successfully.\nRestart the application for changes to take effect.")
+    def setup_planka_tab(self):
+        tab = QWidget()
+        layout = QFormLayout(tab)
 
-        except Exception as e:
-            logging.error(f"Failed to save Planka settings: {e}")
-            messagebox.showerror("Error", f"Failed to save Planka settings: {e}")
+        self.planka_url_input = QLineEdit()
+        self.planka_user_input = QLineEdit()
+        self.planka_board_input = QLineEdit()
+        self.planka_list_input = QLineEdit()
+        self.planka_pass_input = QLineEdit()
+        self.planka_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
 
-    def save_delay_settings(self):
-        """
-        Validate and save delay configuration settings for background operations.
-        """
-        try:
-            pdf_delay = self.pdf_delay_entry.get().strip()
-            folder_delay = self.folder_delay_entry.get().strip()
+        layout.addRow("Planka Base URL:", self.planka_url_input)
+        layout.addRow("Username:", self.planka_user_input)
+        layout.addRow("Password:", self.planka_pass_input)
+        layout.addRow("Board Identifier:", self.planka_board_input)
+        layout.addRow("List Name:", self.planka_list_input)
 
-            logging.debug(f"Saving delay settings: PDF={pdf_delay}s, Folder={folder_delay}s")
+        self.pdf_delay_spin = QSpinBox()
+        self.pdf_delay_spin.setMaximum(100000)
+        self.folder_delay_spin = QSpinBox()
+        self.folder_delay_spin.setMaximum(100000)
 
-            # Validate PDF delay
+        layout.addRow("PDF Conversion Delay (s):", self.pdf_delay_spin)
+        layout.addRow("New Folder Delay (s):", self.folder_delay_spin)
+
+        self.tabs.addTab(tab, "Planka & Delays")
+
+
+    def setup_actions_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        backup_btn = QPushButton("Backup Now")
+        backup_btn.clicked.connect(self.trigger_backup)
+
+        scan_cnc_btn = QPushButton("Scan CNC Now")
+        scan_cnc_btn.clicked.connect(self.trigger_scan_cnc)
+
+        scan_ready_jobs_btn = QPushButton("Scan Ready Jobs Now")
+        scan_ready_jobs_btn.clicked.connect(self.trigger_scan_ready_jobs)
+
+        convert_pdfs_btn = QPushButton("Convert PDFs to Dark Mode")
+        convert_pdfs_btn.clicked.connect(self.trigger_convert_pdfs)
+
+        force_convert_pdfs_btn = QPushButton("Force Convert All PDFs")
+        force_convert_pdfs_btn.clicked.connect(self.trigger_force_convert_pdfs)
+
+        layout.addWidget(backup_btn)
+        layout.addWidget(scan_cnc_btn)
+        layout.addWidget(scan_ready_jobs_btn)
+        layout.addWidget(convert_pdfs_btn)
+        layout.addWidget(force_convert_pdfs_btn)
+        layout.addStretch()
+
+        self.tabs.addTab(tab, "Actions")
+
+    def trigger_backup(self):
+        if self.app_instance:
+            import threading
+            threading.Thread(target=self.app_instance.perform_backup, daemon=True).start()
+            QMessageBox.information(self, "Backup", "Backup triggered in background.")
+
+    def trigger_scan_cnc(self):
+        if self.app_instance:
+            import threading
+            threading.Thread(target=self.app_instance.scan_cnc_pdfs_for_bad_parts, daemon=True).start()
+            QMessageBox.information(self, "Scan", "CNC Scan triggered in background.")
+
+    def trigger_scan_ready_jobs(self):
+        if self.app_instance:
+            import threading
+            threading.Thread(target=self.app_instance.initial_scan, daemon=True).start()
+            QMessageBox.information(self, "Scan", "Ready Jobs scan triggered in background.")
+
+    def trigger_convert_pdfs(self):
+        if self.app_instance:
+            import threading
+            from ready_jobs_watcher.pdf_dark_mode import process_directory
+            threading.Thread(target=process_directory, args=(self.config.ROOT_DIR, False), daemon=True).start()
+            QMessageBox.information(self, "Convert", "PDF conversion started.")
+
+    def trigger_force_convert_pdfs(self):
+        if self.app_instance:
+            import threading
+            from ready_jobs_watcher.pdf_dark_mode import process_directory
+            threading.Thread(target=process_directory, args=(self.config.ROOT_DIR, True), daemon=True).start()
+            QMessageBox.information(self, "Convert", "Forced PDF conversion started.")
+
+    def setup_log_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.log_output = QTextEdit()
+        self.log_output.setReadOnly(True)
+        layout.addWidget(self.log_output)
+
+        self.tabs.addTab(tab, "Running Log")
+
+    def append_log(self, text):
+        self.log_output.moveCursor(QTextCursor.MoveOperation.End)
+        self.log_output.insertPlainText(text + "\n")
+        self.log_output.moveCursor(QTextCursor.MoveOperation.End)
+
+    def load_settings(self):
+        self.root_dir_input.setText(self.config.ROOT_DIR)
+        self.cnc_subdir_input.setText(self.config.CNC_SUBDIR)
+        self.backup_dir_input.setText(self.config.BACKUP_DIR)
+
+        self.backup_folders_list.clear()
+        self.backup_folders_list.addItems(self.config.BACKUP_FOLDERS)
+
+        self.backup_times_list.clear()
+        self.backup_times_list.addItems(self.config.BACKUP_TIMES)
+
+        h, m = map(int, self.config.daily_restart_time.split(':'))
+        self.restart_time_edit.setTime(QTime(h, m))
+
+        self.planka_url_input.setText(self.config.planka_base_url or "")
+        self.planka_user_input.setText(self.config.planka_username or "")
+
+        # Load password
+        password = ""
+        if self.config.planka_username:
             try:
-                pdf_delay_value = float(pdf_delay)
-                if pdf_delay_value < 0:
-                    messagebox.showerror(
-                        "Invalid Value",
-                        "PDF conversion delay must be a non-negative number."
-                    )
-                    logging.error(f"PDF delay validation failed: {pdf_delay_value} < 0")
-                    return
-            except ValueError:
-                messagebox.showerror(
-                    "Invalid Format",
-                    f"PDF conversion delay '{pdf_delay}' is not a valid number."
-                )
-                logging.error(f"PDF delay parsing failed for '{pdf_delay}'")
-                return
+                password = keyring.get_password(KEYRING_SERVICE, self.config.planka_username) or ""
+            except Exception as e:
+                main_logger.warning(f"Could not load password from keyring: {e}")
+        self.planka_pass_input.setText(password)
 
-            # Validate folder delay
+        self.planka_board_input.setText(self.config.planka_board_identifier)
+        self.planka_list_input.setText(self.config.planka_list_name)
+
+        self.pdf_delay_spin.setValue(self.config.pdf_conversion_delay_seconds)
+        self.folder_delay_spin.setValue(self.config.new_folder_delay_seconds)
+
+    def add_backup_folder(self):
+        folder, ok = QInputDialog.getText(self, "Add Folder", "Enter folder path:")
+        if ok and folder:
+            self.backup_folders_list.addItem(folder)
+
+    def remove_backup_folder(self):
+        row = self.backup_folders_list.currentRow()
+        if row >= 0:
+            self.backup_folders_list.takeItem(row)
+
+    def add_backup_time(self):
+        time_str = self.time_edit.time().toString("HH:mm")
+        # Check if already exists
+        items = [self.backup_times_list.item(i).text() for i in range(self.backup_times_list.count())]
+        if time_str not in items:
+            self.backup_times_list.addItem(time_str)
+
+    def remove_backup_time(self):
+        row = self.backup_times_list.currentRow()
+        if row >= 0:
+            self.backup_times_list.takeItem(row)
+
+    def save_settings(self):
+        self.config.ROOT_DIR = self.root_dir_input.text()
+        self.config.CNC_SUBDIR = self.cnc_subdir_input.text()
+        self.config.BACKUP_DIR = self.backup_dir_input.text()
+
+        self.config.BACKUP_FOLDERS = [self.backup_folders_list.item(i).text() for i in range(self.backup_folders_list.count())]
+        self.config.BACKUP_TIMES = [self.backup_times_list.item(i).text() for i in range(self.backup_times_list.count())]
+
+        self.config.daily_restart_time = self.restart_time_edit.time().toString("HH:mm")
+
+        self.config.planka_base_url = self.planka_url_input.text() or None
+        self.config.planka_username = self.planka_user_input.text() or None
+
+        # Save password
+        password = self.planka_pass_input.text()
+        if self.config.planka_username and password:
             try:
-                folder_delay_value = float(folder_delay)
-                if folder_delay_value < 0:
-                    messagebox.showerror(
-                        "Invalid Value",
-                        "New folder delay must be a non-negative number."
-                    )
-                    logging.error(f"Folder delay validation failed: {folder_delay_value} < 0")
-                    return
-            except ValueError:
-                messagebox.showerror(
-                    "Invalid Format",
-                    f"New folder delay '{folder_delay}' is not a valid number."
-                )
-                logging.error(f"Folder delay parsing failed for '{folder_delay}'")
-                return
+                keyring.set_password(KEYRING_SERVICE, self.config.planka_username, password)
+            except Exception as e:
+                main_logger.error(f"Failed to save password to keyring: {e}")
+                QMessageBox.warning(self, "Warning", "Failed to save Planka password to credential manager.")
+        elif self.config.planka_username and not password:
+            try:
+                keyring.delete_password(KEYRING_SERVICE, self.config.planka_username)
+            except Exception:
+                pass
 
-            # Save validated delays
-            self.config.pdf_conversion_delay_seconds = pdf_delay_value
-            self.config.new_folder_delay_seconds = folder_delay_value
-            self.config.save()
-            logging.info(f"Delay settings updated: PDF={pdf_delay_value}s, Folder={folder_delay_value}s")
-            messagebox.showinfo("Success", "Delay settings updated successfully.\nNew delays will be used for future operations.")
+        self.config.planka_board_identifier = self.planka_board_input.text()
+        self.config.planka_list_name = self.planka_list_input.text()
 
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save delay settings: {e}")
-            logging.error(f"Unexpected error saving delay settings: {e}")
+        self.config.pdf_conversion_delay_seconds = self.pdf_delay_spin.value()
+        self.config.new_folder_delay_seconds = self.folder_delay_spin.value()
 
-    def run_dark_mode_conversion(self):
-        """
-        Trigger an asynchronous PDF dark mode conversion task.
-        """
-        try:
-            from .pdf_dark_mode import run_dark_mode_conversion_async
-            logging.info("User triggered PDF dark mode conversion from GUI")
-            run_dark_mode_conversion_async(dry_run=False, theme="classic", invert_images=True)
-            messagebox.showinfo("PDF Dark Mode Conversion", "PDF dark mode conversion started in background.\nImages will be inverted for Island Wings and COVER SHEET PDFs.\n\nCheck logs for progress.")
-        except Exception as e:
-            logging.error(f"Failed to trigger PDF dark mode conversion: {e}")
-            messagebox.showerror("Error", f"Failed to start PDF dark mode conversion: {e}")
+        self.config.save()
+        QMessageBox.information(self, "Success", "Settings saved successfully.")
 
-    def run_dark_mode_conversion_force(self):
-        """
-        Force convert all PDFs to dark mode, ignoring modification dates and bypassing skips.
-        """
-        try:
-            # Confirm with user since this will reconvert ALL PDFs
-            result = messagebox.askyesno(
-                "Force Convert All PDFs",
-                "This will reconvert ALL PDFs to dark mode, even if they were already converted.\n\n"
-                "This may take a while and will overwrite existing dark mode versions.\n\n"
-                "Continue?"
-            )
+        # Optionally schedule backup update in app_instance if it exists
+        if self.app_instance and hasattr(self.app_instance, 'scheduler'):
+            # In Tkinter version we triggered UI update for next backup.
+            # Here we might need a signal or just let app_instance handle it on its own.
+            pass
 
-            if result:
-                from .pdf_dark_mode import run_dark_mode_conversion_async
-                logging.info("User triggered FORCE PDF dark mode conversion from GUI")
-                run_dark_mode_conversion_async(dry_run=False, theme="classic", force=True, invert_images=True)
-                messagebox.showinfo("Force Convert All PDFs", "Force conversion started in background.\nAll PDFs will be reconverted.\nImages will be inverted for Island Wings and COVER SHEET PDFs.\n\nCheck logs for progress.")
-        except Exception as e:
-            logging.error(f"Failed to trigger force PDF dark mode conversion: {e}")
-            messagebox.showerror("Error", f"Failed to start force conversion: {e}")
+    def show_window(self):
+        if self.app_instance:
+            self.app_instance.PAUSE_PROCESSING = True
+            main_logger.info("Paused background processing while settings are open.")
+        self.update_status()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
-def is_dark_mode():
-    """
-    Determine if the Windows OS is currently using a Dark Mode theme.
+    def closeEvent(self, event):
+        if self.app_instance:
+            self.app_instance.PAUSE_PROCESSING = False
+            main_logger.info("Resumed background processing.")
+        super().closeEvent(event)
 
-    Returns:
-        bool: True if OS is in Dark Mode, False otherwise.
-    """
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
-        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-        return value == 0
-    except Exception:
-        return False
-
-# Secure credential storage functions using Windows Credential Manager
-def get_planka_password(username: str) -> str:
-    """
-    Retrieve a Planka password from the Windows Credential Manager.
-
-    Args:
-        username (str): The Planka username to look up.
-
-    Returns:
-        str: The retrieved password, or an empty string if not found.
-    """
-    if not username:
-        return ""
-    try:
-        return keyring.get_password(KEYRING_SERVICE, username) or ""
-    except Exception as e:
-        logging.error(f"Failed to retrieve Planka password from keyring: {e}")
-        return ""
-
-def set_planka_password(username: str, password: str) -> None:
-    """
-    Securely store a Planka password in the Windows Credential Manager.
-
-    Args:
-        username (str): Planka account username.
-        password (str): Planka account password.
-    """
-    try:
-        keyring.set_password(KEYRING_SERVICE, username, password)
-    except Exception as e:
-        logging.error(f"Failed to store Planka password in keyring: {e}")
-        raise
-
-def delete_planka_password(username: str) -> None:
-    """
-    Remove a stored Planka password from the Windows Credential Manager.
-
-    Args:
-        username (str): The username of the password to delete.
-    """
-    try:
-        keyring.delete_password(KEYRING_SERVICE, username)
-    except keyring.errors.PasswordDeleteError:
-        # Password doesn't exist, which is fine
-        pass
-    except Exception as e:
-        logging.error(f"Failed to delete Planka password from keyring: {e}")
