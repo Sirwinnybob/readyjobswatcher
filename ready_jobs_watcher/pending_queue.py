@@ -42,6 +42,16 @@ class PendingQueue:
 
         self.load()
 
+    def qsize(self) -> int:
+        """
+        Get the total number of pending operations.
+
+        Returns:
+            int: The combined count of pending PDFs and folders.
+        """
+        with self.lock:
+            return len(self.pending_pdfs) + len(self.pending_folders)
+
     def load(self):
         """
         Load pending operations from disk.

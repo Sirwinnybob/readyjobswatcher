@@ -31,7 +31,7 @@ def is_dark_mode_available() -> bool:
         return False
     return True
 
-def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", specific_file: Optional[str] = None, force: bool = False) -> bool:
+def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", specific_file: Optional[str] = None, force: bool = False, invert_images: bool = False) -> bool:
     """
     Run the PDF dark mode converter on the Ready Jobs folder or a specific file.
 
@@ -40,6 +40,7 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
         theme (str): The dark mode theme to use (classic, claude, chatgpt, sepia, midnight, forest).
         specific_file (Optional[str]): If provided, only convert this specific PDF file instead of scanning the entire folder.
         force (bool): If True, reconvert all files regardless of modification date.
+        invert_images (bool): Whether to invert images during conversion.
 
     Returns:
         bool: True if the conversion was successful, False otherwise.
@@ -69,6 +70,9 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
             "--theme", theme,
             "--log-level", "WARNING"
         ]
+
+        if invert_images:
+            cmd.append("--invert-images")
 
         # If converting a specific file, pass it directly; otherwise use quick-scan for the folder
         if specific_file:
@@ -145,7 +149,59 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
         pdf_darkmode_logger.error(f"Failed to run PDF dark mode conversion: {e}", exc_info=True)
         return False
 
-def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic", specific_file: Optional[str] = None, force: bool = False) -> None:
+def should_invert_images(pdf_path: str) -> bool:
+    """
+    Determine if a PDF file should have its images inverted during dark mode conversion.
+
+    Files containing 'ASSEMBLY SHEETS' or 'PLANS & ELEVATIONS' usually require
+    image inversion for optimal readability in dark mode.
+
+    Args:
+        pdf_path (str): Full path to the PDF file.
+
+    Returns:
+        bool: True if images should be inverted, False otherwise.
+    """
+    filename = os.path.basename(pdf_path).upper()
+    if "ASSEMBLY SHEETS" in filename or "PLANS & ELEVATIONS" in filename:
+        pdf_darkmode_logger.debug(f"Image inversion recommended for: {filename}")
+        return True
+    return False
+
+def process_directory(directory_path: str, force: bool = False):
+    """
+    Process all PDFs in a directory (recursive) and convert them to dark mode.
+
+    Args:
+        directory_path (str): Root directory to scan.
+        force (bool): If True, reconvert files even if they've been modified recently.
+    """
+    pdf_darkmode_logger.info(f"Scanning directory for dark mode conversion: {directory_path}")
+    for root, dirs, files in os.walk(directory_path):
+        # Skip DARK MODE folders to avoid loops
+        if "DARK MODE" in [d.upper() for d in root.split(os.sep)]:
+            continue
+
+        for file in files:
+            if file.lower().endswith('.pdf'):
+                # Basic normalization of path style for logging/matching
+                pdf_path = os.path.join(root, file)
+
+                # Use the same logic as the watchers to filter files
+                # (Import locally to avoid circular dependencies if any)
+                from .watchers import PdfChangeHandler
+                # We mock a dummy config just for the delay setting if needed,
+                # but here we can just use the path filtering logic.
+
+                # Simple check for Cut List as in watchers.py
+                if 'cut list' in file.lower():
+                    continue
+
+                # Trigger conversion
+                invert = should_invert_images(pdf_path)
+                run_dark_mode_conversion(specific_file=pdf_path, force=force, invert_images=invert)
+
+def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic", specific_file: Optional[str] = None, force: bool = False, invert_images: bool = False) -> None:
     """
     Run the PDF dark mode converter asynchronously in a separate thread.
 
@@ -156,12 +212,13 @@ def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic"
         theme (str): The dark mode theme to use.
         specific_file (Optional[str]): If provided, only convert this specific PDF file.
         force (bool): If True, reconvert all files regardless of modification date.
+        invert_images (bool): Whether to invert images during conversion.
     """
     import threading
 
     def _run():
         try:
-            run_dark_mode_conversion(dry_run=dry_run, theme=theme, specific_file=specific_file, force=force)
+            run_dark_mode_conversion(dry_run=dry_run, theme=theme, specific_file=specific_file, force=force, invert_images=invert_images)
         except Exception as e:
             pdf_darkmode_logger.error(f"Error in async dark mode conversion: {e}", exc_info=True)
 

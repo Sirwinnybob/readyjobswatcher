@@ -22,6 +22,7 @@ from .utils import clear_old_logs, is_hidden
 from .bad_parts_checker import load_blacklist, load_permanently_ignored_blacklist
 from .watchers import RenameHandler, PdfChangeHandler, LogFileHandler
 from .scheduler import backup_scheduler, cnc_scan_scheduler, stats_logger_scheduler, daily_restart_scheduler
+from PyQt6.QtWidgets import QApplication
 from .gui import SettingsWindow
 from .tray_icon import create_tray_icon
 from .planka_credentials import initialize_planka_credentials
@@ -132,13 +133,6 @@ class Application:
         logging.info("Shutting down application...")
         self.stop_event.set()
 
-        # Safely destroy the root Tkinter window on the main thread if it exists
-        if self.root:
-            try:
-                self.root.after(0, self.root.destroy)
-            except Exception as e:
-                logging.error(f"Error destroying GUI root: {e}")
-
         # Stop observers and wait for them to finish
         observers = [
             ('main_observer', self.observer),
@@ -200,6 +194,9 @@ class Application:
         if hasattr(self, 'qapp') and self.qapp:
             try:
                 self.qapp.quit()
+            except Exception as e:
+                logging.error(f"Error quitting QApplication: {e}")
+
         logging.info("Shutdown complete.")
 
     def restart(self):
