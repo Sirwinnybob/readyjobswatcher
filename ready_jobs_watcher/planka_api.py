@@ -134,7 +134,7 @@ def internal_parse_overload(args: tuple, kwargs: dict, model: str, options: tupl
         kwargs.update(coded_args)
     elif noarg and not kwargs:
         return {**noarg}
-    if not all([arg in kwargs for arg in required]):
+    if not all(arg in kwargs for arg in required):
         raise ValueError(f'Required: {required}')
     return kwargs
 
