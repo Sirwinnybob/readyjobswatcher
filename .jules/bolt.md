@@ -9,3 +9,7 @@ Action: Use PyMuPDF's built-in clipping feature `page.get_pixmap(clip=rect)` to 
 ## 2024-05-24 - Unnecessary List Allocation inside all()
 Learning: Using a list comprehension inside `all()` or `any()` (e.g., `all([x in y for x in z])`) forces Python to evaluate the entire iterable and allocate a list in memory before checking any conditions. This defeats the short-circuiting nature of `all()`.
 Action: Always use generator expressions (e.g., `all(x in y for x in z)`) for such checks. This avoids memory allocation and allows `all()` to return `False` immediately upon encountering the first falsy value, providing significant speedups (over 80% in our benchmarks) and reducing memory overhead.
+
+## 2024-04-08 - Debouncing File Modifications
+Learning: Replacing a combination of non-blocking locks and `time.sleep()` in background worker threads with an event-driven `threading.Timer` in the immediate handler significantly increases the reliability of parsing continuous file events. Sleep-based wait states block the event queue and quietly drop events if modifications continue to arrive within the sleep window.
+Action: Implement `threading.Timer` debouncers at the entrypoint of the filesystem or async event stream. Only dispatch the final aggregated or singular event to the worker thread *after* modifications have ceased for a brief period.
