@@ -136,6 +136,10 @@ class Config:
                         main_logger.warning("No backup config available, using defaults")
                         return
 
+                self.ROOT_DIR = config.get('root_dir', self.ROOT_DIR)
+                self.CNC_SUBDIR = config.get('cnc_subdir', self.CNC_SUBDIR)
+                self.BACKUP_DIR = config.get('backup_dir', self.BACKUP_DIR)
+                self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
                 self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
                 self.planka_base_url = config.get('planka_base_url')
                 self.planka_username = config.get('planka_username')
@@ -156,6 +160,10 @@ class Config:
                     with open(backup_file, 'r') as f:
                         config = json.load(f)
                     if self._validate_config(config):
+                        self.ROOT_DIR = config.get('root_dir', self.ROOT_DIR)
+                        self.CNC_SUBDIR = config.get('cnc_subdir', self.CNC_SUBDIR)
+                        self.BACKUP_DIR = config.get('backup_dir', self.BACKUP_DIR)
+                        self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
                         self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
                         self.planka_base_url = config.get('planka_base_url')
                         self.planka_username = config.get('planka_username')
@@ -187,6 +195,10 @@ class Config:
 
         try:
             config = {
+                'root_dir': self.ROOT_DIR,
+                'cnc_subdir': self.CNC_SUBDIR,
+                'backup_dir': self.BACKUP_DIR,
+                'backup_folders': self.BACKUP_FOLDERS,
                 'backup_times': self.BACKUP_TIMES,
                 'planka_base_url': self.planka_base_url,
                 'planka_username': self.planka_username,
