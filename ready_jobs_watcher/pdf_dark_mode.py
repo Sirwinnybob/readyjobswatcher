@@ -93,6 +93,13 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
             # Output to DARK MODE subfolder with same filename
             output_path = os.path.join(dark_mode_dir, input_filename)
 
+            if not force and os.path.exists(output_path):
+                input_mtime = os.path.getmtime(input_path)
+                output_mtime = os.path.getmtime(output_path)
+                if output_mtime >= input_mtime:
+                    pdf_darkmode_logger.debug(f"Skipping unmodified file: {input_path}")
+                    return True
+
             cmd.extend(["--output", output_path])
 
             # Input file comes last as positional argument
@@ -138,8 +145,9 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
             return True
         else:
             pdf_darkmode_logger.error(f"PDF dark mode conversion failed with return code {result.returncode}")
-            if result.stderr:
-                pdf_darkmode_logger.error(f"Error output: {result.stderr}")
+            error_details = result.stderr if result.stderr else result.stdout
+            if error_details:
+                pdf_darkmode_logger.error(f"Error output: {error_details.strip()}")
             return False
 
     except subprocess.TimeoutExpired:
@@ -153,19 +161,13 @@ def should_invert_images(pdf_path: str) -> bool:
     """
     Determine if a PDF file should have its images inverted during dark mode conversion.
 
-    Files containing 'ASSEMBLY SHEETS' or 'PLANS & ELEVATIONS' usually require
-    image inversion for optimal readability in dark mode.
-
     Args:
         pdf_path (str): Full path to the PDF file.
 
     Returns:
         bool: True if images should be inverted, False otherwise.
     """
-    filename = os.path.basename(pdf_path).upper()
-    if "ASSEMBLY SHEETS" in filename or "PLANS & ELEVATIONS" in filename:
-        pdf_darkmode_logger.debug(f"Image inversion recommended for: {filename}")
-        return True
+    # Image inversion has been requested to be completely disabled for Assembly Sheets and Plans
     return False
 
 def process_directory(directory_path: str, force: bool = False):
@@ -187,14 +189,17 @@ def process_directory(directory_path: str, force: bool = False):
                 # Basic normalization of path style for logging/matching
                 pdf_path = os.path.join(root, file)
 
-                # Use the same logic as the watchers to filter files
-                # (Import locally to avoid circular dependencies if any)
-                from .watchers import PdfChangeHandler
-                # We mock a dummy config just for the delay setting if needed,
-                # but here we can just use the path filtering logic.
+                # Check if the filename belongs to the allowed list (case-insensitive)
+                filename_upper = os.path.basename(pdf_path).upper()
+                allowed_sheets = ["DELIVERY SHEET", "ASSEMBLY SHEET", "PLANS & ELEVATIONS"]
+                is_allowed = any(sheet in filename_upper for sheet in allowed_sheets)
+                
+                if not is_allowed:
+                    continue
 
-                # Simple check for Cut List as in watchers.py
-                if 'cut list' in file.lower():
+                # Use the same CNC check as watchers.py
+                normalized_path = pdf_path.replace('/', '\\')
+                if '\\CNC\\' in normalized_path or normalized_path.endswith('\\CNC'):
                     continue
 
                 # Trigger conversion

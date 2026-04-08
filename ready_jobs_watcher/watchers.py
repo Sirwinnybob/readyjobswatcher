@@ -298,10 +298,13 @@ class PdfChangeHandler(FileSystemEventHandler):
         # Normalize path separators
         normalized_path = pdf_path.replace('/', '\\')
 
-        # Check if the filename contains "Cut List" (case-insensitive)
-        filename = os.path.basename(pdf_path).lower()
-        if 'cut list' in filename:
-            main_logger.debug(f"Skipping dark mode conversion for Cut List PDF: {pdf_path}")
+        # Check if the filename belongs to the allowed list (case-insensitive)
+        filename_upper = os.path.basename(pdf_path).upper()
+        allowed_sheets = ["DELIVERY SHEET", "ASSEMBLY SHEET", "PLANS & ELEVATIONS"]
+        is_allowed = any(sheet in filename_upper for sheet in allowed_sheets)
+        
+        if not is_allowed:
+            main_logger.debug(f"Skipping dark mode conversion for unapproved PDF type: {pdf_path}")
             return False
 
         # Check if the PDF is in a CNC subfolder

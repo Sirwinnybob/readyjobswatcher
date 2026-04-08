@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 from .utils import is_hidden, set_hidden_attribute, delete_codebase_folders, log_system_stats
 from .file_handler import JobProcessor
 from .config import Config
-from .pdf_dark_mode import run_dark_mode_conversion
 
 main_logger = logging.getLogger('main')
 
@@ -44,7 +43,8 @@ def perform_backup(config: Config, app: 'Application') -> None:
     # Run PDF dark mode conversion before backup
     backup_logger.info("Running PDF dark mode conversion before backup...")
     try:
-        run_dark_mode_conversion(dry_run=False, theme="classic", invert_images=True)
+        from .pdf_dark_mode import process_directory
+        process_directory(config.ROOT_DIR, force=False)
     except Exception as e:
         backup_logger.error(f"PDF dark mode conversion failed, continuing with backup: {e}")
 

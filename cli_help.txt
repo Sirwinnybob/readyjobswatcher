@@ -1,0 +1,62 @@
+usage: cli.py [-h] [-o OUTPUT] [--test] [--batch] [--quick-scan]
+              [--theme {classic,claude,chatgpt,sepia,midnight,forest}]
+              [--dry-run] [--force] [--invert-images]
+              [--invert-images-filter INVERT_IMAGES_FILTER] [--config CONFIG]
+              [--log-level {DEBUG,INFO,WARNING,ERROR}] [--version]
+              [input]
+
+Convert PDFs to dark mode (vector-based, preserves text quality)
+
+positional arguments:
+  input                 Input PDF file or folder (for batch mode, not needed
+                        with --quick-scan)
+
+options:
+  -h, --help            show this help message and exit
+  -o, --output OUTPUT   Output PDF file (for single file conversion)
+  --test                Test mode: convert input file and auto-name output as
+                        input_dark.pdf (quick testing)
+  --batch               Batch mode: process all PDFs in input folder
+                        recursively
+  --quick-scan          Quick scan: use the quick_scan_path from config.json
+                        (automatically enables --batch)
+  --theme {classic,claude,chatgpt,sepia,midnight,forest}
+                        Dark mode theme to use (default: classic)
+  --dry-run             Dry run: show what would be converted without actually
+                        converting
+  --force               Force reconvert all PDFs, even if output is newer than
+                        source
+  --invert-images       Invert raster images (white becomes black, black
+                        becomes white). Use for PDFs with white background
+                        images.
+  --invert-images-filter INVERT_IMAGES_FILTER
+                        Only invert images in PDFs whose filename contains
+                        this text (e.g., "COVER SHEET" or "DELIVERY"). Case-
+                        insensitive. Implies --invert-images.
+  --config CONFIG       Path to config.json file
+  --log-level {DEBUG,INFO,WARNING,ERROR}
+                        Logging level (default: INFO)
+  --version             show program's version number and exit
+
+Examples:
+  # Convert a single PDF
+  python cli.py input.pdf -o output.pdf
+
+  # Batch convert a folder
+  python cli.py /path/to/jobs --batch
+
+  # Use a different theme
+  python cli.py input.pdf -o output.pdf --theme claude
+
+  # Dry run to see what would be converted
+  python cli.py /path/to/jobs --batch --dry-run
+
+  # Quick scan configured folder
+  python cli.py --quick-scan
+
+  # Test mode - quick single file conversion (auto-names output)
+  python cli.py --test input.pdf
+
+  # Use custom config file
+  python cli.py input.pdf -o output.pdf --config my_config.json
+        
