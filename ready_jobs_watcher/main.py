@@ -132,6 +132,13 @@ class Application:
         logging.info("Shutting down application...")
         self.stop_event.set()
 
+        # Safely destroy the root Tkinter window on the main thread if it exists
+        if self.root:
+            try:
+                self.root.after(0, self.root.destroy)
+            except Exception as e:
+                logging.error(f"Error destroying GUI root: {e}")
+
         # Stop observers and wait for them to finish
         observers = [
             ('main_observer', self.observer),
@@ -190,13 +197,82 @@ class Application:
             except Exception as e:
                 logging.error(f"Error stopping tray icon: {e}")
 
-        if self.root:
-            try:
-                self.root.destroy()
-            except Exception as e:
-                logging.error(f"Error destroying GUI root: {e}")
-
         logging.info("Shutdown complete.")
+
+    def restart(self):
+        """
+        Safely restarts the application.
+
+        This method stops background threads, explicitly releases the single-instance
+        lock, starts a new process of the application, and then forcefully exits
+        the current process to avoid Tkinter deadlocks during shutdown.
+        """
+        import subprocess
+
+        logging.info("Initiating safe application restart...")
+
+        # Stop background loops from doing more work
+        self.stop_event.set()
+
+        # Give pending operations a moment to save
+        time.sleep(2)
+
+        # Cleanly hide the tray icon to prevent ghost icons on Windows
+        if self.icon:
+            try:
+                self.icon.stop()
+            except Exception as e:
+                logging.error(f"Error stopping tray icon during restart: {e}")
+
+        # Release the lock file so the new instance doesn't think we're still running
+        self.release_lock()
+
+        # Start a new instance
+        try:
+            if getattr(sys, 'frozen', False):
+                # Running as compiled executable
+                executable = sys.executable
+                args = [executable]
+            else:
+                # Running as script
+                executable = sys.executable
+                args = [executable] + sys.argv
+
+            # Use subprocess.Popen to start a new process
+            # DETACHED_PROCESS flag ensures the new process is independent
+            if os.name == 'nt':
+                # Windows
+                DETACHED_PROCESS = 0x00000008
+                subprocess.Popen(
+                    args,
+                    creationflags=DETACHED_PROCESS,
+                    close_fds=True,
+                    start_new_session=True
+                )
+            else:
+                # Unix-like
+                subprocess.Popen(
+                    args,
+                    start_new_session=True,
+                    close_fds=True
+                )
+
+            logging.info("New instance started. Exiting current process forcefully.")
+
+            # Force exit completely bypassing Tkinter cleanup which deadlocks on background threads
+            os._exit(0)
+
+        except Exception as e:
+            logging.error(f"Failed to spawn new process during restart: {e}")
+            # If we failed to spawn, try to restore normal operation by un-setting the stop event
+            self.stop_event.clear()
+            # Try to re-acquire the lock
+            self.acquire_lock()
+            # Restart tray icon
+            if self.settings_window and self.config:
+                self.icon = create_tray_icon(self.settings_window, self.config, self)
+                self.tray_thread = threading.Thread(target=self.icon.run, daemon=True)
+                self.tray_thread.start()
 
     def _is_process_running(self, pid):
         """

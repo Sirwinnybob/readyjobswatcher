@@ -295,53 +295,12 @@ def daily_restart_scheduler(config: Config, stop_event: threading.Event, app: 'A
             except Exception as e:
                 main_logger.error(f"Error logging stats before restart: {e}")
 
-            # Give some time for pending operations to be saved
-            time.sleep(2)
-
             main_logger.info("Restarting application...")
 
-            # Get the executable path
-            if getattr(sys, 'frozen', False):
-                # Running as compiled executable
-                executable = sys.executable
-                args = [executable]
-            else:
-                # Running as script
-                executable = sys.executable
-                args = [executable] + sys.argv
-
-            # Stop the current application cleanly
             try:
-                app.stop()
+                app.restart()
             except Exception as e:
-                main_logger.error(f"Error during clean shutdown: {e}")
-
-            # Start a new instance
-            try:
-                # Use subprocess.Popen to start a new process
-                # DETACHED_PROCESS flag ensures the new process is independent
-                if os.name == 'nt':
-                    # Windows
-                    DETACHED_PROCESS = 0x00000008
-                    subprocess.Popen(
-                        args,
-                        creationflags=DETACHED_PROCESS,
-                        close_fds=True,
-                        start_new_session=True
-                    )
-                else:
-                    # Unix-like
-                    subprocess.Popen(
-                        args,
-                        start_new_session=True,
-                        close_fds=True
-                    )
-
-                main_logger.info("New instance started. Exiting current process.")
-                os._exit(0)  # Force exit without cleanup (already done)
-
-            except Exception as e:
-                main_logger.error(f"Failed to restart application: {e}")
+                main_logger.error(f"Failed to restart application via app.restart(): {e}")
                 # Continue running if restart fails
                 continue
 
