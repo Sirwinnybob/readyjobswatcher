@@ -1,3 +1,6 @@
+## 2024-05-18 - Prevent ThreadPoolExecutor Exhaustion
+Learning: Using `time.sleep()` inside tasks submitted to a `ThreadPoolExecutor` blocks worker threads. If many delayed tasks are scheduled, this can easily exhaust the pool (e.g., 20 workers blocked on 20-minute sleeps), stalling the entire application.
+Action: Use `threading.Timer` to offload the wait time to a lightweight daemon thread. The timer's callback should then submit the actual processing work to the `ThreadPoolExecutor`. This keeps the thread pool fully available for actual computational/IO work.
 ## 2024-06-25 - [Performance] Use os.scandir instead of os.walk
 Learning: `os.walk` gathers lists of all items per directory, causing massive overhead on heavy/deep network directories. An iterative stack using `os.scandir` allows us to omit subdirectories dynamically or evaluate `.is_dir()` immediately without separate `stat()` calls.
 Action: Whenever a deep directory tree scan exists (`delete_codebase_folders`, `cleanup_nested_dark_mode_folders`), replace `os.walk` with an iterative `os.scandir` stack pattern.

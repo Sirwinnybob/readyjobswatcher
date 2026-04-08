@@ -72,10 +72,9 @@ class RenameHandler(FileSystemEventHandler):
         if self.pending_queue:
             self.pending_queue.add_pending_folder(folder_path, scheduled_time)
 
-        # Background task to process the folder after the delay
-        def _delayed_process():
+        # Actual task to process the folder
+        def _process_task():
             try:
-                time.sleep(self._folder_delay_seconds)
                 # Check if still scheduled (might have been cancelled)
                 should_process = False
                 with self._pending_folders_lock:
@@ -94,12 +93,19 @@ class RenameHandler(FileSystemEventHandler):
             except Exception as e:
                 main_logger.error(f"Error in delayed folder processing for {folder_path}: {e}", exc_info=True)
 
-        # Use executor if available, fallback to thread if not
-        if self.executor:
-            self.executor.submit(_delayed_process)
-        else:
-            thread = threading.Thread(target=_delayed_process, daemon=True, name=f"DelayedFolderProcess-{os.path.basename(folder_path)}")
-            thread.start()
+        def _timer_callback():
+            # Submit actual processing to executor or run in thread
+            if self.executor:
+                self.executor.submit(_process_task)
+            else:
+                thread = threading.Thread(target=_process_task, daemon=True, name=f"DelayedFolderProcess-{os.path.basename(folder_path)}")
+                thread.start()
+
+        # Use a timer to wait outside of the thread pool
+        timer = threading.Timer(self._folder_delay_seconds, _timer_callback)
+        timer.name = f"Timer-FolderProcess-{os.path.basename(folder_path)}"
+        timer.daemon = True
+        timer.start()
 
     def on_created(self, event):
         """
@@ -253,10 +259,8 @@ class PdfChangeHandler(FileSystemEventHandler):
         delay_seconds = self._cooldown_seconds
         main_logger.info(f"Scheduling PDF conversion in {delay_seconds}s: {os.path.basename(pdf_path)}")
 
-        def _delayed_convert():
+        def _convert_task():
             try:
-                main_logger.debug(f"Waiting {delay_seconds}s before converting: {os.path.basename(pdf_path)}")
-                time.sleep(delay_seconds)
                 main_logger.info(f"Wait complete, starting conversion: {os.path.basename(pdf_path)}")
 
                 # Check if file still exists before converting
@@ -276,12 +280,20 @@ class PdfChangeHandler(FileSystemEventHandler):
             except Exception as e:
                 main_logger.error(f"Error in delayed PDF conversion thread for {pdf_path}: {e}", exc_info=True)
 
-        # Use executor if available, fallback to thread if not
-        if self.executor:
-            self.executor.submit(_delayed_convert)
-        else:
-            thread = threading.Thread(target=_delayed_convert, daemon=True, name=f"DelayedPDFConvert-{os.path.basename(pdf_path)}")
-            thread.start()
+        def _timer_callback():
+            # Submit actual processing to executor or run in thread
+            if self.executor:
+                self.executor.submit(_convert_task)
+            else:
+                thread = threading.Thread(target=_convert_task, daemon=True, name=f"DelayedPDFConvert-{os.path.basename(pdf_path)}")
+                thread.start()
+
+        main_logger.debug(f"Waiting {delay_seconds}s before converting: {os.path.basename(pdf_path)}")
+        # Use a timer to wait outside of the thread pool
+        timer = threading.Timer(delay_seconds, _timer_callback)
+        timer.name = f"Timer-PDFConvert-{os.path.basename(pdf_path)}"
+        timer.daemon = True
+        timer.start()
 
     def _should_convert_to_dark_mode(self, pdf_path: str) -> bool:
         """
