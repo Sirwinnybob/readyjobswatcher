@@ -11,8 +11,8 @@ if exist build rmdir /s /q build
 echo.
 
 REM Build the executable
-echo Building executable with PyInstaller...
-pyinstaller ready_jobs_watcher.spec
+echo Building executable with PyInstaller from venv...
+.venv\Scripts\pyinstaller ready_jobs_watcher.spec
 echo.
 
 if exist "dist\ReadyJobsWatcher\ReadyJobsWatcher.exe" (
