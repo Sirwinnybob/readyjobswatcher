@@ -18,7 +18,7 @@ from .bad_parts_checker import (
     BLACKLIST_LOCK, PERMANENTLY_IGNORED_LOCK
 )
 from .file_handler import should_ignore_folder, should_ignore_file
-from .utils import is_hidden
+from .utils import is_hidden, ALLOWED_SHEETS_PATTERN
 
 
 main_logger = logging.getLogger('main')
@@ -311,9 +311,7 @@ class PdfChangeHandler(FileSystemEventHandler):
         normalized_path = pdf_path.replace('/', '\\')
 
         # Check if the filename belongs to the allowed list (case-insensitive)
-        filename_upper = os.path.basename(pdf_path).upper()
-        allowed_sheets = ["DELIVERY SHEET", "ASSEMBLY SHEET", "PLANS & ELEVATIONS"]
-        is_allowed = any(sheet in filename_upper for sheet in allowed_sheets)
+        is_allowed = ALLOWED_SHEETS_PATTERN.search(os.path.basename(pdf_path))
         
         if not is_allowed:
             main_logger.debug(f"Skipping dark mode conversion for unapproved PDF type: {pdf_path}")

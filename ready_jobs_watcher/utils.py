@@ -9,8 +9,12 @@ import ctypes
 import os
 import shutil
 import datetime
+import re
 
 from .config import BASE_DATA_DIR
+
+# Allowed PDF sheets for dark mode conversion
+ALLOWED_SHEETS_PATTERN = re.compile(r'DELIVERY SHEET|ASSEMBLY SHEET|PLANS & ELEVATIONS', re.IGNORECASE)
 
 def is_hidden(folder_path):
     """
