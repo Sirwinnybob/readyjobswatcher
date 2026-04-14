@@ -9,6 +9,7 @@ import os
 import subprocess
 import logging
 from typing import Optional
+from .utils import ALLOWED_SHEETS_PATTERN
 
 pdf_darkmode_logger = logging.getLogger('pdf_darkmode')
 
@@ -190,9 +191,7 @@ def process_directory(directory_path: str, force: bool = False):
                 pdf_path = os.path.join(root, file)
 
                 # Check if the filename belongs to the allowed list (case-insensitive)
-                filename_upper = os.path.basename(pdf_path).upper()
-                allowed_sheets = ["DELIVERY SHEET", "ASSEMBLY SHEET", "PLANS & ELEVATIONS"]
-                is_allowed = any(sheet in filename_upper for sheet in allowed_sheets)
+                is_allowed = ALLOWED_SHEETS_PATTERN.search(os.path.basename(pdf_path))
                 
                 if not is_allowed:
                     continue

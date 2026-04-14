@@ -1,8 +1,9 @@
 import os
 import shutil
+import re
 
 TARGET_DIR = r"Y:\Ready Jobs"
-ALLOWED_SHEETS = ["DELIVERY SHEET", "ASSEMBLY SHEET", "PLANS & ELEVATIONS"]
+ALLOWED_PATTERN = re.compile(r'DELIVERY SHEET|ASSEMBLY SHEET|PLANS & ELEVATIONS', re.IGNORECASE)
 
 def cleanup_unapproved_dark_mode_files():
     deleted_files = 0
@@ -15,10 +16,7 @@ def cleanup_unapproved_dark_mode_files():
         if os.path.basename(root).upper() == "DARK MODE":
             for file in files:
                 if file.lower().endswith('.pdf'):
-                    filename_upper = file.upper()
-                    is_allowed = any(sheet in filename_upper for sheet in ALLOWED_SHEETS)
-                    
-                    if not is_allowed:
+                    if not ALLOWED_PATTERN.search(file):
                         file_path = os.path.join(root, file)
                         try:
                             os.remove(file_path)
