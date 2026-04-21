@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QListWidget, QTimeEdit, QSpinBox, QTextEdit, QMessageBox,
     QFormLayout, QGroupBox, QInputDialog, QApplication
 )
-from PyQt6.QtCore import Qt, QTime, QObject, pyqtSignal
+from PyQt6.QtCore import QTime, QObject, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtCore import QTimer
 import keyring
