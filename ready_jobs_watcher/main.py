@@ -10,7 +10,6 @@ import threading
 import logging
 import time
 import atexit
-import msvcrt
 
 from watchdog.observers import Observer
 from concurrent.futures import ThreadPoolExecutor
