@@ -9,9 +9,9 @@ import logging
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTabWidget, QListWidget, QTimeEdit, QSpinBox, QTextEdit, QMessageBox,
-    QFormLayout, QGroupBox, QInputDialog, QApplication
+    QFormLayout, QGroupBox, QInputDialog
 )
-from PyQt6.QtCore import Qt, QTime, QObject, pyqtSignal
+from PyQt6.QtCore import QTime, QObject, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtCore import QTimer
 import keyring

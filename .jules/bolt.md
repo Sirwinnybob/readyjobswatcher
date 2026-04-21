@@ -20,3 +20,9 @@ Action: Implement `threading.Timer` debouncers at the entrypoint of the filesyst
 ## 2024-05-18 - Pending Queue Timer Benchmark
 Learning: While the actual ThreadPoolExecutor fix was already implemented (using `threading.Timer` instead of `time.sleep()`), proving the performance difference is best done with a controlled mock benchmark test that isolates the asynchronous queueing behavior and times the execution without IO boundaries.
 Action: Write focused integration benchmarks for threading fixes to empirically prove performance without requiring heavy mock scaffolding of external dependencies.
+## 2024-05-30 - Optimize os.walk with os.scandir
+Learning: Using `os.walk` in conjunction with `[d.upper() for d in root.split(os.sep)]` to ignore specific directories during traversal is inefficient. `os.walk` will still walk the subdirectories of the ignored folders if the `dirs` list is not mutated in-place.
+Action: For deep or recursive scans where specific directories should be skipped, use an iterative `os.scandir` stack pattern. This avoids full list allocation, reduces redundant system `stat()` overhead via `DirEntry` attributes, and allows skipping ignored directories entirely without traversing them.
+## 2024-05-30 - Optimize os.walk with os.scandir
+Learning: Using `os.walk` in conjunction with `[d.upper() for d in root.split(os.sep)]` to ignore specific directories during traversal is inefficient. `os.walk` will still walk the subdirectories of the ignored folders if the `dirs` list is not mutated in-place.
+Action: For deep or recursive scans where specific directories should be skipped, use an iterative `os.scandir` stack pattern. This avoids full list allocation, reduces redundant system `stat()` overhead via `DirEntry` attributes, and allows skipping ignored directories entirely without traversing them.
