@@ -16,3 +16,7 @@ Action: Always use generator expressions (e.g., `all(x in y for x in z)`) for su
 ## 2024-04-08 - Debouncing File Modifications
 Learning: Replacing a combination of non-blocking locks and `time.sleep()` in background worker threads with an event-driven `threading.Timer` in the immediate handler significantly increases the reliability of parsing continuous file events. Sleep-based wait states block the event queue and quietly drop events if modifications continue to arrive within the sleep window.
 Action: Implement `threading.Timer` debouncers at the entrypoint of the filesystem or async event stream. Only dispatch the final aggregated or singular event to the worker thread *after* modifications have ceased for a brief period.
+
+## 2024-05-18 - Pending Queue Timer Benchmark
+Learning: While the actual ThreadPoolExecutor fix was already implemented (using `threading.Timer` instead of `time.sleep()`), proving the performance difference is best done with a controlled mock benchmark test that isolates the asynchronous queueing behavior and times the execution without IO boundaries.
+Action: Write focused integration benchmarks for threading fixes to empirically prove performance without requiring heavy mock scaffolding of external dependencies.
