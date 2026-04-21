@@ -360,21 +360,26 @@ class PendingQueue:
                 pdf_handler._conversion_cooldown[pdf_path] = current_time
 
             # Schedule the conversion with remaining delay
-            def _delayed_convert(path=pdf_path, invert=invert_images, delay=time_remaining):
+            def _convert_task(path=pdf_path, invert=invert_images):
                 try:
-                    time.sleep(delay)
                     from .pdf_dark_mode import run_dark_mode_conversion
                     run_dark_mode_conversion(specific_file=path, invert_images=invert)
                     self.remove_pending_pdf(path)
                 except Exception as e:
                     pending_queue_logger.error(f"Error in resumed PDF conversion for {path}: {e}", exc_info=True)
 
-            # Use executor if available, fallback to thread
-            if self.executor:
-                self.executor.submit(_delayed_convert)
-            else:
-                thread = threading.Thread(target=_delayed_convert, daemon=True, name=f"ResumedPDF-{os.path.basename(pdf_path)}")
-                thread.start()
+            def _timer_callback(task=_convert_task, path=pdf_path):
+                if self.executor:
+                    self.executor.submit(task)
+                else:
+                    thread = threading.Thread(target=task, daemon=True, name=f"ResumedPDF-{os.path.basename(path)}")
+                    thread.start()
+
+            # Use a timer to wait outside of the thread pool
+            timer = threading.Timer(time_remaining, _timer_callback)
+            timer.name = f"Timer-ResumedPDF-{os.path.basename(pdf_path)}"
+            timer.daemon = True
+            timer.start()
 
         # Resume pending folder processing
         folders_to_resume = self.get_all_pending_folders()
@@ -400,9 +405,8 @@ class PendingQueue:
                 rename_handler._pending_folders[folder_path] = scheduled_time
 
             # Schedule the processing with remaining delay
-            def _delayed_process(path=folder_path, delay=time_remaining, job_processor=rename_handler.job_processor, handler=rename_handler):
+            def _process_task(path=folder_path, job_processor=rename_handler.job_processor, handler=rename_handler):
                 try:
-                    time.sleep(delay)
                     pending_queue_logger.info(f"Processing resumed folder: {path}")
                     # Thread-safe access to pending folders
                     with handler._pending_folders_lock:
@@ -413,12 +417,18 @@ class PendingQueue:
                 except Exception as e:
                     pending_queue_logger.error(f"Error in resumed folder processing for {path}: {e}", exc_info=True)
 
-            # Use executor if available, fallback to thread
-            if self.executor:
-                self.executor.submit(_delayed_process)
-            else:
-                thread = threading.Thread(target=_delayed_process, daemon=True, name=f"ResumedFolder-{os.path.basename(folder_path)}")
-                thread.start()
+            def _timer_callback(task=_process_task, path=folder_path):
+                if self.executor:
+                    self.executor.submit(task)
+                else:
+                    thread = threading.Thread(target=task, daemon=True, name=f"ResumedFolder-{os.path.basename(path)}")
+                    thread.start()
+
+            # Use a timer to wait outside of the thread pool
+            timer = threading.Timer(time_remaining, _timer_callback)
+            timer.name = f"Timer-ResumedFolder-{os.path.basename(folder_path)}"
+            timer.daemon = True
+            timer.start()
 
         if pdfs_to_resume or folders_to_resume:
             pending_queue_logger.info(f"Resumed {len(pdfs_to_resume)} PDF conversions and {len(folders_to_resume)} folder operations")
