@@ -180,30 +180,43 @@ def process_directory(directory_path: str, force: bool = False):
         force (bool): If True, reconvert files even if they've been modified recently.
     """
     pdf_darkmode_logger.info(f"Scanning directory for dark mode conversion: {directory_path}")
-    for root, dirs, files in os.walk(directory_path):
-        # Skip DARK MODE folders to avoid loops
-        if "DARK MODE" in [d.upper() for d in root.split(os.sep)]:
-            continue
 
-        for file in files:
-            if file.lower().endswith('.pdf'):
-                # Basic normalization of path style for logging/matching
-                pdf_path = os.path.join(root, file)
+    # Check if the base directory itself is in a DARK MODE folder
+    if "DARK MODE" in [d.upper() for d in directory_path.split(os.sep)]:
+        return
 
-                # Check if the filename belongs to the allowed list (case-insensitive)
-                is_allowed = ALLOWED_SHEETS_PATTERN.search(os.path.basename(pdf_path))
-                
-                if not is_allowed:
-                    continue
+    # Use an iterative os.scandir stack for better performance than os.walk
+    stack = [directory_path]
 
-                # Use the same CNC check as watchers.py
-                normalized_path = pdf_path.replace('/', '\\')
-                if '\\CNC\\' in normalized_path or normalized_path.endswith('\\CNC'):
-                    continue
+    while stack:
+        current_dir = stack.pop()
+        try:
+            with os.scandir(current_dir) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name.upper() != "DARK MODE":
+                            stack.append(entry.path)
+                    elif entry.is_file() and entry.name.lower().endswith('.pdf'):
+                        pdf_path = entry.path
 
-                # Trigger conversion
-                invert = should_invert_images(pdf_path)
-                run_dark_mode_conversion(specific_file=pdf_path, force=force, invert_images=invert)
+                        # Check if the filename belongs to the allowed list (case-insensitive)
+                        is_allowed = ALLOWED_SHEETS_PATTERN.search(entry.name)
+
+                        if not is_allowed:
+                            continue
+
+                        # Use the same CNC check as watchers.py
+                        normalized_path = pdf_path.replace('/', '\\')
+                        if '\\CNC\\' in normalized_path or normalized_path.endswith('\\CNC'):
+                            continue
+
+                        # Trigger conversion
+                        invert = should_invert_images(pdf_path)
+                        run_dark_mode_conversion(specific_file=pdf_path, force=force, invert_images=invert)
+        except PermissionError:
+            pdf_darkmode_logger.warning(f"Permission denied accessing directory for dark mode scanning: {current_dir}")
+        except OSError as e:
+            pdf_darkmode_logger.error(f"Error accessing directory for dark mode scanning {current_dir}: {e}")
 
 def run_dark_mode_conversion_async(dry_run: bool = False, theme: str = "classic", specific_file: Optional[str] = None, force: bool = False, invert_images: bool = False) -> None:
     """
