@@ -1,0 +1,362 @@
+{
+  "actions": [
+    {
+      "action": "complete",
+      "file": "123 - 1_2 Baltic Birch Pre_Finished.pdf",
+      "fileFingerprint": "618395_1777661073689",
+      "page": 1,
+      "timestamp": "2026-05-04T14:21:46.255202Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_2 Baltic Birch Pre_Finished.pdf",
+      "fileFingerprint": "618395_1777661073689",
+      "page": 2,
+      "timestamp": "2026-05-04T14:21:55.193547Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_2 Baltic Birch Pre_Finished.pdf",
+      "fileFingerprint": "618395_1777661073689",
+      "page": 3,
+      "timestamp": "2026-05-04T14:21:57.787008Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_2 Baltic Birch Pre_Finished.pdf",
+      "fileFingerprint": "618395_1777661073689",
+      "page": 4,
+      "timestamp": "2026-05-04T14:22:00.506355Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_2 Baltic Birch Pre_Finished.pdf",
+      "fileFingerprint": "618395_1777661073689",
+      "page": 5,
+      "timestamp": "2026-05-04T14:22:05.305730Z"
+    },
+    {
+      "action": "uncomplete",
+      "file": "123 - 1_2 Baltic Birch Pre_Finished.pdf",
+      "fileFingerprint": "618395_1777661073689",
+      "page": 5,
+      "timestamp": "2026-05-04T14:22:09.538543Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 1,
+      "timestamp": "2026-05-04T14:22:30.638905Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 2,
+      "timestamp": "2026-05-04T14:22:30.919803Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 3,
+      "timestamp": "2026-05-04T14:22:33.747329Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 4,
+      "timestamp": "2026-05-04T14:22:35.639820Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 5,
+      "timestamp": "2026-05-04T14:22:37.567326Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 20,
+      "timestamp": "2026-05-04T14:22:54.781025Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 21,
+      "timestamp": "2026-05-04T14:22:55.981143Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 MDF.pdf",
+      "fileFingerprint": "204050_1777585693314",
+      "page": 1,
+      "timestamp": "2026-05-04T14:23:05.261384Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 MDF.pdf",
+      "fileFingerprint": "204050_1777585693314",
+      "page": 2,
+      "timestamp": "2026-05-04T14:23:06.980351Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 MDF.pdf",
+      "fileFingerprint": "204050_1777585693314",
+      "page": 3,
+      "timestamp": "2026-05-04T14:23:07.805941Z"
+    },
+    {
+      "action": "skip",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 21,
+      "timestamp": "2026-05-04T14:43:22.747181Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 6,
+      "timestamp": "2026-05-04T15:15:31.669543Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 7,
+      "timestamp": "2026-05-04T15:37:19.763450Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 8,
+      "timestamp": "2026-05-04T15:49:29.366316Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 9,
+      "timestamp": "2026-05-04T15:57:31.750153Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 10,
+      "timestamp": "2026-05-04T16:08:45.354372Z"
+    },
+    {
+      "action": "uncomplete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 21,
+      "timestamp": "2026-05-04T16:09:21.065270Z"
+    },
+    {
+      "action": "unskip",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 21,
+      "timestamp": "2026-05-04T16:09:25.287322Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 21,
+      "timestamp": "2026-05-04T16:09:37.993329Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 11,
+      "timestamp": "2026-05-04T16:21:03.235025Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 12,
+      "timestamp": "2026-05-04T16:57:35.410134Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 Pre_Finished.pdf",
+      "fileFingerprint": "379233_1777585693514",
+      "page": 1,
+      "timestamp": "2026-05-04T17:11:55.694016Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 Pre_Finished.pdf",
+      "fileFingerprint": "379233_1777585693514",
+      "page": 2,
+      "timestamp": "2026-05-04T17:17:39.982453Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 Pre_Finished.pdf",
+      "fileFingerprint": "379233_1777585693514",
+      "page": 3,
+      "timestamp": "2026-05-04T17:25:13.119444Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 Pre_Finished.pdf",
+      "fileFingerprint": "379233_1777585693514",
+      "page": 4,
+      "timestamp": "2026-05-04T17:28:07.429529Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 Pre_Finished.pdf",
+      "fileFingerprint": "379233_1777585693514",
+      "page": 5,
+      "timestamp": "2026-05-04T17:31:42.660314Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 Pre_Finished.pdf",
+      "fileFingerprint": "379233_1777585693514",
+      "page": 7,
+      "timestamp": "2026-05-04T17:47:44.096222Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 Pre_Finished.pdf",
+      "fileFingerprint": "379233_1777585693514",
+      "page": 8,
+      "timestamp": "2026-05-04T17:47:48.735657Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 13,
+      "timestamp": "2026-05-04T18:02:35.283634Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_4 Pre_Finished.pdf",
+      "fileFingerprint": "379233_1777585693514",
+      "page": 6,
+      "timestamp": "2026-05-04T18:07:35.548063Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 14,
+      "timestamp": "2026-05-04T18:12:32.099643Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 15,
+      "timestamp": "2026-05-04T18:22:59.712937Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 16,
+      "timestamp": "2026-05-04T18:31:48.404948Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 17,
+      "timestamp": "2026-05-04T19:36:43.594986Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 18,
+      "timestamp": "2026-05-04T19:40:35.816353Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 19mm Pre_Finished.pdf",
+      "fileFingerprint": "1623305_1777664058047",
+      "page": 19,
+      "timestamp": "2026-05-04T20:41:59.000133Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_2 Baltic Birch Pre_Finished.pdf",
+      "fileFingerprint": "618395_1777661073689",
+      "page": 5,
+      "timestamp": "2026-05-04T20:42:10.976494Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 3_4 2s Rift White Oak 10ft.pdf",
+      "fileFingerprint": "882669_1777923769568",
+      "page": 1,
+      "timestamp": "2026-05-04T20:56:35.718251Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 3_4 2s Rift White Oak 10ft.pdf",
+      "fileFingerprint": "882669_1777923769568",
+      "page": 2,
+      "timestamp": "2026-05-04T21:17:48.017146Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 3_4 2s Rift White Oak 10ft.pdf",
+      "fileFingerprint": "882669_1777923769568",
+      "page": 3,
+      "timestamp": "2026-05-04T21:22:52.112558Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 3_4 2s Rift White Oak 10ft.pdf",
+      "fileFingerprint": "882669_1777923769568",
+      "page": 4,
+      "timestamp": "2026-05-04T21:53:45.331182Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 3_4 PG Armor Core.pdf",
+      "fileFingerprint": "116483_1777585693728",
+      "page": 1,
+      "timestamp": "2026-05-04T22:12:58.214662Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 3_4 PG Armor Core.pdf",
+      "fileFingerprint": "116483_1777585693728",
+      "page": 2,
+      "timestamp": "2026-05-04T22:18:33.027962Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 3_4 2s Rift White Oak.pdf",
+      "fileFingerprint": "226840_1777923771990",
+      "page": 1,
+      "timestamp": "2026-05-04T22:26:07.714083Z"
+    },
+    {
+      "action": "complete",
+      "file": "123 - 1_2 Pre_Finished.pdf",
+      "fileFingerprint": "57719_1777585693228",
+      "page": 1,
+      "timestamp": "2026-05-04T22:32:47.115833Z"
+    }
+  ],
+  "tabletId": "SM-X808U-5254"
+}

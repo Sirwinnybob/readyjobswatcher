@@ -1,0 +1,64 @@
+{
+  "jobNumber": "123",
+  "jobName": "WEST COAST HOME SOLUTIONS - FULL OVERLAY, RIFT WHITE OAK/PAINT GRADE",
+  "material": "3_4 2s Rift White Oak",
+  "pdfFilename": "123 - 3_4 2s Rift White Oak.pdf",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "sheetId": "R431101N",
+      "sheetFiles": [
+        "R431101N"
+      ],
+      "sheetDimensions": [
+        48.5,
+        96.5
+      ],
+      "parts": [
+        {
+          "number": 1,
+          "width": 21.625,
+          "length": 36.2499,
+          "name": "Finished Right End",
+          "cabNumber": 12,
+          "room": "KITCHEN"
+        },
+        {
+          "number": 2,
+          "width": 21.625,
+          "length": 36.25,
+          "name": "Finished Left End",
+          "cabNumber": 12,
+          "room": "KITCHEN"
+        }
+      ],
+      "thumbnailPath": ".metadata/.thumbs/123 - 3_4 2s Rift White Oak_p001.png",
+      "logicalSheetKey": "R431101N::48.500x96.500",
+      "isPartListContinuation": false,
+      "continuationHeadPage": 1,
+      "trackingExcluded": false,
+      "hiddenInApp": false,
+      "ocrBoxes": {
+        "2": [
+          {
+            "left": 1971,
+            "top": 602,
+            "right": 2037,
+            "bottom": 686
+          }
+        ],
+        "1": [
+          {
+            "left": 39,
+            "top": 1045,
+            "right": 87,
+            "bottom": 1123
+          }
+        ]
+      },
+      "ocrSource": "desktop_paddleocr",
+      "ocrGeneratedAt": "2026-05-04T19:42:51.490067+00:00",
+      "ocrVersion": "v1"
+    }
+  ]
+}
