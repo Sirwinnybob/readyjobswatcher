@@ -9,12 +9,14 @@ import logging
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTabWidget, QListWidget, QTimeEdit, QSpinBox, QTextEdit, QMessageBox,
-    QFormLayout, QGroupBox, QInputDialog
+    QFormLayout, QGroupBox, QInputDialog, QCheckBox, QComboBox, QDialog,
+    QTableWidget, QTableWidgetItem, QAbstractItemView
 )
-from PyQt6.QtCore import QTime, QObject, pyqtSignal
+from PyQt6.QtCore import QTime, QObject, pyqtSignal, Qt
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtCore import QTimer
 import keyring
+from .alert_coordinator import AlertBatch
 
 KEYRING_SERVICE = "ReadyJobsWatcher"
 
@@ -22,6 +24,10 @@ main_logger = logging.getLogger('main')
 
 class LogSignal(QObject):
     new_log = pyqtSignal(str)
+
+
+class AlertSignal(QObject):
+    new_batch = pyqtSignal(object)
 
 class QtLogHandler(logging.Handler):
     def __init__(self, log_signal):
@@ -47,6 +53,9 @@ class SettingsWindow(QWidget):
         # Setup Logger Signal for UI updates
         self.log_signal = LogSignal()
         self.log_signal.new_log.connect(self.append_log)
+        self.alert_signal = AlertSignal()
+        self.alert_signal.new_batch.connect(self._show_bad_parts_alert_dialog)
+        self.alert_coordinator = None
 
         self.qt_handler = QtLogHandler(self.log_signal)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -198,7 +207,8 @@ class SettingsWindow(QWidget):
 
     def setup_planka_tab(self):
         tab = QWidget()
-        layout = QFormLayout(tab)
+        root_layout = QVBoxLayout(tab)
+        layout = QFormLayout()
 
         self.planka_url_input = QLineEdit()
         self.planka_user_input = QLineEdit()
@@ -220,6 +230,35 @@ class SettingsWindow(QWidget):
 
         layout.addRow("PDF Conversion Delay (s):", self.pdf_delay_spin)
         layout.addRow("New Folder Delay (s):", self.folder_delay_spin)
+
+        root_layout.addLayout(layout)
+
+        alerts_group = QGroupBox("Bad Parts Alerts")
+        alerts_layout = QFormLayout()
+
+        self.bad_parts_mode_combo = QComboBox()
+        self.bad_parts_mode_combo.addItem("Tracker Mode", "tracker")
+        self.bad_parts_mode_combo.addItem("Legacy PDF Highlight Mode", "legacy")
+
+        self.bad_parts_popup_checkbox = QCheckBox("Show always-on-top alert popup")
+        self.bad_parts_toast_checkbox = QCheckBox("Show Windows toast notifications")
+
+        self.bad_parts_sound_combo = QComboBox()
+        self.bad_parts_sound_combo.addItem("Triple Beep", "triple_beep")
+        self.bad_parts_sound_combo.addItem("No Sound", "none")
+
+        self.test_bad_parts_alert_btn = QPushButton("Test Alert")
+        self.test_bad_parts_alert_btn.clicked.connect(self.trigger_test_bad_parts_alert)
+
+        alerts_layout.addRow("Detection Mode:", self.bad_parts_mode_combo)
+        alerts_layout.addRow("", self.bad_parts_popup_checkbox)
+        alerts_layout.addRow("", self.bad_parts_toast_checkbox)
+        alerts_layout.addRow("Sound Profile:", self.bad_parts_sound_combo)
+        alerts_layout.addRow("", self.test_bad_parts_alert_btn)
+        alerts_group.setLayout(alerts_layout)
+
+        root_layout.addWidget(alerts_group)
+        root_layout.addStretch()
 
         self.tabs.addTab(tab, "Planka & Delays")
 
@@ -284,6 +323,72 @@ class SettingsWindow(QWidget):
             threading.Thread(target=process_directory, args=(self.config.ROOT_DIR, True), daemon=True).start()
             QMessageBox.information(self, "Convert", "Forced PDF conversion started.")
 
+    def set_alert_coordinator(self, alert_coordinator):
+        self.alert_coordinator = alert_coordinator
+
+    def emit_bad_parts_alert(self, batch: AlertBatch):
+        self.alert_signal.new_batch.emit(batch)
+
+    def _show_bad_parts_alert_dialog(self, batch: AlertBatch):
+        if not batch.events:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"BAD PART ALERT ({len(batch.events)})")
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.resize(920, 520)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(
+            QLabel(
+                "New bad parts were detected from tracker data.\n"
+                "Review and click Acknowledge All to suppress repeat alerts for this batch."
+            )
+        )
+
+        table = QTableWidget(len(batch.events), 4, dialog)
+        table.setHorizontalHeaderLabels(["Job", "Material / PDF", "Page", "Part"])
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+
+        for row_index, event in enumerate(batch.events):
+            table.setItem(row_index, 0, QTableWidgetItem(event.key.job_folder_name))
+            table.setItem(row_index, 1, QTableWidgetItem(event.material_or_pdf))
+            table.setItem(row_index, 2, QTableWidgetItem(str(event.key.page)))
+            table.setItem(row_index, 3, QTableWidgetItem(str(event.key.part_number)))
+
+        table.resizeColumnsToContents()
+        layout.addWidget(table)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+
+        acknowledge_btn = QPushButton("Acknowledge All")
+        dismiss_btn = QPushButton("Dismiss")
+
+        def _acknowledge_and_close():
+            if self.alert_coordinator:
+                self.alert_coordinator.acknowledge_batch(batch)
+            dialog.accept()
+
+        acknowledge_btn.clicked.connect(_acknowledge_and_close)
+        dismiss_btn.clicked.connect(dialog.reject)
+
+        actions.addWidget(dismiss_btn)
+        actions.addWidget(acknowledge_btn)
+        layout.addLayout(actions)
+        dialog.exec()
+
+    def trigger_test_bad_parts_alert(self):
+        if self.alert_coordinator:
+            self.alert_coordinator.test_alert()
+            QMessageBox.information(self, "Bad Parts Alert", "Test alert queued.")
+        else:
+            QMessageBox.warning(self, "Bad Parts Alert", "Alert coordinator is not initialized yet.")
+
     def setup_log_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -330,6 +435,13 @@ class SettingsWindow(QWidget):
 
         self.pdf_delay_spin.setValue(self.config.pdf_conversion_delay_seconds)
         self.folder_delay_spin.setValue(self.config.new_folder_delay_seconds)
+
+        mode_index = self.bad_parts_mode_combo.findData(self.config.bad_parts_mode)
+        self.bad_parts_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+        self.bad_parts_popup_checkbox.setChecked(bool(self.config.bad_parts_popup_enabled))
+        self.bad_parts_toast_checkbox.setChecked(bool(self.config.bad_parts_toast_enabled))
+        sound_index = self.bad_parts_sound_combo.findData(self.config.bad_parts_sound_profile)
+        self.bad_parts_sound_combo.setCurrentIndex(sound_index if sound_index >= 0 else 0)
 
     def add_backup_folder(self):
         folder, ok = QInputDialog.getText(self, "Add Folder", "Enter folder path:")
@@ -385,6 +497,10 @@ class SettingsWindow(QWidget):
 
         self.config.pdf_conversion_delay_seconds = self.pdf_delay_spin.value()
         self.config.new_folder_delay_seconds = self.folder_delay_spin.value()
+        self.config.bad_parts_mode = self.bad_parts_mode_combo.currentData()
+        self.config.bad_parts_popup_enabled = self.bad_parts_popup_checkbox.isChecked()
+        self.config.bad_parts_toast_enabled = self.bad_parts_toast_checkbox.isChecked()
+        self.config.bad_parts_sound_profile = self.bad_parts_sound_combo.currentData()
 
         self.config.save()
         QMessageBox.information(self, "Success", "Settings saved successfully.")

@@ -9,16 +9,21 @@ import logging
 import time
 import threading
 import os
+from typing import Optional
 from watchdog.events import FileSystemEventHandler
 
 # This will be properly imported later
 from .bad_parts_checker import (
-    check_for_bad_parts_highlight, BAD_PART_LOG_FILE, BLACKLISTED_FILES, PERMANENTLY_IGNORED_FILES,
+    BAD_PART_LOG_FILE, BLACKLISTED_FILES, PERMANENTLY_IGNORED_FILES,
     save_to_blacklist_internal, save_permanently_ignored_blacklist_internal,
     BLACKLIST_LOCK, PERMANENTLY_IGNORED_LOCK
 )
 from .file_handler import should_ignore_folder, should_ignore_file
 from .utils import is_hidden, ALLOWED_SHEETS_PATTERN
+from .tracker_bad_parts import TrackerBadPartsMonitor
+from .alert_coordinator import AlertCoordinator
+from .cabinet_sheet_indexer import build_reference_index_for_pdf_event
+from .hardwoods_cutlist_indexer import build_hardwoods_cutlist_index_for_pdf_event
 
 
 main_logger = logging.getLogger('main')
@@ -203,9 +208,17 @@ class RenameHandler(FileSystemEventHandler):
 
 class PdfChangeHandler(FileSystemEventHandler):
     """
-    Handles recursive modifications to PDF files for bad part checking and dark mode conversion.
+    Handles recursive modifications to files for tracker bad-part checks and dark mode conversion.
     """
-    def __init__(self, config, rename_handler=None, pending_queue=None, executor=None):
+    def __init__(
+        self,
+        config,
+        rename_handler=None,
+        pending_queue=None,
+        executor=None,
+        tracker_monitor: Optional[TrackerBadPartsMonitor] = None,
+        alert_coordinator: Optional[AlertCoordinator] = None
+    ):
         """
         Initialize the PdfChangeHandler.
 
@@ -225,6 +238,55 @@ class PdfChangeHandler(FileSystemEventHandler):
         self._cooldown_seconds = config.pdf_conversion_delay_seconds
         self._conversion_count = 0  # Track number of conversions for periodic cleanup
         self._count_lock = threading.Lock()  # Lock for thread-safe counter increment
+        self.tracker_monitor = tracker_monitor
+        self.alert_coordinator = alert_coordinator
+        self._tracker_scan_timer = None
+        self._tracker_scan_lock = threading.Lock()
+
+    @staticmethod
+    def _is_tracker_json(file_path: str) -> bool:
+        normalized = file_path.replace('/', '\\').lower()
+        return normalized.endswith(".json") and "\\cnc\\.tracker\\" in normalized
+
+    @staticmethod
+    def _is_cnc_path(file_path: str) -> bool:
+        normalized = file_path.replace('/', '\\').lower()
+        return "\\cnc\\" in normalized or normalized.endswith("\\cnc")
+
+    def _run_tracker_scan(self, reason: str, src_path: str):
+        if self.config.bad_parts_mode != "tracker":
+            return
+        if self.tracker_monitor is None:
+            main_logger.warning("Tracker scan requested but tracker monitor is unavailable.")
+            return
+        try:
+            events = self.tracker_monitor.scan_once()
+            if events and self.alert_coordinator is not None:
+                self.alert_coordinator.submit_events(events)
+            main_logger.info(
+                "Tracker scan finished (%s): new_events=%s active_total=%s source=%s",
+                reason,
+                len(events),
+                len(self.tracker_monitor.state.active_keys),
+                src_path,
+            )
+        except Exception as e:
+            main_logger.error(f"Tracker scan failed ({reason}) for {src_path}: {e}", exc_info=True)
+
+    def _trigger_tracker_scan(self, reason: str, src_path: str):
+        if self.config.bad_parts_mode != "tracker":
+            return
+        delay_seconds = 0.6
+        with self._tracker_scan_lock:
+            if self._tracker_scan_timer is not None:
+                self._tracker_scan_timer.cancel()
+            self._tracker_scan_timer = threading.Timer(
+                delay_seconds,
+                lambda: self._run_tracker_scan(reason, src_path)
+            )
+            self._tracker_scan_timer.name = "TrackerScanDebounceTimer"
+            self._tracker_scan_timer.daemon = True
+            self._tracker_scan_timer.start()
 
     def _cleanup_old_cooldown_entries(self):
         """Remove cooldown entries older than 1 hour to prevent dictionary from growing indefinitely."""
@@ -354,11 +416,17 @@ class PdfChangeHandler(FileSystemEventHandler):
         try:
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF modified event detected by recursive watcher: {event.src_path}")
-
-                # Only check for bad parts if the PDF is in a CNC folder
-                normalized_path = event.src_path.replace('/', '\\')
-                if '\\CNC\\' in normalized_path or normalized_path.endswith('\\CNC'):
-                    check_for_bad_parts_highlight(event.src_path, self.config)
+                if self._is_cnc_path(event.src_path):
+                    self._trigger_tracker_scan("pdf_modified", event.src_path)
+                else:
+                    try:
+                        build_reference_index_for_pdf_event(event.src_path)
+                    except Exception as e:
+                        main_logger.error(f"Reference index refresh failed (modified): {event.src_path} ({e})", exc_info=True)
+                    try:
+                        build_hardwoods_cutlist_index_for_pdf_event(event.src_path)
+                    except Exception as e:
+                        main_logger.error(f"Hardwoods cutlist index refresh failed (modified): {event.src_path} ({e})", exc_info=True)
 
                 # Convert specific PDF to dark mode (if not in CNC folder and cooldown elapsed)
                 if self._should_convert_to_dark_mode(event.src_path):
@@ -388,6 +456,9 @@ class PdfChangeHandler(FileSystemEventHandler):
                         self._schedule_pdf_conversion(event.src_path, invert)
                     else:
                         main_logger.debug(f"Skipping dark mode conversion (cooldown active): {event.src_path}")
+            elif not event.is_directory and self._is_tracker_json(event.src_path):
+                main_logger.debug(f"Tracker JSON modified event detected: {event.src_path}")
+                self._trigger_tracker_scan("tracker_modified", event.src_path)
         except Exception as e:
             main_logger.error(f"Error in PdfChangeHandler.on_modified for {event.src_path}: {e}")
 
@@ -401,11 +472,17 @@ class PdfChangeHandler(FileSystemEventHandler):
         try:
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF created event detected by recursive watcher: {event.src_path}")
-
-                # Only check for bad parts if the PDF is in a CNC folder
-                normalized_path = event.src_path.replace('/', '\\')
-                if '\\CNC\\' in normalized_path or normalized_path.endswith('\\CNC'):
-                    check_for_bad_parts_highlight(event.src_path, self.config)
+                if self._is_cnc_path(event.src_path):
+                    self._trigger_tracker_scan("pdf_created", event.src_path)
+                else:
+                    try:
+                        build_reference_index_for_pdf_event(event.src_path)
+                    except Exception as e:
+                        main_logger.error(f"Reference index refresh failed (created): {event.src_path} ({e})", exc_info=True)
+                    try:
+                        build_hardwoods_cutlist_index_for_pdf_event(event.src_path)
+                    except Exception as e:
+                        main_logger.error(f"Hardwoods cutlist index refresh failed (created): {event.src_path} ({e})", exc_info=True)
 
                 # Convert specific PDF to dark mode (if not in CNC folder and cooldown elapsed)
                 if self._should_convert_to_dark_mode(event.src_path):
@@ -435,6 +512,9 @@ class PdfChangeHandler(FileSystemEventHandler):
                         self._schedule_pdf_conversion(event.src_path, invert)
                     else:
                         main_logger.debug(f"Skipping dark mode conversion (cooldown active): {event.src_path}")
+            elif not event.is_directory and self._is_tracker_json(event.src_path):
+                main_logger.debug(f"Tracker JSON created event detected: {event.src_path}")
+                self._trigger_tracker_scan("tracker_created", event.src_path)
         except Exception as e:
             main_logger.error(f"Error in PdfChangeHandler.on_created for {event.src_path}: {e}")
 
@@ -448,6 +528,15 @@ class PdfChangeHandler(FileSystemEventHandler):
         try:
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF deleted event detected by recursive watcher: {event.src_path}")
+                if not self._is_cnc_path(event.src_path):
+                    try:
+                        build_reference_index_for_pdf_event(event.src_path)
+                    except Exception as e:
+                        main_logger.error(f"Reference index refresh failed (deleted): {event.src_path} ({e})", exc_info=True)
+                    try:
+                        build_hardwoods_cutlist_index_for_pdf_event(event.src_path)
+                    except Exception as e:
+                        main_logger.error(f"Hardwoods cutlist index refresh failed (deleted): {event.src_path} ({e})", exc_info=True)
 
                 # Normalize path
                 normalized_path = event.src_path.replace('/', '\\')
@@ -486,6 +575,9 @@ class PdfChangeHandler(FileSystemEventHandler):
                 # Remove from pending queue if it was scheduled for conversion
                 if self.pending_queue:
                     self.pending_queue.remove_pending_pdf(event.src_path)
+            elif not event.is_directory and self._is_tracker_json(event.src_path):
+                main_logger.debug(f"Tracker JSON deleted event detected: {event.src_path}")
+                self._trigger_tracker_scan("tracker_deleted", event.src_path)
 
         except Exception as e:
             main_logger.error(f"Error in PdfChangeHandler.on_deleted for {event.src_path}: {e}")

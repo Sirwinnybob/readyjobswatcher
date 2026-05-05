@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .main import Application
+    from .alert_coordinator import AlertCoordinator
+    from .tracker_bad_parts import TrackerBadPartsMonitor
 
 from .utils import is_hidden, set_hidden_attribute, delete_codebase_folders, log_system_stats
 from .file_handler import JobProcessor
@@ -109,18 +111,36 @@ def delete_old_backups(config: Config) -> None:
     except OSError as e:
         backup_logger.error(f"Error scanning backup directory {config.BACKUP_DIR}: {e}")
 
-def scan_cnc_pdfs_for_bad_parts(config: Config) -> None:
+def scan_cnc_pdfs_for_bad_parts(
+    config: Config,
+    tracker_monitor: "TrackerBadPartsMonitor" = None,
+    alert_coordinator: "AlertCoordinator" = None
+) -> None:
     """
     Perform a complete recursive scan of all CNC PDF files to check for bad parts.
 
     Args:
         config (Config): System configuration containing relevant directory paths.
     """
-    from .bad_parts_checker import check_for_bad_parts_highlight
     from .file_handler import JobProcessor
+
+    if config.bad_parts_mode == "tracker":
+        if tracker_monitor is None:
+            cnc_logger.warning("Tracker mode enabled, but no tracker monitor is available.")
+            return
+        events = tracker_monitor.scan_once()
+        if events and alert_coordinator is not None:
+            alert_coordinator.submit_events(events)
+        cnc_logger.info(
+            "Tracker bad-part scan complete. New events=%s active_total=%s",
+            len(events),
+            len(tracker_monitor.state.active_keys),
+        )
+        return
 
     cnc_logger.info("Starting CNC PDF scan for bad parts...")
     scanned_count = 0
+    from .bad_parts_checker import check_for_bad_parts_highlight
 
     try:
         with os.scandir(config.ROOT_DIR) as it:
@@ -165,7 +185,12 @@ def backup_scheduler(config: Config, stop_event: threading.Event, app: 'Applicat
                 break
         perform_backup(config, app)
 
-def cnc_scan_scheduler(config: Config, stop_event: threading.Event) -> None:
+def cnc_scan_scheduler(
+    config: Config,
+    stop_event: threading.Event,
+    tracker_monitor: "TrackerBadPartsMonitor" = None,
+    alert_coordinator: "AlertCoordinator" = None
+) -> None:
     """
     Background worker loop to periodically scan CNC PDFs according to schedule.
 
@@ -195,10 +220,10 @@ def cnc_scan_scheduler(config: Config, stop_event: threading.Event) -> None:
                     stop_event.wait(sleep_seconds)
                     if stop_event.is_set():
                         break
-                    scan_cnc_pdfs_for_bad_parts(config)
+                    scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator)
                 else:
                     cnc_logger.warning("CNC scan scheduler: sleep_seconds was not positive, scanning immediately.")
-                    scan_cnc_pdfs_for_bad_parts(config)
+                    scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator)
 
             except ValueError:
                 cnc_logger.error(f"Invalid CNC scan time format for {today_weekday}: {scan_time_str}")

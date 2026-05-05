@@ -8,7 +8,7 @@ from winotify import Notification
 import logging
 import os
 
-def send_notification(title: str = "Notification", message: str = "") -> None:
+def send_notification(title: str = "Notification", message: str = "", duration: str = "short") -> None:
     """
     Sends a desktop notification to the user using winotify.
 
@@ -19,13 +19,14 @@ def send_notification(title: str = "Notification", message: str = "") -> None:
     Args:
         title (str): The title text for the notification. Default is "Notification".
         message (str): The body text describing the event. Default is an empty string.
+        duration (str): "short" or "long" display duration.
     """
     try:
         toast = Notification(
             app_id="Ready Jobs Watcher",
             title=title,
             msg=message,
-            duration="short"  # short or long
+            duration=duration  # short or long
         )
 
         # Try to set an icon if available

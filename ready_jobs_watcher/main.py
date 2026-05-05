@@ -25,6 +25,10 @@ from PyQt6.QtWidgets import QApplication
 from .gui import SettingsWindow
 from .tray_icon import create_tray_icon
 from .planka_credentials import initialize_planka_credentials
+from .tracker_bad_parts import TrackerBadPartsMonitor
+from .alert_coordinator import AlertCoordinator, AlertBatch
+from .cabinet_sheet_indexer import build_reference_index_for_job
+from .hardwoods_cutlist_indexer import build_hardwoods_cutlist_index_for_job
 
 
 # --- Logging Setup ---
@@ -104,6 +108,30 @@ class Application:
         self.qapp = None
         self.settings_window = None
         self.icon = None
+        self._pending_alert_batches = []
+        self._pending_alert_lock = threading.Lock()
+        self.tracker_monitor = TrackerBadPartsMonitor(self.config)
+        self.alert_coordinator = AlertCoordinator(
+            self.config,
+            self.tracker_monitor,
+            popup_notifier=self._queue_bad_parts_popup
+        )
+
+    def _queue_bad_parts_popup(self, batch: AlertBatch):
+        if self.settings_window:
+            self.settings_window.emit_bad_parts_alert(batch)
+            return
+        with self._pending_alert_lock:
+            self._pending_alert_batches.append(batch)
+
+    def _flush_pending_bad_parts_popups(self):
+        if not self.settings_window:
+            return
+        with self._pending_alert_lock:
+            batches = list(self._pending_alert_batches)
+            self._pending_alert_batches.clear()
+        for batch in batches:
+            self.settings_window.emit_bad_parts_alert(batch)
 
     def start(self):
         """Initializes and starts all application components."""
@@ -119,8 +147,13 @@ class Application:
         # Initialize Planka credentials from config and keyring
         initialize_planka_credentials(self.config)
 
-        load_blacklist()
-        load_permanently_ignored_blacklist()
+        if self.config.bad_parts_mode == "legacy":
+            load_blacklist()
+            load_permanently_ignored_blacklist()
+        else:
+            logging.info("Tracker bad-parts mode enabled; legacy PDF-highlight blacklists are not loaded.")
+
+        self.alert_coordinator.start()
 
         self.start_threads()
         self.start_observers()
@@ -182,6 +215,12 @@ class Application:
                 logging.info("Thread pool executor shut down successfully")
             except Exception as e:
                 logging.error(f"Error shutting down executor: {e}")
+
+        if self.alert_coordinator:
+            try:
+                self.alert_coordinator.stop()
+            except Exception as e:
+                logging.error(f"Error stopping alert coordinator: {e}")
 
         # Stop tray icon and GUI
         if self.icon:
@@ -372,7 +411,11 @@ class Application:
         self.backup_thread = threading.Thread(target=backup_scheduler, args=(self.config, self.stop_event, self), daemon=True)
         self.backup_thread.start()
 
-        self.cnc_scan_thread = threading.Thread(target=cnc_scan_scheduler, args=(self.config, self.stop_event), daemon=True)
+        self.cnc_scan_thread = threading.Thread(
+            target=cnc_scan_scheduler,
+            args=(self.config, self.stop_event, self.tracker_monitor, self.alert_coordinator),
+            daemon=True
+        )
         self.cnc_scan_thread.start()
 
         self.stats_thread = threading.Thread(target=stats_logger_scheduler, args=(self.stop_event,), daemon=True)
@@ -401,7 +444,14 @@ class Application:
         logging.info(f"Watching {self.config.ROOT_DIR} for folder changes...")
 
         # Pass rename_handler reference so PDF handler can check for pending folders
-        pdf_event_handler = PdfChangeHandler(self.config, rename_handler=event_handler, pending_queue=self.pending_queue, executor=self.executor)
+        pdf_event_handler = PdfChangeHandler(
+            self.config,
+            rename_handler=event_handler,
+            pending_queue=self.pending_queue,
+            executor=self.executor,
+            tracker_monitor=self.tracker_monitor,
+            alert_coordinator=self.alert_coordinator
+        )
         self.pdf_observer.schedule(pdf_event_handler, self.config.ROOT_DIR, recursive=True)
         self.pdf_observer.start()
         logging.info(f"Watching {self.config.ROOT_DIR} for PDF changes...")
@@ -409,11 +459,14 @@ class Application:
         # Restore pending operations from last session
         self.restore_pending_operations(event_handler, pdf_event_handler)
 
-        desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-        log_file_handler = LogFileHandler(executor=self.executor)
-        self.desktop_observer.schedule(log_file_handler, desktop_path, recursive=False)
-        self.desktop_observer.start()
-        logging.info(f"Watching {desktop_path} for log file changes...")
+        if self.config.bad_parts_mode == "legacy":
+            desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
+            log_file_handler = LogFileHandler(executor=self.executor)
+            self.desktop_observer.schedule(log_file_handler, desktop_path, recursive=False)
+            self.desktop_observer.start()
+            logging.info(f"Watching {desktop_path} for log file changes...")
+        else:
+            logging.info("Tracker mode enabled; desktop bad-parts log watcher is disabled.")
 
     def setup_gui(self):
         """Sets up the PyQt6 QApplication, settings window, and system tray icon."""
@@ -426,8 +479,10 @@ class Application:
         self.qapp.setQuitOnLastWindowClosed(False)
 
         self.settings_window = SettingsWindow(self.config, self)
+        self.settings_window.set_alert_coordinator(self.alert_coordinator)
         self.icon = create_tray_icon(self.settings_window, self.config, self)
         self.icon.show()
+        self._flush_pending_bad_parts_popups()
 
         # We start the initial scan slightly delayed similar to Tkinter's after
         import threading
@@ -444,7 +499,7 @@ class Application:
     def scan_cnc_pdfs_for_bad_parts(self):
         """Trigger an immediate scan of all existing CNC PDFs."""
         from .scheduler import scan_cnc_pdfs_for_bad_parts
-        scan_cnc_pdfs_for_bad_parts(self.config)
+        scan_cnc_pdfs_for_bad_parts(self.config, self.tracker_monitor, self.alert_coordinator)
 
     def initial_scan(self):
         """Performs an initial scan of the root directory to handle any backlog."""
@@ -461,6 +516,14 @@ class Application:
                             logging.info(f"Skipping hidden item: {full_path}")
                             continue
                         self.job_processor.process_job_folder(full_path)
+                        try:
+                            build_reference_index_for_job(full_path)
+                        except Exception as e:
+                            logging.error(f"Reference index build failed for {full_path}: {e}", exc_info=True)
+                        try:
+                            build_hardwoods_cutlist_index_for_job(full_path)
+                        except Exception as e:
+                            logging.error(f"Hardwoods cutlist index build failed for {full_path}: {e}", exc_info=True)
                         time.sleep(0.05)
         except OSError as e:
             logging.error(f"Error during initial scan: {e}")

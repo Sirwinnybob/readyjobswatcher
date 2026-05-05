@@ -71,3 +71,22 @@ def test_validate_config_negative_new_folder_delay(config_instance):
     """Test validation when new_folder_delay_seconds is negative."""
     invalid_config = {'new_folder_delay_seconds': -10.5}
     assert config_instance._validate_config(invalid_config) is False
+
+
+def test_validate_config_bad_parts_mode(config_instance):
+    assert config_instance._validate_config({'bad_parts_mode': 'tracker'}) is True
+    assert config_instance._validate_config({'bad_parts_mode': 'legacy'}) is True
+    assert config_instance._validate_config({'bad_parts_mode': 'unknown'}) is False
+
+
+def test_validate_config_bad_parts_alert_toggles(config_instance):
+    assert config_instance._validate_config({'bad_parts_popup_enabled': True}) is True
+    assert config_instance._validate_config({'bad_parts_toast_enabled': False}) is True
+    assert config_instance._validate_config({'bad_parts_popup_enabled': 'yes'}) is False
+    assert config_instance._validate_config({'bad_parts_toast_enabled': 1}) is False
+
+
+def test_validate_config_bad_parts_sound_profile(config_instance):
+    assert config_instance._validate_config({'bad_parts_sound_profile': 'triple_beep'}) is True
+    assert config_instance._validate_config({'bad_parts_sound_profile': 'none'}) is True
+    assert config_instance._validate_config({'bad_parts_sound_profile': 'buzz'}) is False

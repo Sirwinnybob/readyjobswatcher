@@ -58,6 +58,11 @@ class Config:
         self.new_folder_delay_seconds = 1200  # Default: 20 minutes
         # Daily restart time (to prevent memory leaks and clear stale state)
         self.daily_restart_time = '03:00'  # Default: 3 AM
+        # Bad-parts alerting mode and escalation settings
+        self.bad_parts_mode = "tracker"  # tracker | legacy
+        self.bad_parts_popup_enabled = True
+        self.bad_parts_toast_enabled = True
+        self.bad_parts_sound_profile = "triple_beep"  # triple_beep | none
         self.load()
 
     def _validate_config(self, config: Dict) -> bool:
@@ -98,6 +103,24 @@ class Config:
         if 'new_folder_delay_seconds' in config:
             if not isinstance(config['new_folder_delay_seconds'], (int, float)) or config['new_folder_delay_seconds'] < 0:
                 main_logger.error("Config validation failed: new_folder_delay_seconds must be a positive number")
+                return False
+
+        if "bad_parts_mode" in config:
+            if config["bad_parts_mode"] not in ("tracker", "legacy"):
+                main_logger.error("Config validation failed: bad_parts_mode must be 'tracker' or 'legacy'")
+                return False
+
+        if "bad_parts_popup_enabled" in config and not isinstance(config["bad_parts_popup_enabled"], bool):
+            main_logger.error("Config validation failed: bad_parts_popup_enabled must be a bool")
+            return False
+
+        if "bad_parts_toast_enabled" in config and not isinstance(config["bad_parts_toast_enabled"], bool):
+            main_logger.error("Config validation failed: bad_parts_toast_enabled must be a bool")
+            return False
+
+        if "bad_parts_sound_profile" in config:
+            if config["bad_parts_sound_profile"] not in ("triple_beep", "none"):
+                main_logger.error("Config validation failed: bad_parts_sound_profile must be 'triple_beep' or 'none'")
                 return False
 
         return True
@@ -146,6 +169,10 @@ class Config:
                 self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
                 self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
                 self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
+                self.bad_parts_mode = config.get("bad_parts_mode", self.bad_parts_mode)
+                self.bad_parts_popup_enabled = config.get("bad_parts_popup_enabled", self.bad_parts_popup_enabled)
+                self.bad_parts_toast_enabled = config.get("bad_parts_toast_enabled", self.bad_parts_toast_enabled)
+                self.bad_parts_sound_profile = config.get("bad_parts_sound_profile", self.bad_parts_sound_profile)
                 main_logger.info(f"Loaded backup times from config: {self.BACKUP_TIMES}")
                 if self.planka_username:
                     main_logger.info(f"Loaded Planka settings: URL={self.planka_base_url}, Username={self.planka_username}")
@@ -170,6 +197,10 @@ class Config:
                         self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
                         self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
                         self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
+                        self.bad_parts_mode = config.get("bad_parts_mode", self.bad_parts_mode)
+                        self.bad_parts_popup_enabled = config.get("bad_parts_popup_enabled", self.bad_parts_popup_enabled)
+                        self.bad_parts_toast_enabled = config.get("bad_parts_toast_enabled", self.bad_parts_toast_enabled)
+                        self.bad_parts_sound_profile = config.get("bad_parts_sound_profile", self.bad_parts_sound_profile)
                         main_logger.info("Successfully restored config from backup")
                         # Save restored config
                         with open(self.CONFIG_FILE, 'w') as f:
@@ -204,7 +235,11 @@ class Config:
                 'planka_username': self.planka_username,
                 'pdf_conversion_delay_seconds': self.pdf_conversion_delay_seconds,
                 'new_folder_delay_seconds': self.new_folder_delay_seconds,
-                'daily_restart_time': self.daily_restart_time
+                'daily_restart_time': self.daily_restart_time,
+                'bad_parts_mode': self.bad_parts_mode,
+                'bad_parts_popup_enabled': self.bad_parts_popup_enabled,
+                'bad_parts_toast_enabled': self.bad_parts_toast_enabled,
+                'bad_parts_sound_profile': self.bad_parts_sound_profile
             }
 
             # Validate the config we're about to save
