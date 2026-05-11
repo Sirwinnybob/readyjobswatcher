@@ -12,18 +12,20 @@ import os
 from typing import Optional
 from watchdog.events import FileSystemEventHandler
 
-# This will be properly imported later
-from .bad_parts_checker import (
-    BAD_PART_LOG_FILE, BLACKLISTED_FILES, PERMANENTLY_IGNORED_FILES,
-    save_to_blacklist_internal, save_permanently_ignored_blacklist_internal,
-    BLACKLIST_LOCK, PERMANENTLY_IGNORED_LOCK
-)
+# Legacy desktop bad-parts log path (read-only in watcher).
+from .bad_parts_checker import BAD_PART_LOG_FILE
 from .file_handler import should_ignore_folder, should_ignore_file
 from .utils import is_hidden, ALLOWED_SHEETS_PATTERN
 from .tracker_bad_parts import TrackerBadPartsMonitor
 from .alert_coordinator import AlertCoordinator
 from .cabinet_sheet_indexer import build_reference_index_for_pdf_event
 from .hardwoods_cutlist_indexer import build_hardwoods_cutlist_index_for_pdf_event
+from .dae_converter import convert_dae_to_medium_glb
+from .remake_candidates_indexer import (
+    refresh_unresolved_bad_parts_for_job,
+    refresh_unresolved_bad_parts_all,
+    derive_job_from_tracker_path,
+)
 
 
 main_logger = logging.getLogger('main')
@@ -242,10 +244,15 @@ class PdfChangeHandler(FileSystemEventHandler):
         self.alert_coordinator = alert_coordinator
         self._tracker_scan_timer = None
         self._tracker_scan_lock = threading.Lock()
+        self._index_reparse_delay_seconds = 10.0
+        self._index_reparse_timers = {}
+        self._index_reparse_lock = threading.Lock()
 
     @staticmethod
-    def _is_tracker_json(file_path: str) -> bool:
+    def _is_tracker_stream_file(file_path: str) -> bool:
         normalized = file_path.replace('/', '\\').lower()
+        if "\\cnc\\.tracker\\events\\" in normalized and normalized.endswith(".ndjson"):
+            return True
         return normalized.endswith(".json") and "\\cnc\\.tracker\\" in normalized
 
     @staticmethod
@@ -263,6 +270,11 @@ class PdfChangeHandler(FileSystemEventHandler):
             events = self.tracker_monitor.scan_once()
             if events and self.alert_coordinator is not None:
                 self.alert_coordinator.submit_events(events)
+            job_folder_name = derive_job_from_tracker_path(self.config, src_path)
+            if job_folder_name:
+                refresh_unresolved_bad_parts_for_job(self.config, job_folder_name)
+            else:
+                refresh_unresolved_bad_parts_all(self.config)
             main_logger.info(
                 "Tracker scan finished (%s): new_events=%s active_total=%s source=%s",
                 reason,
@@ -287,6 +299,40 @@ class PdfChangeHandler(FileSystemEventHandler):
             self._tracker_scan_timer.name = "TrackerScanDebounceTimer"
             self._tracker_scan_timer.daemon = True
             self._tracker_scan_timer.start()
+
+    def _run_index_refresh(self, pdf_path: str, reason: str):
+        try:
+            build_reference_index_for_pdf_event(pdf_path)
+        except Exception as e:
+            main_logger.error(f"Reference index refresh failed ({reason}): {pdf_path} ({e})", exc_info=True)
+        try:
+            build_hardwoods_cutlist_index_for_pdf_event(pdf_path)
+        except Exception as e:
+            main_logger.error(f"Hardwoods cutlist index refresh failed ({reason}): {pdf_path} ({e})", exc_info=True)
+
+    def _schedule_index_refresh(self, pdf_path: str, reason: str):
+        def _timer_callback():
+            try:
+                self._run_index_refresh(pdf_path, reason)
+            finally:
+                with self._index_reparse_lock:
+                    self._index_reparse_timers.pop(pdf_path, None)
+
+        with self._index_reparse_lock:
+            existing = self._index_reparse_timers.get(pdf_path)
+            if existing is not None:
+                existing.cancel()
+            timer = threading.Timer(self._index_reparse_delay_seconds, _timer_callback)
+            timer.name = f"IndexReparse-{os.path.basename(pdf_path)}"
+            timer.daemon = True
+            self._index_reparse_timers[pdf_path] = timer
+            timer.start()
+        main_logger.info(
+            "Scheduled index re-parse in %ss (%s): %s",
+            self._index_reparse_delay_seconds,
+            reason,
+            os.path.basename(pdf_path),
+        )
 
     def _cleanup_old_cooldown_entries(self):
         """Remove cooldown entries older than 1 hour to prevent dictionary from growing indefinitely."""
@@ -357,6 +403,34 @@ class PdfChangeHandler(FileSystemEventHandler):
         timer.daemon = True
         timer.start()
 
+    def _schedule_dae_conversion(self, dae_path: str):
+        """Schedule a DAE→GLB conversion after a short stabilisation delay."""
+        delay_seconds = self._cooldown_seconds
+
+        def _convert_task():
+            try:
+                from pathlib import Path
+                p = Path(dae_path)
+                if not p.exists():
+                    main_logger.warning(f"DAE no longer exists, skipping conversion: {dae_path}")
+                    return
+                convert_dae_to_medium_glb(p)
+            except Exception as e:
+                main_logger.error(f"DAE conversion failed for {dae_path}: {e}", exc_info=True)
+
+        def _timer_callback():
+            if self.executor:
+                self.executor.submit(_convert_task)
+            else:
+                thread = threading.Thread(target=_convert_task, daemon=True, name=f"DaeConvert-{os.path.basename(os.path.dirname(dae_path))}")
+                thread.start()
+
+        timer = threading.Timer(delay_seconds, _timer_callback)
+        timer.name = f"Timer-DaeConvert-{os.path.basename(os.path.dirname(dae_path))}"
+        timer.daemon = True
+        timer.start()
+        main_logger.info(f"Scheduled DAE conversion in {delay_seconds}s: {dae_path}")
+
     def _should_convert_to_dark_mode(self, pdf_path: str) -> bool:
         """
         Check if a PDF should be converted to dark mode.
@@ -419,14 +493,7 @@ class PdfChangeHandler(FileSystemEventHandler):
                 if self._is_cnc_path(event.src_path):
                     self._trigger_tracker_scan("pdf_modified", event.src_path)
                 else:
-                    try:
-                        build_reference_index_for_pdf_event(event.src_path)
-                    except Exception as e:
-                        main_logger.error(f"Reference index refresh failed (modified): {event.src_path} ({e})", exc_info=True)
-                    try:
-                        build_hardwoods_cutlist_index_for_pdf_event(event.src_path)
-                    except Exception as e:
-                        main_logger.error(f"Hardwoods cutlist index refresh failed (modified): {event.src_path} ({e})", exc_info=True)
+                    self._schedule_index_refresh(event.src_path, "modified")
 
                 # Convert specific PDF to dark mode (if not in CNC folder and cooldown elapsed)
                 if self._should_convert_to_dark_mode(event.src_path):
@@ -456,9 +523,11 @@ class PdfChangeHandler(FileSystemEventHandler):
                         self._schedule_pdf_conversion(event.src_path, invert)
                     else:
                         main_logger.debug(f"Skipping dark mode conversion (cooldown active): {event.src_path}")
-            elif not event.is_directory and self._is_tracker_json(event.src_path):
+            elif not event.is_directory and self._is_tracker_stream_file(event.src_path):
                 main_logger.debug(f"Tracker JSON modified event detected: {event.src_path}")
                 self._trigger_tracker_scan("tracker_modified", event.src_path)
+            elif not event.is_directory and os.path.basename(event.src_path).lower() == '3d.dae':
+                self._schedule_dae_conversion(event.src_path)
         except Exception as e:
             main_logger.error(f"Error in PdfChangeHandler.on_modified for {event.src_path}: {e}")
 
@@ -475,14 +544,7 @@ class PdfChangeHandler(FileSystemEventHandler):
                 if self._is_cnc_path(event.src_path):
                     self._trigger_tracker_scan("pdf_created", event.src_path)
                 else:
-                    try:
-                        build_reference_index_for_pdf_event(event.src_path)
-                    except Exception as e:
-                        main_logger.error(f"Reference index refresh failed (created): {event.src_path} ({e})", exc_info=True)
-                    try:
-                        build_hardwoods_cutlist_index_for_pdf_event(event.src_path)
-                    except Exception as e:
-                        main_logger.error(f"Hardwoods cutlist index refresh failed (created): {event.src_path} ({e})", exc_info=True)
+                    self._schedule_index_refresh(event.src_path, "created")
 
                 # Convert specific PDF to dark mode (if not in CNC folder and cooldown elapsed)
                 if self._should_convert_to_dark_mode(event.src_path):
@@ -512,9 +574,11 @@ class PdfChangeHandler(FileSystemEventHandler):
                         self._schedule_pdf_conversion(event.src_path, invert)
                     else:
                         main_logger.debug(f"Skipping dark mode conversion (cooldown active): {event.src_path}")
-            elif not event.is_directory and self._is_tracker_json(event.src_path):
+            elif not event.is_directory and self._is_tracker_stream_file(event.src_path):
                 main_logger.debug(f"Tracker JSON created event detected: {event.src_path}")
                 self._trigger_tracker_scan("tracker_created", event.src_path)
+            elif not event.is_directory and os.path.basename(event.src_path).lower() == '3d.dae':
+                self._schedule_dae_conversion(event.src_path)
         except Exception as e:
             main_logger.error(f"Error in PdfChangeHandler.on_created for {event.src_path}: {e}")
 
@@ -528,6 +592,10 @@ class PdfChangeHandler(FileSystemEventHandler):
         try:
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF deleted event detected by recursive watcher: {event.src_path}")
+                with self._index_reparse_lock:
+                    existing = self._index_reparse_timers.pop(event.src_path, None)
+                    if existing is not None:
+                        existing.cancel()
                 if not self._is_cnc_path(event.src_path):
                     try:
                         build_reference_index_for_pdf_event(event.src_path)
@@ -575,7 +643,7 @@ class PdfChangeHandler(FileSystemEventHandler):
                 # Remove from pending queue if it was scheduled for conversion
                 if self.pending_queue:
                     self.pending_queue.remove_pending_pdf(event.src_path)
-            elif not event.is_directory and self._is_tracker_json(event.src_path):
+            elif not event.is_directory and self._is_tracker_stream_file(event.src_path):
                 main_logger.debug(f"Tracker JSON deleted event detected: {event.src_path}")
                 self._trigger_tracker_scan("tracker_deleted", event.src_path)
 
@@ -584,11 +652,10 @@ class PdfChangeHandler(FileSystemEventHandler):
 
 class LogFileHandler(FileSystemEventHandler):
     """
-    Handles modifications to the bad parts log file on the desktop.
+    Handles modifications to the desktop bad parts log file.
 
-    When user marks a bad part as complete by appending 'y' after 'COMPLETE:'
-    in a log line, this moves the entry from temporary blacklist to permanent ignore.
-    Log format expected: "filename | full_path | page_num | Reported: timestamp | COMPLETE: "
+    This handler is intentionally read-only. It does NOT mark/resolve parts.
+    Resolution is owned by process_run_folders_v2.py.
     """
     def __init__(self, executor=None):
         """
@@ -629,59 +696,17 @@ class LogFileHandler(FileSystemEventHandler):
             thread.start()
 
     def _process_log_file(self):
-        """Core logic for processing the bad parts log file in a background thread."""
+        """Read-only observer for legacy log changes; does not mutate any state."""
         # Try to acquire lock without blocking to avoid redundant concurrent processing
         if not IS_PROCESSING_LOG_FILE_LOCK.acquire(blocking=False):
             main_logger.debug("Already processing log file, skipping.")
             return
 
         try:
-            main_logger.info(f"Processing change in {BAD_PART_LOG_FILE}...")
-
-            if not os.path.exists(BAD_PART_LOG_FILE):
-                main_logger.warning(f"Log file {BAD_PART_LOG_FILE} no longer exists.")
-                return
-
-            with open(BAD_PART_LOG_FILE, 'r') as f:
-                lines = f.readlines()
-
-            active_entries = []
-            has_changes = False
-
-            for line in lines:
-                parts = line.split('|')
-                # Expecting 5 parts: filename | full_path | page_num | Reported: timestamp | COMPLETE:
-                if len(parts) >= 5 and parts[4].strip().lower().startswith("complete: y"):
-                    full_path = parts[1].strip()
-                    try:
-                        page_num = int(parts[2].strip()) - 1  # Extract page number (0-indexed)
-                    except ValueError:
-                        main_logger.warning(f"Invalid page number in log line: {line.strip()}")
-                        active_entries.append(line)
-                        continue
-
-                    # Remove from blacklist (thread-safe)
-                    with BLACKLIST_LOCK:
-                        if (full_path, page_num) in BLACKLISTED_FILES:
-                            BLACKLISTED_FILES.remove((full_path, page_num))
-                            save_to_blacklist_internal()
-                            main_logger.info(f"Removed {full_path} (page {page_num}) from blacklist.")
-
-                    # Add to permanently ignored blacklist (thread-safe)
-                    with PERMANENTLY_IGNORED_LOCK:
-                        PERMANENTLY_IGNORED_FILES.add((full_path, page_num))
-                        save_permanently_ignored_blacklist_internal()
-                        main_logger.info(f"Added {full_path} (page {page_num}) to permanently ignored blacklist.")
-
-                    main_logger.info(f"'{full_path}' (page {page_num}) marked as complete. Removing from log.")
-                    has_changes = True
-                else:
-                    active_entries.append(line)
-
-            if has_changes:
-                with open(BAD_PART_LOG_FILE, 'w') as f:
-                    f.writelines(active_entries)
-                main_logger.info("Bad parts log file updated.")
+            main_logger.info(
+                "Observed legacy bad-parts log change at %s (read-only mode; no resolve/mutation performed).",
+                BAD_PART_LOG_FILE,
+            )
 
         except Exception as e:
             main_logger.error(f"Error processing log file: {e}", exc_info=True)

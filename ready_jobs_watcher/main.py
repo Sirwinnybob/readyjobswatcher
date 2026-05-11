@@ -19,16 +19,16 @@ from .config import Config, BASE_DATA_DIR
 from .file_handler import JobProcessor
 from .utils import clear_old_logs, is_hidden
 from .bad_parts_checker import load_blacklist, load_permanently_ignored_blacklist
-from .watchers import RenameHandler, PdfChangeHandler, LogFileHandler
+from .watchers import RenameHandler, PdfChangeHandler
 from .scheduler import backup_scheduler, cnc_scan_scheduler, stats_logger_scheduler, daily_restart_scheduler
 from PyQt6.QtWidgets import QApplication
 from .gui import SettingsWindow
 from .tray_icon import create_tray_icon
-from .planka_credentials import initialize_planka_credentials
 from .tracker_bad_parts import TrackerBadPartsMonitor
 from .alert_coordinator import AlertCoordinator, AlertBatch
 from .cabinet_sheet_indexer import build_reference_index_for_job
 from .hardwoods_cutlist_indexer import build_hardwoods_cutlist_index_for_job
+from .dae_converter import convert_3d_models_for_job, scan_root_for_missing_glbs
 
 
 # --- Logging Setup ---
@@ -46,7 +46,6 @@ def setup_logging():
         'backup': 'backup.log',
         'cnc': 'cnc_scan.log',
         'badparts': 'bad_parts.log',
-        'planka': 'planka.log',
         'pdf_darkmode': 'send_notification.log',
         'pending_queue': 'ready_jobs_watcher.log'
     }
@@ -133,6 +132,19 @@ class Application:
         for batch in batches:
             self.settings_window.emit_bad_parts_alert(batch)
 
+    def _configure_assimp_path(self):
+        """
+        Apply optional config-level Assimp override to the process environment.
+        """
+        configured = (self.config.assimp_path or "").strip() if hasattr(self.config, "assimp_path") else ""
+        if configured:
+            os.environ["ASSIMP_PATH"] = configured
+            logging.info(f"Using configured ASSIMP_PATH: {configured}")
+        elif os.environ.get("ASSIMP_PATH"):
+            logging.info(f"Using existing ASSIMP_PATH from environment: {os.environ.get('ASSIMP_PATH')}")
+        else:
+            logging.info("ASSIMP_PATH not configured; dae_converter will use default assimp discovery.")
+
     def start(self):
         """Initializes and starts all application components."""
         os.makedirs(self.config.BACKUP_DIR, exist_ok=True)
@@ -144,19 +156,19 @@ class Application:
             logging.warning("Another instance is already running. Exiting.")
             sys.exit(0)
 
-        # Initialize Planka credentials from config and keyring
-        initialize_planka_credentials(self.config)
-
         if self.config.bad_parts_mode == "legacy":
             load_blacklist()
             load_permanently_ignored_blacklist()
         else:
             logging.info("Tracker bad-parts mode enabled; legacy PDF-highlight blacklists are not loaded.")
 
+        self._configure_assimp_path()
+
         self.alert_coordinator.start()
 
         self.start_threads()
         self.start_observers()
+        self.scan_cnc_pdfs_for_bad_parts()
 
         self.setup_gui()
 
@@ -195,7 +207,7 @@ class Application:
             ('cnc_scan_thread', self.cnc_scan_thread),
             ('stats_thread', self.stats_thread),
             ('restart_thread', self.restart_thread),
-            ('tray_thread', self.tray_thread)
+            ('tray_thread', self.tray_thread),
         ]
 
         for name, thread in threads:
@@ -459,14 +471,11 @@ class Application:
         # Restore pending operations from last session
         self.restore_pending_operations(event_handler, pdf_event_handler)
 
-        if self.config.bad_parts_mode == "legacy":
-            desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-            log_file_handler = LogFileHandler(executor=self.executor)
-            self.desktop_observer.schedule(log_file_handler, desktop_path, recursive=False)
-            self.desktop_observer.start()
-            logging.info(f"Watching {desktop_path} for log file changes...")
-        else:
-            logging.info("Tracker mode enabled; desktop bad-parts log watcher is disabled.")
+        logging.info(
+            "Desktop bad-parts log resolver watcher is disabled. "
+            "Ready Jobs Watcher runs notification/indexing only; "
+            "resolution is owned by process_run_folders_v2.py."
+        )
 
     def setup_gui(self):
         """Sets up the PyQt6 QApplication, settings window, and system tray icon."""
@@ -487,6 +496,17 @@ class Application:
         # We start the initial scan slightly delayed similar to Tkinter's after
         import threading
         threading.Timer(0.1, self.initial_scan).start()
+
+        # Dedicated startup check: convert any DAE files that have no GLB yet.
+        # Runs in its own thread so it doesn't delay the initial scan or UI.
+        def _glb_startup_check():
+            try:
+                scan_root_for_missing_glbs(self.config.ROOT_DIR)
+            except Exception as e:
+                logging.error(f"Startup GLB check failed: {e}", exc_info=True)
+
+        glb_thread = threading.Thread(target=_glb_startup_check, daemon=True, name="StartupGlbCheck")
+        glb_thread.start()
 
         # Start the event loop
         sys.exit(self.qapp.exec())
@@ -524,6 +544,10 @@ class Application:
                             build_hardwoods_cutlist_index_for_job(full_path)
                         except Exception as e:
                             logging.error(f"Hardwoods cutlist index build failed for {full_path}: {e}", exc_info=True)
+                        try:
+                            convert_3d_models_for_job(full_path)
+                        except Exception as e:
+                            logging.error(f"3D model conversion failed for {full_path}: {e}", exc_info=True)
                         time.sleep(0.05)
         except OSError as e:
             logging.error(f"Error during initial scan: {e}")

@@ -1,7 +1,8 @@
 PyQt6
 watchdog
-keyring
 winotify
 PyMuPDF
 Pillow
 pyinstaller
+trimesh[all]
+mapbox-earcut

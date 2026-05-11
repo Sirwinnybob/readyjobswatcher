@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from .utils import is_hidden, set_hidden_attribute, delete_codebase_folders, log_system_stats
 from .file_handler import JobProcessor
 from .config import Config
+from .remake_candidates_indexer import refresh_unresolved_bad_parts_all
 
 main_logger = logging.getLogger('main')
 
@@ -131,6 +132,7 @@ def scan_cnc_pdfs_for_bad_parts(
         events = tracker_monitor.scan_once()
         if events and alert_coordinator is not None:
             alert_coordinator.submit_events(events)
+        refresh_unresolved_bad_parts_all(config)
         cnc_logger.info(
             "Tracker bad-part scan complete. New events=%s active_total=%s",
             len(events),
@@ -199,6 +201,17 @@ def cnc_scan_scheduler(
         stop_event (threading.Event): Signal used to cleanly exit the loop.
     """
     while not stop_event.is_set():
+        if config.bad_parts_mode == "tracker":
+            try:
+                scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator)
+            except Exception as e:
+                cnc_logger.error(f"Error in tracker reconcile scan: {e}", exc_info=True)
+            interval = max(30, int(getattr(config, "tracker_reconcile_interval_seconds", 300)))
+            cnc_logger.info(f"Next tracker reconcile scan in {interval} seconds")
+            if stop_event.wait(interval):
+                break
+            continue
+
         now = datetime.datetime.now()
         today_weekday = now.strftime('%a').lower()
 

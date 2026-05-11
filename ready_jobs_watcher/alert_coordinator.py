@@ -13,7 +13,12 @@ from typing import Callable, List, Optional
 
 from .config import Config
 from .notifications import send_notification
-from .tracker_bad_parts import TrackerBadPartEvent, TrackerBadPartKey, TrackerBadPartsMonitor
+from .tracker_bad_parts import (
+    BadPartDetailRecord,
+    TrackerBadPartEvent,
+    TrackerBadPartKey,
+    TrackerBadPartsMonitor,
+)
 
 badparts_logger = logging.getLogger("badparts")
 
@@ -81,6 +86,33 @@ class AlertCoordinator:
         badparts_logger.info("TRACKER_ACK batch_count=%s", count)
         return count
 
+    def acknowledge_keys(self, keys: List[TrackerBadPartKey]) -> int:
+        count = self.tracker_monitor.acknowledge_keys(keys)
+        badparts_logger.info("TRACKER_ACK selected_count=%s", count)
+        return count
+
+    def unacknowledge_keys(self, keys: List[TrackerBadPartKey]) -> int:
+        count = self.tracker_monitor.unacknowledge_keys(keys)
+        badparts_logger.info("TRACKER_UNACK selected_count=%s", count)
+        return count
+
+    def get_bad_parts_snapshot(self, include_resolved: bool = False):
+        return self.tracker_monitor.get_bad_parts_snapshot(include_resolved=include_resolved)
+
+    def build_detail_records_for_events(self, events: List[TrackerBadPartEvent]) -> List[BadPartDetailRecord]:
+        ack_tokens = set(self.tracker_monitor.state.acknowledged_keys)
+        records: List[BadPartDetailRecord] = []
+        for event in events:
+            token = event.key.to_token()
+            records.append(
+                self.tracker_monitor.get_detail_record(
+                    key=event.key,
+                    detected_at=event.detected_at,
+                    is_acknowledged=token in ack_tokens,
+                )
+            )
+        return records
+
     def _play_sound(self) -> None:
         profile = str(self.config.bad_parts_sound_profile or "").strip().lower()
         if profile != "triple_beep":
@@ -135,4 +167,3 @@ class AlertCoordinator:
             detected_at=datetime.now(timezone.utc).isoformat(),
         )
         self.submit_events([test_event])
-

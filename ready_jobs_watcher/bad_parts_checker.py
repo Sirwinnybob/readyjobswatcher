@@ -96,12 +96,12 @@ def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
 
     Iterates through all pages of the given PDF. For pages not already blacklisted
     or permanently ignored, it extracts a specific rectangular area and scans it
-    for colored pixels indicating user markup. If found, it triggers notification,
-    logging, and Planka card creation.
+    for colored pixels indicating user markup. If found, it triggers notification
+    and logging.
 
     Args:
         pdf_path (str): The path to the PDF to scan.
-        config (Config): The application configuration, used for Planka integration.
+        config (Config): The application configuration.
     """
     badparts_logger.debug(f"Current BLACKLISTED_FILES at start of check: {BLACKLISTED_FILES}")
 
@@ -172,10 +172,6 @@ def check_for_bad_parts_highlight(pdf_path: str, config: Config) -> None:
                                 f.write(log_entry + '\n')
 
                         save_to_blacklist(pdf_path, page_num)
-
-                        # Import here to avoid circular import
-                        from .planka_api import create_planka_card
-                        create_planka_card(pdf_path, page_num, config)
 
                         send_notification("Bad Part Alert", msg)
                 finally:

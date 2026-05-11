@@ -12,8 +12,6 @@ def mock_missing_deps():
     mock_pystray = MagicMock()
     mock_sv_ttk = MagicMock()
     mock_psutil = MagicMock()
-    mock_keyring = MagicMock()
-    mock_plankapy = MagicMock()
 
     if "fitz" not in sys.modules:
         sys.modules["fitz"] = mock_fitz
@@ -28,10 +26,6 @@ def mock_missing_deps():
         sys.modules["sv_ttk"] = mock_sv_ttk
     if "psutil" not in sys.modules:
         sys.modules["psutil"] = mock_psutil
-    if "keyring" not in sys.modules:
-        sys.modules["keyring"] = mock_keyring
-    if "plankapy" not in sys.modules:
-        sys.modules["plankapy"] = mock_plankapy
 
 mock_missing_deps()
 

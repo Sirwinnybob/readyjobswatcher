@@ -46,12 +46,11 @@ pending_queue.json.backup
 # Backup directories
 backup_*/
 
-# Development library directories
-plankapy-dev/
-
 # Executables
 *.exe
 
 # Python egg info
 *.egg-info/
 *.egg
+build_log.txt
+build_out.txt

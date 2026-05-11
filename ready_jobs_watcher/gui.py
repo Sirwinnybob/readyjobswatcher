@@ -2,23 +2,23 @@
 Graphical User Interface Module.
 
 Provides the `SettingsWindow` class for the application, built with `PyQt6`.
-Allows users to configure paths, backup schedules, Planka integrations, and operation
-delays, as well as view running logs.
+Allows users to configure paths, backup schedules, operation delays,
+and alert behavior, as well as view running logs.
 """
 import logging
+from typing import List
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTabWidget, QListWidget, QTimeEdit, QSpinBox, QTextEdit, QMessageBox,
     QFormLayout, QGroupBox, QInputDialog, QCheckBox, QComboBox, QDialog,
-    QTableWidget, QTableWidgetItem, QAbstractItemView
+    QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QScrollArea
 )
 from PyQt6.QtCore import QTime, QObject, pyqtSignal, Qt
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QTextCursor, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtCore import QTimer
-import keyring
 from .alert_coordinator import AlertBatch
-
-KEYRING_SERVICE = "ReadyJobsWatcher"
+from .tracker_bad_parts import BadPartDetailRecord, TrackerBadPartKey
 
 main_logger = logging.getLogger('main')
 
@@ -38,6 +38,196 @@ class QtLogHandler(logging.Handler):
         log_entry = self.format(record)
         self.log_signal.new_log.emit(log_entry)
 
+
+class BadPartPreviewDialog(QDialog):
+    def __init__(self, record: BadPartDetailRecord, parent=None):
+        super().__init__(parent)
+        self.record = record
+        self.setWindowTitle(f"Page Preview - {record.pdf_filename} (Pg {record.page}, Part {record.part_number})")
+        self.resize(1280, 860)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        identity = (
+            f"{self.record.key.job_folder_name} | {self.record.material}\n"
+            f"{self.record.pdf_filename} | Pg {self.record.page} | Part {self.record.part_number}: {self.record.part_name}"
+        )
+        layout.addWidget(QLabel(identity))
+
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setText("Preview unavailable.")
+        self.image_label.setStyleSheet("background: #1e1e1e; color: #f0f0f0; padding: 12px;")
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.image_label)
+        layout.addWidget(scroll, 1)
+
+        caption = QLabel(self._build_caption())
+        layout.addWidget(caption)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        close_row.addWidget(close_btn)
+        layout.addLayout(close_row)
+
+        self._load_preview()
+
+    def _build_caption(self) -> str:
+        size = "?"
+        if self.record.width is not None and self.record.length is not None:
+            size = f'{self.record.width:.3f}" x {self.record.length:.3f}"'
+        cab = str(self.record.cabinet_number) if self.record.cabinet_number is not None else "-"
+        room = self.record.room or "-"
+        return f"Size: {size}   Cabinet: {cab}   Room: {room}"
+
+    def _load_preview(self):
+        if not self.record.thumbnail_path:
+            self.image_label.setText("Preview unavailable: no thumbnail metadata for this page.")
+            return
+        pixmap = QPixmap(self.record.thumbnail_path)
+        if pixmap.isNull():
+            self.image_label.setText("Preview unavailable: thumbnail image could not be loaded.")
+            return
+
+        if self.record.highlight_rect:
+            left, top, right, bottom = self.record.highlight_rect
+            painter = QPainter(pixmap)
+            pen = QPen(QColor(255, 60, 60))
+            pen.setWidth(6)
+            painter.setPen(pen)
+            painter.drawRect(left, top, max(1, right - left), max(1, bottom - top))
+            painter.end()
+
+        self.image_label.setPixmap(pixmap)
+        self.image_label.adjustSize()
+
+
+class BadPartsCenterDialog(QDialog):
+    HEADERS = ["Job", "Material", "PDF", "Page", "Part #", "Part Name", "Size", "Cabinet", "Room", "Detected", "View"]
+
+    def __init__(self, settings_window, parent=None):
+        super().__init__(parent)
+        self.settings_window = settings_window
+        self.alert_coordinator = settings_window.alert_coordinator
+        self.unack_records: List[BadPartDetailRecord] = []
+        self.ack_records: List[BadPartDetailRecord] = []
+        self.setWindowTitle("Bad Parts Center")
+        self.resize(1500, 760)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self._init_ui()
+        self.refresh_data()
+
+    @staticmethod
+    def _size_text(record: BadPartDetailRecord) -> str:
+        if record.width is None or record.length is None:
+            return "-"
+        return f'{record.width:.3f}" x {record.length:.3f}"'
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        self.tabs = QTabWidget(self)
+
+        self.unack_table = self._create_table()
+        self.ack_table = self._create_table()
+        self.tabs.addTab(self.unack_table, "Unacknowledged")
+        self.tabs.addTab(self.ack_table, "Acknowledged")
+        layout.addWidget(self.tabs)
+
+        action_row = QHBoxLayout()
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.refresh_data)
+        self.ack_selected_btn = QPushButton("Acknowledge Selected")
+        self.ack_selected_btn.clicked.connect(self.acknowledge_selected)
+        self.unack_selected_btn = QPushButton("Unacknowledge Selected")
+        self.unack_selected_btn.clicked.connect(self.unacknowledge_selected)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+
+        action_row.addWidget(self.refresh_btn)
+        action_row.addStretch()
+        action_row.addWidget(self.ack_selected_btn)
+        action_row.addWidget(self.unack_selected_btn)
+        action_row.addWidget(close_btn)
+        layout.addLayout(action_row)
+
+    def _create_table(self) -> QTableWidget:
+        table = QTableWidget(0, len(self.HEADERS), self)
+        table.setHorizontalHeaderLabels(self.HEADERS)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+        table.setSortingEnabled(False)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(False)
+        return table
+
+    def _populate_table(self, table: QTableWidget, records: List[BadPartDetailRecord]):
+        table.setRowCount(len(records))
+        for row_index, record in enumerate(records):
+            table.setItem(row_index, 0, QTableWidgetItem(record.key.job_folder_name))
+            table.setItem(row_index, 1, QTableWidgetItem(record.material))
+            table.setItem(row_index, 2, QTableWidgetItem(record.pdf_filename))
+            table.setItem(row_index, 3, QTableWidgetItem(str(record.page)))
+            table.setItem(row_index, 4, QTableWidgetItem(str(record.part_number)))
+            table.setItem(row_index, 5, QTableWidgetItem(record.part_name))
+            table.setItem(row_index, 6, QTableWidgetItem(self._size_text(record)))
+            table.setItem(row_index, 7, QTableWidgetItem(str(record.cabinet_number) if record.cabinet_number is not None else "-"))
+            table.setItem(row_index, 8, QTableWidgetItem(record.room or "-"))
+            table.setItem(row_index, 9, QTableWidgetItem(record.detected_at or "-"))
+
+            view_btn = QPushButton("View Page")
+            view_btn.clicked.connect(lambda _, rec=record: self.settings_window.show_part_preview(rec))
+            table.setCellWidget(row_index, 10, view_btn)
+
+    def refresh_data(self):
+        if self.alert_coordinator is None:
+            QMessageBox.warning(self, "Bad Parts", "Alert coordinator is not initialized.")
+            return
+        snapshot = self.alert_coordinator.get_bad_parts_snapshot(include_resolved=False)
+        self.unack_records = list(snapshot.get("unacknowledged", []))
+        self.ack_records = list(snapshot.get("acknowledged", []))
+        self._populate_table(self.unack_table, self.unack_records)
+        self._populate_table(self.ack_table, self.ack_records)
+        self.tabs.setTabText(0, f"Unacknowledged ({len(self.unack_records)})")
+        self.tabs.setTabText(1, f"Acknowledged ({len(self.ack_records)})")
+
+    @staticmethod
+    def _selected_rows(table: QTableWidget) -> List[int]:
+        selection = table.selectionModel()
+        if selection is None:
+            return []
+        return sorted({index.row() for index in selection.selectedRows()})
+
+    def acknowledge_selected(self):
+        rows = self._selected_rows(self.unack_table)
+        if not rows:
+            QMessageBox.information(self, "Bad Parts", "Select at least one unacknowledged row.")
+            return
+        keys: List[TrackerBadPartKey] = [self.unack_records[row].key for row in rows if row < len(self.unack_records)]
+        if not keys:
+            return
+        self.alert_coordinator.acknowledge_keys(keys)
+        self.refresh_data()
+
+    def unacknowledge_selected(self):
+        rows = self._selected_rows(self.ack_table)
+        if not rows:
+            QMessageBox.information(self, "Bad Parts", "Select at least one acknowledged row.")
+            return
+        keys: List[TrackerBadPartKey] = [self.ack_records[row].key for row in rows if row < len(self.ack_records)]
+        if not keys:
+            return
+        self.alert_coordinator.unacknowledge_keys(keys)
+        self.refresh_data()
+
 class SettingsWindow(QWidget):
     """
     Main configuration interface for Ready Jobs Watcher using PyQt6.
@@ -56,6 +246,7 @@ class SettingsWindow(QWidget):
         self.alert_signal = AlertSignal()
         self.alert_signal.new_batch.connect(self._show_bad_parts_alert_dialog)
         self.alert_coordinator = None
+        self.bad_parts_center_dialog = None
 
         self.qt_handler = QtLogHandler(self.log_signal)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -79,7 +270,7 @@ class SettingsWindow(QWidget):
         self.setup_status_tab()
         self.setup_paths_tab()
         self.setup_schedule_tab()
-        self.setup_planka_tab()
+        self.setup_processing_tab()
         self.setup_actions_tab()
         self.setup_log_tab()
 
@@ -205,23 +396,10 @@ class SettingsWindow(QWidget):
         layout.addStretch()
         self.tabs.addTab(tab, "Schedule")
 
-    def setup_planka_tab(self):
+    def setup_processing_tab(self):
         tab = QWidget()
         root_layout = QVBoxLayout(tab)
         layout = QFormLayout()
-
-        self.planka_url_input = QLineEdit()
-        self.planka_user_input = QLineEdit()
-        self.planka_board_input = QLineEdit()
-        self.planka_list_input = QLineEdit()
-        self.planka_pass_input = QLineEdit()
-        self.planka_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
-
-        layout.addRow("Planka Base URL:", self.planka_url_input)
-        layout.addRow("Username:", self.planka_user_input)
-        layout.addRow("Password:", self.planka_pass_input)
-        layout.addRow("Board Identifier:", self.planka_board_input)
-        layout.addRow("List Name:", self.planka_list_input)
 
         self.pdf_delay_spin = QSpinBox()
         self.pdf_delay_spin.setMaximum(100000)
@@ -260,7 +438,7 @@ class SettingsWindow(QWidget):
         root_layout.addWidget(alerts_group)
         root_layout.addStretch()
 
-        self.tabs.addTab(tab, "Planka & Delays")
+        self.tabs.addTab(tab, "Processing & Alerts")
 
 
     def setup_actions_tab(self):
@@ -326,47 +504,95 @@ class SettingsWindow(QWidget):
     def set_alert_coordinator(self, alert_coordinator):
         self.alert_coordinator = alert_coordinator
 
+    def show_part_preview(self, record: BadPartDetailRecord):
+        dialog = BadPartPreviewDialog(record, parent=self)
+        dialog.exec()
+
+    def show_bad_parts_center(self):
+        if self.config.bad_parts_mode != "tracker":
+            QMessageBox.information(
+                self,
+                "Bad Parts",
+                "Bad Parts Center is available only in Tracker mode.",
+            )
+            return
+        if self.alert_coordinator is None:
+            QMessageBox.warning(self, "Bad Parts", "Alert coordinator is not initialized.")
+            return
+
+        if self.bad_parts_center_dialog is None:
+            self.bad_parts_center_dialog = BadPartsCenterDialog(self, parent=self)
+        self.bad_parts_center_dialog.refresh_data()
+        self.bad_parts_center_dialog.show()
+        self.bad_parts_center_dialog.raise_()
+        self.bad_parts_center_dialog.activateWindow()
+
     def emit_bad_parts_alert(self, batch: AlertBatch):
         self.alert_signal.new_batch.emit(batch)
 
     def _show_bad_parts_alert_dialog(self, batch: AlertBatch):
         if not batch.events:
             return
+        if self.alert_coordinator is None:
+            return
+
+        records = self.alert_coordinator.build_detail_records_for_events(batch.events)
+        if not records:
+            return
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"BAD PART ALERT ({len(batch.events)})")
+        dialog.setWindowTitle(f"BAD PART ALERT ({len(records)})")
         dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        dialog.resize(920, 520)
+        dialog.resize(1480, 650)
 
         layout = QVBoxLayout(dialog)
         layout.addWidget(
             QLabel(
                 "New bad parts were detected from tracker data.\n"
-                "Review and click Acknowledge All to suppress repeat alerts for this batch."
+                "Review and acknowledge all or selected rows."
             )
         )
 
-        table = QTableWidget(len(batch.events), 4, dialog)
-        table.setHorizontalHeaderLabels(["Job", "Material / PDF", "Page", "Part"])
+        headers = ["Job", "Material", "PDF", "Page", "Part #", "Part Name", "Size", "Cabinet", "Room", "Detected", "View"]
+        table = QTableWidget(len(records), len(headers), dialog)
+        table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         table.verticalHeader().setVisible(False)
         table.setAlternatingRowColors(True)
+        table.setSortingEnabled(False)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
 
-        for row_index, event in enumerate(batch.events):
-            table.setItem(row_index, 0, QTableWidgetItem(event.key.job_folder_name))
-            table.setItem(row_index, 1, QTableWidgetItem(event.material_or_pdf))
-            table.setItem(row_index, 2, QTableWidgetItem(str(event.key.page)))
-            table.setItem(row_index, 3, QTableWidgetItem(str(event.key.part_number)))
+        def _size_text(record: BadPartDetailRecord) -> str:
+            if record.width is None or record.length is None:
+                return "-"
+            return f'{record.width:.3f}" x {record.length:.3f}"'
 
-        table.resizeColumnsToContents()
+        for row_index, record in enumerate(records):
+            table.setItem(row_index, 0, QTableWidgetItem(record.key.job_folder_name))
+            table.setItem(row_index, 1, QTableWidgetItem(record.material))
+            table.setItem(row_index, 2, QTableWidgetItem(record.pdf_filename))
+            table.setItem(row_index, 3, QTableWidgetItem(str(record.page)))
+            table.setItem(row_index, 4, QTableWidgetItem(str(record.part_number)))
+            table.setItem(row_index, 5, QTableWidgetItem(record.part_name))
+            table.setItem(row_index, 6, QTableWidgetItem(_size_text(record)))
+            table.setItem(row_index, 7, QTableWidgetItem(str(record.cabinet_number) if record.cabinet_number is not None else "-"))
+            table.setItem(row_index, 8, QTableWidgetItem(record.room or "-"))
+            table.setItem(row_index, 9, QTableWidgetItem(record.detected_at or "-"))
+            view_btn = QPushButton("View Page")
+            view_btn.clicked.connect(lambda _, rec=record: self.show_part_preview(rec))
+            table.setCellWidget(row_index, 10, view_btn)
+
         layout.addWidget(table)
 
         actions = QHBoxLayout()
         actions.addStretch()
 
         acknowledge_btn = QPushButton("Acknowledge All")
+        acknowledge_selected_btn = QPushButton("Acknowledge Selected")
         dismiss_btn = QPushButton("Dismiss")
 
         def _acknowledge_and_close():
@@ -374,10 +600,31 @@ class SettingsWindow(QWidget):
                 self.alert_coordinator.acknowledge_batch(batch)
             dialog.accept()
 
+        def _acknowledge_selected_and_close():
+            selection = table.selectionModel()
+            if selection is None:
+                QMessageBox.information(dialog, "Bad Parts", "Select at least one row.")
+                return
+            row_indexes = sorted({index.row() for index in selection.selectedRows()})
+            if not row_indexes:
+                QMessageBox.information(dialog, "Bad Parts", "Select at least one row.")
+                return
+            keys: List[TrackerBadPartKey] = []
+            for row in row_indexes:
+                if 0 <= row < len(records):
+                    keys.append(records[row].key)
+            if not keys:
+                QMessageBox.information(dialog, "Bad Parts", "No selectable records found.")
+                return
+            self.alert_coordinator.acknowledge_keys(keys)
+            dialog.accept()
+
         acknowledge_btn.clicked.connect(_acknowledge_and_close)
+        acknowledge_selected_btn.clicked.connect(_acknowledge_selected_and_close)
         dismiss_btn.clicked.connect(dialog.reject)
 
         actions.addWidget(dismiss_btn)
+        actions.addWidget(acknowledge_selected_btn)
         actions.addWidget(acknowledge_btn)
         layout.addLayout(actions)
         dialog.exec()
@@ -417,21 +664,6 @@ class SettingsWindow(QWidget):
 
         h, m = map(int, self.config.daily_restart_time.split(':'))
         self.restart_time_edit.setTime(QTime(h, m))
-
-        self.planka_url_input.setText(self.config.planka_base_url or "")
-        self.planka_user_input.setText(self.config.planka_username or "")
-
-        # Load password
-        password = ""
-        if self.config.planka_username:
-            try:
-                password = keyring.get_password(KEYRING_SERVICE, self.config.planka_username) or ""
-            except Exception as e:
-                main_logger.warning(f"Could not load password from keyring: {e}")
-        self.planka_pass_input.setText(password)
-
-        self.planka_board_input.setText(self.config.planka_board_identifier)
-        self.planka_list_input.setText(self.config.planka_list_name)
 
         self.pdf_delay_spin.setValue(self.config.pdf_conversion_delay_seconds)
         self.folder_delay_spin.setValue(self.config.new_folder_delay_seconds)
@@ -474,26 +706,6 @@ class SettingsWindow(QWidget):
         self.config.BACKUP_TIMES = [self.backup_times_list.item(i).text() for i in range(self.backup_times_list.count())]
 
         self.config.daily_restart_time = self.restart_time_edit.time().toString("HH:mm")
-
-        self.config.planka_base_url = self.planka_url_input.text() or None
-        self.config.planka_username = self.planka_user_input.text() or None
-
-        # Save password
-        password = self.planka_pass_input.text()
-        if self.config.planka_username and password:
-            try:
-                keyring.set_password(KEYRING_SERVICE, self.config.planka_username, password)
-            except Exception as e:
-                main_logger.error(f"Failed to save password to keyring: {e}")
-                QMessageBox.warning(self, "Warning", "Failed to save Planka password to credential manager.")
-        elif self.config.planka_username and not password:
-            try:
-                keyring.delete_password(KEYRING_SERVICE, self.config.planka_username)
-            except Exception:
-                pass
-
-        self.config.planka_board_identifier = self.planka_board_input.text()
-        self.config.planka_list_name = self.planka_list_input.text()
 
         self.config.pdf_conversion_delay_seconds = self.pdf_delay_spin.value()
         self.config.new_folder_delay_seconds = self.folder_delay_spin.value()

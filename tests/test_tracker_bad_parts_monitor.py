@@ -205,3 +205,108 @@ def test_ack_and_reactivation_behavior(tmp_path):
     events_after_reactivation = monitor.scan_once()
     assert len(events_after_reactivation) == 1
 
+
+def test_snapshot_ack_and_unack_partition(tmp_path):
+    root = tmp_path / "Ready Jobs" / "111 - TEST" / "CNC"
+    tracker_file = root / ".tracker" / "tablet-a.json"
+    _write_tracker(
+        tracker_file,
+        [
+            {
+                "file": "111 - Maple.pdf",
+                "page": 1,
+                "part": 3,
+                "action": "bad_part",
+                "timestamp": "2026-05-06T08:00:00Z",
+                "fileFingerprint": "fp-1",
+            },
+            {
+                "file": "111 - Maple.pdf",
+                "page": 1,
+                "part": 7,
+                "action": "bad_part",
+                "timestamp": "2026-05-06T08:01:00Z",
+                "fileFingerprint": "fp-1",
+            },
+        ],
+    )
+
+    monitor = _make_monitor(tmp_path)
+    new_events = monitor.scan_once()
+    assert len(new_events) == 2
+
+    first_key = new_events[0].key
+    assert monitor.acknowledge_keys([first_key]) == 1
+
+    snapshot = monitor.get_bad_parts_snapshot(include_resolved=False)
+    assert len(snapshot["unacknowledged"]) == 1
+    assert len(snapshot["acknowledged"]) == 1
+
+    assert monitor.unacknowledge_keys([first_key]) == 1
+    snapshot_after_unack = monitor.get_bad_parts_snapshot(include_resolved=False)
+    assert len(snapshot_after_unack["unacknowledged"]) == 2
+    assert len(snapshot_after_unack["acknowledged"]) == 0
+
+
+def test_detail_record_metadata_resolution_with_thumbnail_and_ocr(tmp_path):
+    root = tmp_path / "Ready Jobs" / "222 - TEST" / "CNC"
+    tracker_file = root / ".tracker" / "tablet-a.json"
+    _write_tracker(
+        tracker_file,
+        [
+            {
+                "file": "222 - Birch.pdf",
+                "page": 4,
+                "part": 11,
+                "action": "bad_part",
+                "timestamp": "2026-05-06T09:00:00Z",
+                "fileFingerprint": "fp-2",
+            }
+        ],
+    )
+
+    metadata_dir = root / ".metadata"
+    thumbs_dir = metadata_dir / ".thumbs"
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
+    thumb_file = thumbs_dir / "222 - Birch_p004.png"
+    thumb_file.write_bytes(b"fake-image")
+    (root / "222 - Birch.pdf").write_bytes(b"%PDF-1.7\n")
+
+    metadata_payload = {
+        "material": "Birch Material",
+        "pdfFilename": "222 - Birch.pdf",
+        "pages": [
+            {
+                "pageNumber": 4,
+                "thumbnailPath": ".metadata/.thumbs/222 - Birch_p004.png",
+                "parts": [
+                    {
+                        "number": 11,
+                        "name": "Shelf",
+                        "width": 12.5,
+                        "length": 30.25,
+                        "cabNumber": 4,
+                        "room": "KITCHEN",
+                    }
+                ],
+                "ocrBoxes": {
+                    "11": [{"left": 10, "top": 20, "right": 110, "bottom": 220}]
+                },
+            }
+        ],
+    }
+    (metadata_dir / "222 - Birch.json").write_text(json.dumps(metadata_payload), encoding="utf-8")
+
+    monitor = _make_monitor(tmp_path)
+    events = monitor.scan_once()
+    assert len(events) == 1
+
+    detail = monitor.get_detail_record(events[0].key, detected_at=events[0].detected_at, is_acknowledged=False)
+    assert detail.material == "Birch Material"
+    assert detail.part_name == "Shelf"
+    assert detail.width == 12.5
+    assert detail.length == 30.25
+    assert detail.cabinet_number == 4
+    assert detail.room == "KITCHEN"
+    assert detail.thumbnail_path is not None
+    assert detail.highlight_rect == (10, 20, 110, 220)

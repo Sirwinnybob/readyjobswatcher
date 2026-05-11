@@ -11,10 +11,11 @@ import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .config import BASE_DATA_DIR, Config
 from .file_handler import JobProcessor
+from .tracker_action_stream import load_cnc_tracker_actions
 
 badparts_logger = logging.getLogger("badparts")
 
@@ -65,6 +66,26 @@ class TrackerBadPartEvent:
     detected_at: str
 
 
+@dataclass(frozen=True)
+class BadPartDetailRecord:
+    key: TrackerBadPartKey
+    token: str
+    is_acknowledged: bool
+    material: str
+    pdf_filename: str
+    pdf_full_path: str
+    page: int
+    part_number: int
+    part_name: str
+    width: Optional[float]
+    length: Optional[float]
+    cabinet_number: Optional[int]
+    room: Optional[str]
+    detected_at: str
+    thumbnail_path: Optional[str]
+    highlight_rect: Optional[Tuple[int, int, int, int]]
+
+
 @dataclass
 class TrackerBadPartState:
     active_keys: Set[str] = field(default_factory=set)
@@ -106,6 +127,7 @@ class TrackerBadPartsMonitor:
         self.state_file = state_file
         self._lock = threading.Lock()
         self._material_cache: Dict[Tuple[str, str], str] = {}
+        self._metadata_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
         self.state = self._load_state()
 
     def _load_state(self) -> TrackerBadPartState:
@@ -167,14 +189,7 @@ class TrackerBadPartsMonitor:
         if cache_key in self._material_cache:
             return self._material_cache[cache_key]
 
-        meta_name = os.path.splitext(key.pdf_filename)[0] + ".json"
-        meta_path = os.path.join(
-            self.config.ROOT_DIR,
-            key.job_folder_name,
-            self.config.CNC_SUBDIR,
-            ".metadata",
-            meta_name,
-        )
+        meta_path = self._metadata_path_for_key(key)
         material = key.pdf_filename
         try:
             if os.path.exists(meta_path):
@@ -188,28 +203,187 @@ class TrackerBadPartsMonitor:
         self._material_cache[cache_key] = material
         return material
 
-    def _collect_active_events(self) -> Dict[str, TrackerBadPartEvent]:
+    def _metadata_path_for_key(self, key: TrackerBadPartKey) -> str:
+        meta_name = os.path.splitext(key.pdf_filename)[0] + ".json"
+        return os.path.join(
+            self.config.ROOT_DIR,
+            key.job_folder_name,
+            self.config.CNC_SUBDIR,
+            ".metadata",
+            meta_name,
+        )
+
+    def _load_metadata_for_key(self, key: TrackerBadPartKey) -> Optional[Dict[str, Any]]:
+        cache_key = (key.job_folder_name, key.pdf_filename)
+        if cache_key in self._metadata_cache:
+            return self._metadata_cache[cache_key]
+
+        meta_path = self._metadata_path_for_key(key)
+        metadata: Optional[Dict[str, Any]] = None
+        try:
+            if os.path.exists(meta_path):
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    metadata = raw
+        except Exception:
+            metadata = None
+
+        self._metadata_cache[cache_key] = metadata
+        return metadata
+
+    def _resolve_page_metadata(self, metadata: Dict[str, Any], page: int) -> Optional[Dict[str, Any]]:
+        pages = metadata.get("pages", [])
+        if not isinstance(pages, list):
+            return None
+        for page_meta in pages:
+            if not isinstance(page_meta, dict):
+                continue
+            if page_meta.get("pageNumber") == page:
+                return page_meta
+        return None
+
+    @staticmethod
+    def _extract_highlight_rect(page_meta: Dict[str, Any], part_number: int) -> Optional[Tuple[int, int, int, int]]:
+        ocr_boxes = page_meta.get("ocrBoxes")
+        if not isinstance(ocr_boxes, dict):
+            return None
+        part_boxes = ocr_boxes.get(str(part_number))
+        if not isinstance(part_boxes, list) or not part_boxes:
+            return None
+        first_box = part_boxes[0]
+        if not isinstance(first_box, dict):
+            return None
+        try:
+            left = int(first_box.get("left"))
+            top = int(first_box.get("top"))
+            right = int(first_box.get("right"))
+            bottom = int(first_box.get("bottom"))
+        except (TypeError, ValueError):
+            return None
+        if right <= left or bottom <= top:
+            return None
+        return (left, top, right, bottom)
+
+    def _resolve_thumbnail_path(self, key: TrackerBadPartKey, page_meta: Dict[str, Any]) -> Optional[str]:
+        thumbnail_rel = page_meta.get("thumbnailPath")
+        if not isinstance(thumbnail_rel, str) or not thumbnail_rel.strip():
+            return None
+        path = os.path.normpath(
+            os.path.join(
+                self.config.ROOT_DIR,
+                key.job_folder_name,
+                self.config.CNC_SUBDIR,
+                thumbnail_rel.replace("/", os.sep),
+            )
+        )
+        if os.path.exists(path):
+            return path
+        return None
+
+    def _build_detail_record(
+        self,
+        key: TrackerBadPartKey,
+        detected_at: str,
+        is_acknowledged: bool,
+    ) -> BadPartDetailRecord:
+        material = self._load_material_name(key)
+        part_name = f"Part {key.part_number}"
+        width: Optional[float] = None
+        length: Optional[float] = None
+        cabinet_number: Optional[int] = None
+        room: Optional[str] = None
+        thumbnail_path: Optional[str] = None
+        highlight_rect: Optional[Tuple[int, int, int, int]] = None
+
+        metadata = self._load_metadata_for_key(key)
+        if metadata:
+            page_meta = self._resolve_page_metadata(metadata, key.page)
+            if page_meta:
+                parts = page_meta.get("parts", [])
+                if isinstance(parts, list):
+                    for part in parts:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("number") != key.part_number:
+                            continue
+                        part_name = str(part.get("name") or part_name)
+                        try:
+                            width = float(part["width"]) if part.get("width") is not None else None
+                        except (TypeError, ValueError):
+                            width = None
+                        try:
+                            length = float(part["length"]) if part.get("length") is not None else None
+                        except (TypeError, ValueError):
+                            length = None
+                        cab_value = part.get("cabNumber")
+                        if isinstance(cab_value, int):
+                            cabinet_number = cab_value
+                        room_value = part.get("room")
+                        if isinstance(room_value, str) and room_value.strip():
+                            room = room_value.strip()
+                        break
+
+                thumbnail_path = self._resolve_thumbnail_path(key, page_meta)
+                highlight_rect = self._extract_highlight_rect(page_meta, key.part_number)
+
+        pdf_full_path = os.path.normpath(
+            os.path.join(
+                self.config.ROOT_DIR,
+                key.job_folder_name,
+                self.config.CNC_SUBDIR,
+                key.pdf_filename,
+            )
+        )
+
+        return BadPartDetailRecord(
+            key=key,
+            token=key.to_token(),
+            is_acknowledged=is_acknowledged,
+            material=material,
+            pdf_filename=key.pdf_filename,
+            pdf_full_path=pdf_full_path,
+            page=key.page,
+            part_number=key.part_number,
+            part_name=part_name,
+            width=width,
+            length=length,
+            cabinet_number=cabinet_number,
+            room=room,
+            detected_at=detected_at,
+            thumbnail_path=thumbnail_path,
+            highlight_rect=highlight_rect,
+        )
+
+    def get_detail_record(
+        self,
+        key: TrackerBadPartKey,
+        detected_at: str = "",
+        is_acknowledged: bool = False,
+    ) -> BadPartDetailRecord:
+        with self._lock:
+            return self._build_detail_record(
+                key=key,
+                detected_at=detected_at,
+                is_acknowledged=is_acknowledged,
+            )
+
+    def _collect_active_events_with_reactivations(self) -> Tuple[Dict[str, TrackerBadPartEvent], Set[str]]:
         action_rows: List[Tuple[str, str, int, Dict[str, object]]] = []
-        for job_folder_name, tracker_file_path in self._iter_tracker_files():
-            try:
-                with open(tracker_file_path, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
-                if not isinstance(payload, dict):
-                    continue
-                actions = payload.get("actions", [])
-                if not isinstance(actions, list):
-                    continue
-                for idx, action in enumerate(actions):
-                    if isinstance(action, dict):
-                        timestamp = str(action.get("timestamp", "") or "")
-                        action_rows.append((timestamp, tracker_file_path, idx, {"jobFolderName": job_folder_name, **action}))
-            except Exception as exc:
-                badparts_logger.warning(f"Skipping malformed tracker file: {tracker_file_path} ({exc})")
+        for job_folder_name, job_folder_path in self._iter_job_folders():
+            tracker_dir = os.path.join(job_folder_path, self.config.CNC_SUBDIR, ".tracker")
+            if not os.path.isdir(tracker_dir):
+                continue
+            actions = load_cnc_tracker_actions(tracker_dir, logger=badparts_logger)
+            for idx, action in enumerate(actions):
+                timestamp = str(action.get("timestamp", "") or "")
+                action_rows.append((timestamp, job_folder_name, idx, {"jobFolderName": job_folder_name, **action}))
 
         action_rows.sort(key=lambda row: (row[0], row[1], row[2]))
 
         status_map: Dict[str, bool] = {}
         event_map: Dict[str, TrackerBadPartEvent] = {}
+        reactivated_tokens: Set[str] = set()
         for _, _, _, action in action_rows:
             action_name = str(action.get("action", "") or "").strip().lower()
             if action_name not in ("bad_part", "unbad_part"):
@@ -235,6 +409,8 @@ class TrackerBadPartsMonitor:
             token = key.to_token()
 
             if action_name == "bad_part":
+                if token in status_map and status_map[token] is False:
+                    reactivated_tokens.add(token)
                 status_map[token] = True
                 detected_at = str(action.get("timestamp", "") or "")
                 event_map[token] = TrackerBadPartEvent(
@@ -252,6 +428,10 @@ class TrackerBadPartsMonitor:
             event = event_map.get(token)
             if event is not None:
                 active_events[token] = event
+        return active_events, reactivated_tokens
+
+    def _collect_active_events(self) -> Dict[str, TrackerBadPartEvent]:
+        active_events, _ = self._collect_active_events_with_reactivations()
         return active_events
 
     def scan_once(self) -> List[TrackerBadPartEvent]:
@@ -259,7 +439,7 @@ class TrackerBadPartsMonitor:
         Rebuild active tracker bad-parts and return newly activated events.
         """
         with self._lock:
-            active_events = self._collect_active_events()
+            active_events, reactivated_tokens = self._collect_active_events_with_reactivations()
             active_tokens = set(active_events.keys())
 
             resolved_tokens = self.state.active_keys - active_tokens
@@ -296,6 +476,23 @@ class TrackerBadPartsMonitor:
                     event.key.file_fingerprint,
                 )
 
+            new_event_tokens = {event.key.to_token() for event in new_events}
+            reactivated_alert_tokens = (active_tokens & self.state.acknowledged_keys & reactivated_tokens) - new_event_tokens
+            for token in sorted(reactivated_alert_tokens):
+                event = active_events.get(token)
+                if event is None:
+                    continue
+                self.state.acknowledged_keys.discard(token)
+                new_events.append(event)
+                badparts_logger.warning(
+                    "TRACKER_REACTIVATED job=%s pdf=%s page=%s part=%s fp=%s",
+                    event.key.job_folder_name,
+                    event.key.pdf_filename,
+                    event.key.page,
+                    event.key.part_number,
+                    event.key.file_fingerprint,
+                )
+
             self.state.active_keys = active_tokens
             self.state.seen_keys |= active_tokens
             self._save_state()
@@ -320,3 +517,70 @@ class TrackerBadPartsMonitor:
                 )
             return len(tokens)
 
+    def unacknowledge_keys(self, keys: Iterable[TrackerBadPartKey]) -> int:
+        with self._lock:
+            tokens = {key.to_token() for key in keys}
+            if not tokens:
+                return 0
+            removed = self.state.acknowledged_keys & tokens
+            if not removed:
+                return 0
+            self.state.acknowledged_keys -= removed
+            self._save_state()
+            for token in sorted(removed):
+                key = TrackerBadPartKey.from_token(token)
+                badparts_logger.info(
+                    "TRACKER_UNACK job=%s pdf=%s page=%s part=%s fp=%s",
+                    key.job_folder_name,
+                    key.pdf_filename,
+                    key.page,
+                    key.part_number,
+                    key.file_fingerprint,
+                )
+            return len(removed)
+
+    def get_bad_parts_snapshot(self, include_resolved: bool = False) -> Dict[str, List[BadPartDetailRecord]]:
+        with self._lock:
+            active_events = self._collect_active_events()
+            active_tokens = set(active_events.keys())
+            acknowledged_tokens = self.state.acknowledged_keys & active_tokens
+
+            unack_records: List[BadPartDetailRecord] = []
+            ack_records: List[BadPartDetailRecord] = []
+            for token in sorted(active_tokens):
+                event = active_events.get(token)
+                if event is None:
+                    continue
+                record = self._build_detail_record(
+                    key=event.key,
+                    detected_at=event.detected_at,
+                    is_acknowledged=token in acknowledged_tokens,
+                )
+                if record.is_acknowledged:
+                    ack_records.append(record)
+                else:
+                    unack_records.append(record)
+
+            payload: Dict[str, List[BadPartDetailRecord]] = {
+                "unacknowledged": unack_records,
+                "acknowledged": ack_records,
+            }
+
+            if include_resolved:
+                resolved_records: List[BadPartDetailRecord] = []
+                resolved_tokens = self.state.seen_keys - active_tokens
+                for token in sorted(resolved_tokens):
+                    try:
+                        key = TrackerBadPartKey.from_token(token)
+                    except Exception:
+                        continue
+                    resolved_records.append(
+                        self._build_detail_record(
+                            key=key,
+                            detected_at="",
+                            is_acknowledged=False,
+                        )
+                    )
+                payload["resolved"] = resolved_records
+
+            return payload

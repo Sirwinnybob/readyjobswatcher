@@ -2,8 +2,8 @@
 Configuration Management Module.
 
 This module provides the `Config` class, which handles loading, validating,
-and saving application configuration settings, including backup schedules,
-Planka integration credentials, and processing delays.
+and saving application configuration settings, including backup schedules
+and processing delays.
 """
 import os
 import json
@@ -48,11 +48,6 @@ class Config:
             'sat': None, # No scan on Saturday
             'sun': None  # No scan on Sunday
         }
-        # Planka configuration
-        self.planka_board_identifier = "1529904146918934223"  # Can be ID or name
-        self.planka_list_name = "CNC"  # Default list name
-        self.planka_base_url = None  # URL for Planka server
-        self.planka_username = None  # Username for Planka (password stored in Windows Credential Manager)
         # PDF conversion and folder processing delays
         self.pdf_conversion_delay_seconds = 30  # Default: 30 seconds
         self.new_folder_delay_seconds = 1200  # Default: 20 minutes
@@ -63,6 +58,8 @@ class Config:
         self.bad_parts_popup_enabled = True
         self.bad_parts_toast_enabled = True
         self.bad_parts_sound_profile = "triple_beep"  # triple_beep | none
+        self.tracker_reconcile_interval_seconds = 300
+        self.assimp_path: Optional[str] = None
         self.load()
 
     def _validate_config(self, config: Dict) -> bool:
@@ -122,6 +119,17 @@ class Config:
             if config["bad_parts_sound_profile"] not in ("triple_beep", "none"):
                 main_logger.error("Config validation failed: bad_parts_sound_profile must be 'triple_beep' or 'none'")
                 return False
+        if "tracker_reconcile_interval_seconds" in config:
+            value = config["tracker_reconcile_interval_seconds"]
+            if not isinstance(value, (int, float)) or value < 30:
+                main_logger.error(
+                    "Config validation failed: tracker_reconcile_interval_seconds must be a number >= 30"
+                )
+                return False
+        if "assimp_path" in config and config["assimp_path"] is not None:
+            if not isinstance(config["assimp_path"], str):
+                main_logger.error("Config validation failed: assimp_path must be a string or null")
+                return False
 
         return True
 
@@ -164,8 +172,6 @@ class Config:
                 self.BACKUP_DIR = config.get('backup_dir', self.BACKUP_DIR)
                 self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
                 self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
-                self.planka_base_url = config.get('planka_base_url')
-                self.planka_username = config.get('planka_username')
                 self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
                 self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
                 self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
@@ -173,9 +179,11 @@ class Config:
                 self.bad_parts_popup_enabled = config.get("bad_parts_popup_enabled", self.bad_parts_popup_enabled)
                 self.bad_parts_toast_enabled = config.get("bad_parts_toast_enabled", self.bad_parts_toast_enabled)
                 self.bad_parts_sound_profile = config.get("bad_parts_sound_profile", self.bad_parts_sound_profile)
+                self.tracker_reconcile_interval_seconds = int(
+                    config.get("tracker_reconcile_interval_seconds", self.tracker_reconcile_interval_seconds)
+                )
+                self.assimp_path = config.get("assimp_path", self.assimp_path)
                 main_logger.info(f"Loaded backup times from config: {self.BACKUP_TIMES}")
-                if self.planka_username:
-                    main_logger.info(f"Loaded Planka settings: URL={self.planka_base_url}, Username={self.planka_username}")
             else:
                 main_logger.debug(f"No config file found at {self.CONFIG_FILE}, using default backup times")
         except json.JSONDecodeError as e:
@@ -192,8 +200,6 @@ class Config:
                         self.BACKUP_DIR = config.get('backup_dir', self.BACKUP_DIR)
                         self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
                         self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
-                        self.planka_base_url = config.get('planka_base_url')
-                        self.planka_username = config.get('planka_username')
                         self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
                         self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
                         self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
@@ -201,6 +207,10 @@ class Config:
                         self.bad_parts_popup_enabled = config.get("bad_parts_popup_enabled", self.bad_parts_popup_enabled)
                         self.bad_parts_toast_enabled = config.get("bad_parts_toast_enabled", self.bad_parts_toast_enabled)
                         self.bad_parts_sound_profile = config.get("bad_parts_sound_profile", self.bad_parts_sound_profile)
+                        self.tracker_reconcile_interval_seconds = int(
+                            config.get("tracker_reconcile_interval_seconds", self.tracker_reconcile_interval_seconds)
+                        )
+                        self.assimp_path = config.get("assimp_path", self.assimp_path)
                         main_logger.info("Successfully restored config from backup")
                         # Save restored config
                         with open(self.CONFIG_FILE, 'w') as f:
@@ -231,15 +241,15 @@ class Config:
                 'backup_dir': self.BACKUP_DIR,
                 'backup_folders': self.BACKUP_FOLDERS,
                 'backup_times': self.BACKUP_TIMES,
-                'planka_base_url': self.planka_base_url,
-                'planka_username': self.planka_username,
                 'pdf_conversion_delay_seconds': self.pdf_conversion_delay_seconds,
                 'new_folder_delay_seconds': self.new_folder_delay_seconds,
                 'daily_restart_time': self.daily_restart_time,
                 'bad_parts_mode': self.bad_parts_mode,
                 'bad_parts_popup_enabled': self.bad_parts_popup_enabled,
                 'bad_parts_toast_enabled': self.bad_parts_toast_enabled,
-                'bad_parts_sound_profile': self.bad_parts_sound_profile
+                'bad_parts_sound_profile': self.bad_parts_sound_profile,
+                'tracker_reconcile_interval_seconds': self.tracker_reconcile_interval_seconds,
+                'assimp_path': self.assimp_path
             }
 
             # Validate the config we're about to save
@@ -260,7 +270,6 @@ class Config:
             with open(self.CONFIG_FILE, 'w') as f:
                 json.dump(config, f, indent=4)
             main_logger.info(f"Saved backup times to config: {self.BACKUP_TIMES}")
-            main_logger.info(f"Saved Planka settings: URL={self.planka_base_url}, Username={self.planka_username}")
         except Exception as e:
             main_logger.error(f"Failed to save config: {e}")
 

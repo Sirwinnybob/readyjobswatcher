@@ -1,0 +1,60 @@
+{
+  "assimpExe": "C:\\Scripts\\Assimp\\assimp-v6.0.5-isolated\\install\\bin\\assimp.exe",
+  "testRoot": "C:\\Scripts\\KKCSheetTracker\\test\\3D",
+  "files": [
+    {
+      "dae": "C:\\Scripts\\KKCSheetTracker\\test\\3D\\KITCHEN\\3D.dae",
+      "watcherGlb": "C:\\Scripts\\KKCSheetTracker\\test\\3D\\KITCHEN\\3d_medium.glb",
+      "assimpRaw": {
+        "returnCode": 10,
+        "stderr": "",
+        "stdout": "param = .\\.tmp_ab_7cde16affd034349a97efa5494eaa8db_raw.glb\nparam = glb2\nparam = -tri\nparam = -gn\nparam = -jiv\nparam = -et\nparam = -emb\nassimp export: select file format: 'glb2' (GL Transmission Format v. 2 (binary))\nLaunching asset import ...           OK\nValidating postprocessing flags ...  OK\n\n0 %\n50 %ERROR: Failed to load file: Unexpected sub element <h> in tag <polygons>",
+        "stats": null
+      },
+      "assimpMinimal": {
+        "returnCode": 0,
+        "stderr": "",
+        "stdout": "param = .\\.tmp_ab_7cde16affd034349a97efa5494eaa8db_minimal.glb\nparam = glb2\nparam = -tri\nparam = -gn\nparam = -jiv\nparam = -et\nparam = -emb\nassimp export: select file format: 'glb2' (GL Transmission Format v. 2 (binary))\nLaunching asset import ...           OK\nValidating postprocessing flags ...  OK\n\n0 %\n50 %\n50 %\n51.5152 %\n53.0303 %\n54.5455 %\n56.0606 %\n57.5758 %\n59.0909 %\n60.6061 %\n62.1212 %\n63.6364 %\n65.1515 %\n66.6667 %\n68.1818 %\n69.697 %\n71.2121 %\n72.7273 %\n74.2424 %\n75.7576 %\n77.2727 %\n78.787",
+        "stats": {
+          "meshes": 4219,
+          "vertices": 409293,
+          "faces": 136431
+        }
+      },
+      "watcherStats": {
+        "meshes": 4039,
+        "vertices": 96573,
+        "faces": 116198
+      },
+      "minimalMatchesRaw": null,
+      "note": "raw assimp path failed (expected for files with <ph>/<h>); minimal path used as canonical"
+    },
+    {
+      "dae": "C:\\Scripts\\KKCSheetTracker\\test\\3D\\UTILITY VANITIES\\3D.dae",
+      "watcherGlb": "C:\\Scripts\\KKCSheetTracker\\test\\3D\\UTILITY VANITIES\\3d_medium.glb",
+      "assimpRaw": {
+        "returnCode": 10,
+        "stderr": "",
+        "stdout": "param = .\\.tmp_ab_43fad44d525b4dea8f35387dae5d939f_raw.glb\nparam = glb2\nparam = -tri\nparam = -gn\nparam = -jiv\nparam = -et\nparam = -emb\nassimp export: select file format: 'glb2' (GL Transmission Format v. 2 (binary))\nLaunching asset import ...           OK\nValidating postprocessing flags ...  OK\n\n0 %\n50 %ERROR: Failed to load file: Unexpected sub element <h> in tag <polygons>",
+        "stats": null
+      },
+      "assimpMinimal": {
+        "returnCode": 0,
+        "stderr": "",
+        "stdout": "param = .\\.tmp_ab_43fad44d525b4dea8f35387dae5d939f_minimal.glb\nparam = glb2\nparam = -tri\nparam = -gn\nparam = -jiv\nparam = -et\nparam = -emb\nassimp export: select file format: 'glb2' (GL Transmission Format v. 2 (binary))\nLaunching asset import ...           OK\nValidating postprocessing flags ...  OK\n\n0 %\n50 %\n50 %\n51.5152 %\n53.0303 %\n54.5455 %\n56.0606 %\n57.5758 %\n59.0909 %\n60.6061 %\n62.1212 %\n63.6364 %\n65.1515 %\n66.6667 %\n68.1818 %\n69.697 %\n71.2121 %\n72.7273 %\n74.2424 %\n75.7576 %\n77.2727 %\n78.787",
+        "stats": {
+          "meshes": 2015,
+          "vertices": 233961,
+          "faces": 77987
+        }
+      },
+      "watcherStats": {
+        "meshes": 1907,
+        "vertices": 52741,
+        "faces": 69423
+      },
+      "minimalMatchesRaw": null,
+      "note": "raw assimp path failed (expected for files with <ph>/<h>); minimal path used as canonical"
+    }
+  ]
+}

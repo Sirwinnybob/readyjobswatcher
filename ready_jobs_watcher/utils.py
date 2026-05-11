@@ -105,7 +105,6 @@ def clear_old_logs():
         os.path.join(BASE_DATA_DIR, 'backup.log'),
         os.path.join(BASE_DATA_DIR, 'cnc_scan.log'),
         os.path.join(BASE_DATA_DIR, 'bad_parts.log'),
-        os.path.join(BASE_DATA_DIR, 'planka.log'),
         os.path.join(BASE_DATA_DIR, 'send_notification.log')
     ]
 

@@ -73,6 +73,9 @@ class RJWTrayIcon(QSystemTrayIcon):
         self.action_scan = self.menu.addAction("Scan CNC Now")
         self.action_scan.triggered.connect(self.scan_cnc_now)
 
+        self.action_bad_parts = self.menu.addAction("View Bad Parts")
+        self.action_bad_parts.triggered.connect(self.view_bad_parts)
+
         self.menu.addSeparator()
 
         self.action_restart = self.menu.addAction("Restart")
@@ -95,6 +98,10 @@ class RJWTrayIcon(QSystemTrayIcon):
     def scan_cnc_now(self):
         logging.info("Manual CNC scan triggered from system tray.")
         threading.Thread(target=self.main_app.scan_cnc_pdfs_for_bad_parts, daemon=True).start()
+
+    def view_bad_parts(self):
+        logging.info("Open Bad Parts Center from tray.")
+        self.settings_window.show_bad_parts_center()
 
     def restart_app(self):
         logging.info("Restarting application...")
