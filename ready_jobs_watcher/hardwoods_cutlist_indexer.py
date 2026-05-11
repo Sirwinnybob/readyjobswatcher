@@ -11,6 +11,8 @@ import logging
 import os
 import re
 from collections import defaultdict
+from decimal import Decimal
+from decimal import InvalidOperation
 from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
@@ -20,6 +22,7 @@ main_logger = logging.getLogger("main")
 
 HARDWOODS_METADATA_DIR = "hardwoods"
 HARDWOODS_INDEX_FILENAME = "cutlist_index.json"
+HARDWOODS_REVISION_FILENAME = "cutlist_revisions.json"
 
 DOC_TYPE_FACE_FRAME = "FACE_FRAME_CUT_LIST"
 DOC_TYPE_NAILER = "NAILER_CUT_LIST"
@@ -526,6 +529,38 @@ def _parse_totals_continuation(rows_by_y: List[Tuple[float, List[Dict]]], label_
     return None
 
 
+def _format_decimal(value: Decimal) -> str:
+    text = format(value.normalize(), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _normalize_totals_lengths_for_doc_type(doc_type: str, totals: List[Dict]) -> None:
+    # Door Cut List totals are exported in inches; normalize to feet in the index.
+    if doc_type != DOC_TYPE_DOOR_CUT:
+        return
+    divisor = Decimal("12")
+    for block in totals:
+        raw_values = block.get("lengthValues", [])
+        if not isinstance(raw_values, list):
+            continue
+        normalized_values: List[str] = []
+        for raw in raw_values:
+            text = str(raw or "").strip()
+            if not text:
+                normalized_values.append(text)
+                continue
+            try:
+                value = Decimal(text)
+            except InvalidOperation:
+                normalized_values.append(text)
+                continue
+            converted = value / divisor
+            normalized_values.append(_format_decimal(converted))
+        block["lengthValues"] = normalized_values
+
+
 def _assign_material_to_totals(
     totals: List[Dict], material_markers: List[Tuple[float, str]], prior_material: Optional[str]
 ) -> Tuple[List[Dict], Optional[str]]:
@@ -642,6 +677,8 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
         if not template_detected:
             raise TemplateMismatchError("new template header/pipe structure not detected")
 
+        _normalize_totals_lengths_for_doc_type(doc_type, totals)
+
         for block in totals:
             block.pop("labelCenters", None)
             block.pop("blockY", None)
@@ -704,6 +741,10 @@ def _index_path_for_job(job_folder_path: str) -> str:
     return os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR, HARDWOODS_INDEX_FILENAME)
 
 
+def _revision_path_for_job(job_folder_path: str) -> str:
+    return os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR, HARDWOODS_REVISION_FILENAME)
+
+
 def _load_existing_index(job_folder_path: str) -> Optional[Dict]:
     out_path = _index_path_for_job(job_folder_path)
     if not os.path.isfile(out_path):
@@ -721,6 +762,29 @@ def _load_existing_index(job_folder_path: str) -> Optional[Dict]:
         return None
 
 
+def _load_existing_revision_state(job_folder_path: str) -> Optional[Dict]:
+    out_path = _revision_path_for_job(job_folder_path)
+    if not os.path.isfile(out_path):
+        return None
+    try:
+        with open(out_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _write_revision_state(job_folder_path: str, payload: Dict) -> str:
+    metadata_dir = os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR)
+    os.makedirs(metadata_dir, exist_ok=True)
+    out_path = _revision_path_for_job(job_folder_path)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return out_path
+
+
 def _normalize_match_text(raw: str) -> str:
     return re.sub(r"\s+", " ", str(raw or "").strip()).upper()
 
@@ -735,6 +799,269 @@ def _normalize_dimension_value(raw: str) -> str:
         return _normalize_match_text(text)
     normalized = f"{value:.6f}".rstrip("0").rstrip(".")
     return normalized if normalized else "0"
+
+
+def _normalize_description_value(raw: str) -> str:
+    return _normalize_match_text(raw)
+
+
+def _normalize_cabinet_tokens(raw_tokens: List[str]) -> str:
+    cleaned = []
+    for token in raw_tokens or []:
+        text = _normalize_match_text(token)
+        if text:
+            cleaned.append(text)
+    deduped = sorted(set(cleaned))
+    return "|".join(deduped)
+
+
+def _row_revision_match_key(doc_type: str, row: Dict) -> str:
+    material = _normalize_match_text(row.get("material", ""))
+    description = _normalize_description_value(row.get("description", ""))
+    cabinets = _normalize_cabinet_tokens(list(row.get("cabinets", []) or []))
+    return f"{doc_type}|{material}|{description}|{cabinets}"
+
+
+def _row_dimension_tuple(row: Dict) -> Tuple[str, str, str]:
+    qty = str(int(row.get("qty", 0) or 0))
+    width = _normalize_dimension_value(row.get("width", ""))
+    length = _normalize_dimension_value(row.get("length", ""))
+    return qty, width, length
+
+
+def _serialize_revision_row(doc_type: str, row: Dict) -> Dict:
+    return {
+        "docType": doc_type,
+        "rowId": str(row.get("rowId", "") or ""),
+        "page": int(row.get("page", 0) or 0),
+        "rowOrdinal": int(row.get("rowOrdinal", 0) or 0),
+        "qty": int(row.get("qty", 0) or 0),
+        "material": str(row.get("material", "") or ""),
+        "description": str(row.get("description", "") or ""),
+        "width": str(row.get("width", "") or ""),
+        "length": str(row.get("length", "") or ""),
+        "cabinets": sorted(list(row.get("cabinets", []) or []), key=lambda v: str(v)),
+    }
+
+
+def _extract_rows_by_doc(index_payload: Optional[Dict]) -> Dict[str, List[Dict]]:
+    if not isinstance(index_payload, dict):
+        return {}
+    docs = index_payload.get("documents", [])
+    if not isinstance(docs, list):
+        return {}
+    out: Dict[str, List[Dict]] = {}
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+        doc_type = str(doc.get("docType", "") or "")
+        if not doc_type:
+            continue
+        rows = [row for row in doc.get("rows", []) if isinstance(row, dict)]
+        out[doc_type] = rows
+    return out
+
+
+def _tracker_done_by_row(job_folder_path: str) -> Dict[Tuple[str, str], int]:
+    return {
+        key: values[0]
+        for key, values in _tracker_completion_priority(job_folder_path).items()
+    }
+
+
+def _build_revision_delta(
+    previous_index: Optional[Dict],
+    next_docs: List[Dict],
+) -> Dict:
+    old_rows_by_doc = _extract_rows_by_doc(previous_index)
+    new_rows_by_doc = _extract_rows_by_doc({"documents": next_docs})
+    doc_types = sorted(set(old_rows_by_doc.keys()) | set(new_rows_by_doc.keys()))
+
+    added: List[Dict] = []
+    removed: List[Dict] = []
+    modified: List[Dict] = []
+
+    for doc_type in doc_types:
+        old_rows = old_rows_by_doc.get(doc_type, [])
+        new_rows = new_rows_by_doc.get(doc_type, [])
+
+        old_buckets: Dict[str, List[Dict]] = defaultdict(list)
+        new_buckets: Dict[str, List[Dict]] = defaultdict(list)
+        for row in old_rows:
+            old_buckets[_row_revision_match_key(doc_type, row)].append(row)
+        for row in new_rows:
+            new_buckets[_row_revision_match_key(doc_type, row)].append(row)
+
+        all_keys = sorted(set(old_buckets.keys()) | set(new_buckets.keys()))
+        for key in all_keys:
+            old_bucket = sorted(old_buckets.get(key, []), key=_row_order_key)
+            new_bucket = sorted(new_buckets.get(key, []), key=_row_order_key)
+            paired_count = min(len(old_bucket), len(new_bucket))
+
+            for idx in range(paired_count):
+                old_row = old_bucket[idx]
+                new_row = new_bucket[idx]
+                old_dims = _row_dimension_tuple(old_row)
+                new_dims = _row_dimension_tuple(new_row)
+                if old_dims == new_dims:
+                    continue
+                changed_fields: List[str] = []
+                if old_dims[0] != new_dims[0]:
+                    changed_fields.append("qty")
+                if old_dims[1] != new_dims[1]:
+                    changed_fields.append("width")
+                if old_dims[2] != new_dims[2]:
+                    changed_fields.append("length")
+                modified.append(
+                    {
+                        "before": _serialize_revision_row(doc_type, old_row),
+                        "after": _serialize_revision_row(doc_type, new_row),
+                        "changedFields": changed_fields,
+                    }
+                )
+
+            for old_row in old_bucket[paired_count:]:
+                removed.append(_serialize_revision_row(doc_type, old_row))
+            for new_row in new_bucket[paired_count:]:
+                added.append(_serialize_revision_row(doc_type, new_row))
+
+    return {
+        "added": added,
+        "removed": removed,
+        "modified": modified,
+    }
+
+
+def _upsert_revision_state(job_folder_path: str, previous_index: Optional[Dict], next_docs: List[Dict]) -> Optional[Dict]:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    state = _load_existing_revision_state(job_folder_path) or {}
+    revisions = state.get("revisions", [])
+    if not isinstance(revisions, list):
+        revisions = []
+    row_states = state.get("currentRowStates", [])
+    if not isinstance(row_states, list):
+        row_states = []
+
+    if previous_index is None or not revisions:
+        baseline = {
+            "revision": 1,
+            "kind": "SNAPSHOT",
+            "timestamp": now,
+            "added": [],
+            "removed": [],
+            "modified": [],
+        }
+        payload = {
+            "schemaVersion": 1,
+            "updatedAt": now,
+            "currentRevision": 1,
+            "revisions": [baseline],
+            "currentRowStates": [],
+        }
+        _write_revision_state(job_folder_path, payload)
+        return payload
+
+    delta = _build_revision_delta(previous_index, next_docs)
+    has_changes = bool(delta["added"] or delta["removed"] or delta["modified"])
+    current_revision = int(state.get("currentRevision", 1) or 1)
+
+    new_rows_by_doc = _extract_rows_by_doc({"documents": next_docs})
+    next_row_map: Dict[Tuple[str, str], Dict] = {}
+    for doc_type, rows in new_rows_by_doc.items():
+        for row in rows:
+            row_id = str(row.get("rowId", "") or "")
+            if row_id:
+                next_row_map[(doc_type, row_id)] = row
+
+    done_counts = _tracker_done_by_row(job_folder_path)
+    carried: Dict[Tuple[str, str], Dict] = {}
+    for item in row_states:
+        if not isinstance(item, dict):
+            continue
+        doc_type = str(item.get("docType", "") or "")
+        row_id = str(item.get("rowId", "") or "")
+        key = (doc_type, row_id)
+        if key not in next_row_map:
+            continue
+        latest_revision = int(item.get("latestRevision", 0) or 0)
+        changed_pending = bool(item.get("changedPendingRecut", False))
+        carried[key] = {
+            "docType": doc_type,
+            "rowId": row_id,
+            "latestRevision": latest_revision,
+            "changedPendingRecut": changed_pending,
+        }
+
+    if has_changes:
+        current_revision += 1
+        revision_entry = {
+            "revision": current_revision,
+            "kind": "DIFF",
+            "timestamp": now,
+            "added": delta["added"],
+            "removed": delta["removed"],
+            "modified": delta["modified"],
+        }
+        revisions = list(revisions) + [revision_entry]
+
+        for mod in delta["modified"]:
+            before = mod.get("before", {})
+            after = mod.get("after", {})
+            doc_type = str(after.get("docType", "") or "")
+            new_row_id = str(after.get("rowId", "") or "")
+            old_row_id = str(before.get("rowId", "") or "")
+            if not doc_type or not new_row_id:
+                continue
+            old_qty = int(before.get("qty", 0) or 0)
+            old_done = done_counts.get((doc_type, old_row_id), 0)
+            changed_pending = old_qty > 0 and old_done >= old_qty
+            carried[(doc_type, new_row_id)] = {
+                "docType": doc_type,
+                "rowId": new_row_id,
+                "latestRevision": current_revision,
+                "changedPendingRecut": changed_pending,
+            }
+
+        for added in delta["added"]:
+            doc_type = str(added.get("docType", "") or "")
+            row_id = str(added.get("rowId", "") or "")
+            if not doc_type or not row_id:
+                continue
+            carried[(doc_type, row_id)] = {
+                "docType": doc_type,
+                "rowId": row_id,
+                "latestRevision": current_revision,
+                "changedPendingRecut": False,
+            }
+
+    # Keep pending-recut state synced with current completion when possible.
+    for key, item in list(carried.items()):
+        if not item.get("changedPendingRecut", False):
+            continue
+        row = next_row_map.get(key)
+        if row is None:
+            continue
+        qty = int(row.get("qty", 0) or 0)
+        done = done_counts.get(key, 0)
+        if qty > 0 and done >= qty:
+            item["changedPendingRecut"] = False
+
+    current_row_states = sorted(
+        carried.values(),
+        key=lambda item: (
+            str(item.get("docType", "")),
+            str(item.get("rowId", "")),
+        ),
+    )
+    payload = {
+        "schemaVersion": 1,
+        "updatedAt": now,
+        "currentRevision": current_revision,
+        "revisions": revisions,
+        "currentRowStates": current_row_states,
+    }
+    _write_revision_state(job_folder_path, payload)
+    return payload
 
 
 def _row_match_key(doc_type: str, row: Dict) -> Optional[str]:
@@ -850,10 +1177,15 @@ def _reconcile_rows_with_previous_index(job_folder_path: str, serialized_docs: L
 
 def _remove_index_if_exists(job_folder_path: str) -> bool:
     out_path = os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR, HARDWOODS_INDEX_FILENAME)
+    revision_path = _revision_path_for_job(job_folder_path)
+    removed = False
     if os.path.exists(out_path):
         os.remove(out_path)
-        return True
-    return False
+        removed = True
+    if os.path.exists(revision_path):
+        os.remove(revision_path)
+        removed = True
+    return removed
 
 
 def build_hardwoods_cutlist_index_for_job(job_folder_path: str) -> bool:
@@ -892,6 +1224,7 @@ def build_hardwoods_cutlist_index_for_job(job_folder_path: str) -> bool:
     if not serialized_docs:
         return _remove_index_if_exists(job_folder_path)
 
+    previous_index = _load_existing_index(job_folder_path)
     _reconcile_rows_with_previous_index(job_folder_path, serialized_docs)
 
     payload = {
@@ -899,11 +1232,17 @@ def build_hardwoods_cutlist_index_for_job(job_folder_path: str) -> bool:
         "documents": serialized_docs,
     }
     out_path = _write_index(job_folder_path, payload)
+    revision_payload = _upsert_revision_state(
+        job_folder_path=job_folder_path,
+        previous_index=previous_index,
+        next_docs=serialized_docs,
+    )
     main_logger.info(
-        "Hardwoods cutlist index updated: job=%s docs=%s output=%s",
+        "Hardwoods cutlist index updated: job=%s docs=%s output=%s revision=%s",
         os.path.basename(job_folder_path),
         len(serialized_docs),
         out_path,
+        revision_payload.get("currentRevision") if isinstance(revision_payload, dict) else "n/a",
     )
     return True
 

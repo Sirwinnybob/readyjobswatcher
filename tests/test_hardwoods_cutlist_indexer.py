@@ -2,6 +2,7 @@ import json
 import os
 
 import ready_jobs_watcher.hardwoods_cutlist_indexer as indexer
+import ready_jobs_watcher.reindex_hardwoods_cutlists as reindex_cli
 
 
 class _FakePage:
@@ -115,6 +116,12 @@ def _door_row(y, qty, width, height, cab_text):
 
 def _load_output(job_dir: str):
     out_path = os.path.join(job_dir, ".metadata", "hardwoods", "cutlist_index.json")
+    with open(out_path, "r", encoding="utf-8") as f:
+        return out_path, json.load(f)
+
+
+def _load_revisions(job_dir: str):
+    out_path = os.path.join(job_dir, ".metadata", "hardwoods", "cutlist_revisions.json")
     with open(out_path, "r", encoding="utf-8") as f:
         return out_path, json.load(f)
 
@@ -532,3 +539,291 @@ def test_replacement_does_not_transfer_row_ids_across_doc_types(tmp_path, monkey
     docs = {doc["docType"]: doc for doc in payload["documents"]}
     rows = docs[indexer.DOC_TYPE_NAILER]["rows"]
     assert rows[0]["rowId"] != "FACE_FRAME_CUT_LIST:1:0:seeded"
+
+
+def test_door_cut_list_totals_lengths_export_in_feet(tmp_path, monkeypatch):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+    door_cut = job_dir / "998 - Door Cut List.pdf"
+    door_cut.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    page_words += _std_header(160)
+    page_words += _std_row(184, 1, "Door Rail", "2.25", "30", "18")
+    page_words += [_w(75, 400, "Totals"), _w(250, 400, "Width"), _w(320, 400, "Length"), _w(390, 400, "Rips")]
+    page_words += [_w(250, 420, "2.25"), _w(320, 420, "120"), _w(390, 420, "1")]
+    page_words += [_w(250, 440, "3"), _w(320, 440, "30"), _w(390, 440, "2")]
+
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=page_words)]))
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    totals = docs[indexer.DOC_TYPE_DOOR_CUT]["totals"]
+
+    assert len(totals) == 1
+    assert totals[0]["lengthValues"] == ["10", "2.5"]
+
+
+def test_non_door_totals_lengths_remain_unmodified(tmp_path, monkeypatch):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "998 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    page_words += _std_header(160)
+    page_words += _std_row(184, 1, "Face Rail", "2.25", "30", "18")
+    page_words += [_w(75, 400, "Totals"), _w(250, 400, "Width"), _w(320, 400, "Length"), _w(390, 400, "Rips")]
+    page_words += [_w(250, 420, "2.25"), _w(320, 420, "120"), _w(390, 420, "1")]
+
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=page_words)]))
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    totals = docs[indexer.DOC_TYPE_FACE_FRAME]["totals"]
+
+    assert len(totals) == 1
+    assert totals[0]["lengthValues"] == ["120"]
+
+
+def test_reindex_cli_preserves_row_ids_and_tracker_priority(tmp_path, monkeypatch):
+    root_dir = tmp_path / "ready-jobs"
+    root_dir.mkdir()
+    job_dir = root_dir / "998 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "998 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    run1_words = []
+    run1_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    run1_words += _std_header(160)
+    run1_words += _std_row(182, 1, "Alpha", "2.5", "10", "1")
+    run1_words += _std_row(202, 1, "Beta", "2.5", "10", "2")
+
+    run2_words = []
+    run2_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    run2_words += _std_header(160)
+    run2_words += _std_row(182, 1, "Beta", "2.5", "10", "2")
+    run2_words += _std_row(202, 1, "Alpha", "2.5", "10", "1")
+
+    docs = {
+        str(face_frame): [
+            _FakeDoc([_FakePage(words=run1_words)]),
+            _FakeDoc([_FakePage(words=run2_words)]),
+        ]
+    }
+
+    def _open(path):
+        path_docs = docs[str(path)]
+        return path_docs.pop(0)
+
+    monkeypatch.setattr(indexer.fitz, "open", _open)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload1 = _load_output(str(job_dir))
+    rows1 = payload1["documents"][0]["rows"]
+    alpha_id = next(r["rowId"] for r in rows1 if r["description"] == "Alpha")
+    beta_id = next(r["rowId"] for r in rows1 if r["description"] == "Beta")
+
+    tracker_dir = job_dir / ".metadata" / "hardwoods" / ".tracker"
+    tracker_dir.mkdir(parents=True, exist_ok=True)
+    tracker_payload = {
+        "tabletId": "tablet-a",
+        "actions": [
+            {
+                "docType": indexer.DOC_TYPE_FACE_FRAME,
+                "rowId": alpha_id,
+                "action": "set_done_count",
+                "value": 1,
+                "timestamp": "2026-05-07T10:00:00Z",
+            },
+            {
+                "docType": indexer.DOC_TYPE_FACE_FRAME,
+                "rowId": beta_id,
+                "action": "set_done_count",
+                "value": 3,
+                "timestamp": "2026-05-07T10:00:01Z",
+            },
+        ],
+    }
+    (tracker_dir / "tablet-a.json").write_text(json.dumps(tracker_payload), encoding="utf-8")
+
+    summary = reindex_cli.run_reindex(str(root_dir), dry_run=False, jobs=[job_dir.name])
+    assert summary.jobsFailed == 0
+    assert summary.jobsSucceeded == 1
+    assert summary.results[0].jobFolder == job_dir.name
+    assert summary.results[0].status == "success"
+
+    _, payload2 = _load_output(str(job_dir))
+    rows2 = payload2["documents"][0]["rows"]
+    assert rows2[0]["description"] == "Beta"
+    assert rows2[0]["rowId"] == beta_id
+    assert rows2[1]["rowId"] == alpha_id
+
+
+def test_revision_baseline_writes_r1_snapshot(tmp_path, monkeypatch):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "998 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    page_words += _std_header(160)
+    page_words += _std_row(182, 1, "Part A", "2.5", "10", "1")
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=page_words)]))
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, revisions = _load_revisions(str(job_dir))
+    assert revisions["currentRevision"] == 1
+    assert len(revisions["revisions"]) == 1
+    assert revisions["revisions"][0]["revision"] == 1
+    assert revisions["revisions"][0]["kind"] == "SNAPSHOT"
+    assert revisions["revisions"][0]["added"] == []
+    assert revisions["revisions"][0]["removed"] == []
+    assert revisions["revisions"][0]["modified"] == []
+
+
+def test_revision_diff_classifies_added_removed_modified(tmp_path, monkeypatch):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "998 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    run1_words = []
+    run1_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    run1_words += _std_header(160)
+    run1_words += _std_row(182, 1, "Alpha", "2.5", "10", "1")
+    run1_words += _std_row(202, 1, "Remove Me", "3", "12", "2")
+    run1_words += _std_row(222, 1, "Resize Me", "4", "20", "3")
+
+    run2_words = []
+    run2_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    run2_words += _std_header(160)
+    run2_words += _std_row(182, 1, "Alpha", "2.5", "10", "1")
+    run2_words += _std_row(202, 1, "Resize Me", "4", "22", "3")
+    run2_words += _std_row(222, 1, "Added", "5", "40", "4")
+
+    docs = {
+        str(face_frame): [
+            _FakeDoc([_FakePage(words=run1_words)]),
+            _FakeDoc([_FakePage(words=run2_words)]),
+        ]
+    }
+
+    def _open(path):
+        return docs[str(path)].pop(0)
+
+    monkeypatch.setattr(indexer.fitz, "open", _open)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+
+    _, revisions = _load_revisions(str(job_dir))
+    assert revisions["currentRevision"] == 2
+    latest = revisions["revisions"][-1]
+    assert latest["kind"] == "DIFF"
+    assert len(latest["added"]) == 1
+    assert len(latest["removed"]) == 1
+    assert len(latest["modified"]) == 1
+    assert latest["modified"][0]["changedFields"] == ["length"]
+
+
+def test_revision_reorder_only_does_not_increment_revision(tmp_path, monkeypatch):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "998 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    run1_words = []
+    run1_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    run1_words += _std_header(160)
+    run1_words += _std_row(182, 1, "Part A", "2.5", "10", "1")
+    run1_words += _std_row(202, 1, "Part B", "3", "12", "2")
+
+    run2_words = []
+    run2_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    run2_words += _std_header(160)
+    run2_words += _std_row(182, 1, "Part B", "3", "12", "2")
+    run2_words += _std_row(202, 1, "Part A", "2.5", "10", "1")
+
+    docs = {
+        str(face_frame): [
+            _FakeDoc([_FakePage(words=run1_words)]),
+            _FakeDoc([_FakePage(words=run2_words)]),
+        ]
+    }
+
+    def _open(path):
+        return docs[str(path)].pop(0)
+
+    monkeypatch.setattr(indexer.fitz, "open", _open)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+
+    _, revisions = _load_revisions(str(job_dir))
+    assert revisions["currentRevision"] == 1
+    assert len(revisions["revisions"]) == 1
+
+
+def test_modified_completed_row_sets_changed_pending_recut(tmp_path, monkeypatch):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "998 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    run1_words = []
+    run1_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    run1_words += _std_header(160)
+    run1_words += _std_row(182, 1, "Resize Me", "4", "20", "3")
+
+    run2_words = []
+    run2_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    run2_words += _std_header(160)
+    run2_words += _std_row(182, 1, "Resize Me", "4", "22", "3")
+
+    docs = {
+        str(face_frame): [
+            _FakeDoc([_FakePage(words=run1_words)]),
+            _FakeDoc([_FakePage(words=run2_words)]),
+        ]
+    }
+
+    def _open(path):
+        return docs[str(path)].pop(0)
+
+    monkeypatch.setattr(indexer.fitz, "open", _open)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, first_payload = _load_output(str(job_dir))
+    old_row_id = first_payload["documents"][0]["rows"][0]["rowId"]
+    tracker_dir = job_dir / ".metadata" / "hardwoods" / ".tracker"
+    tracker_dir.mkdir(parents=True, exist_ok=True)
+    tracker_payload = {
+        "tabletId": "tablet-a",
+        "actions": [
+            {
+                "docType": indexer.DOC_TYPE_FACE_FRAME,
+                "rowId": old_row_id,
+                "action": "set_done_count",
+                "value": 1,
+                "timestamp": "2026-05-07T10:00:00Z",
+            },
+        ],
+    }
+    (tracker_dir / "tablet-a.json").write_text(json.dumps(tracker_payload), encoding="utf-8")
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, revisions = _load_revisions(str(job_dir))
+    latest = revisions["revisions"][-1]
+    assert latest["kind"] == "DIFF"
+    assert len(latest["modified"]) == 1
+    state_rows = revisions["currentRowStates"]
+    assert len(state_rows) == 1
+    assert state_rows[0]["latestRevision"] == revisions["currentRevision"]
+    assert state_rows[0]["changedPendingRecut"] is True
