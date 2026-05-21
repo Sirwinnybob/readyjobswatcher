@@ -21,6 +21,11 @@ badparts_logger = logging.getLogger("badparts")
 
 TRACKER_STATE_FILE = os.path.join(BASE_DATA_DIR, "tracker_bad_parts_state.json")
 
+# Bad-part actions written before this ISO timestamp are treated as pre-submitted for
+# backwards compatibility — they alert exactly as before the pending-submission feature.
+# Update this to the actual deployment date when rolling out the new submit workflow.
+SUBMISSION_REQUIRED_AFTER = "2026-05-21T00:00:00+00:00"
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -122,9 +127,10 @@ class TrackerBadPartsMonitor:
     Single-source bad-parts monitor based on CNC .tracker action streams.
     """
 
-    def __init__(self, config: Config, state_file: str = TRACKER_STATE_FILE):
+    def __init__(self, config: Config, state_file: str = TRACKER_STATE_FILE, deployment_gate=None):
         self.config = config
         self.state_file = state_file
+        self.deployment_gate = deployment_gate
         self._lock = threading.Lock()
         self._material_cache: Dict[Tuple[str, str], str] = {}
         self._metadata_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
@@ -166,6 +172,8 @@ class TrackerBadPartsMonitor:
                         continue
                     job_folder_path = entry.path
                     if JobProcessor.is_job_folder(job_folder_path):
+                        if self.deployment_gate is not None and not self.deployment_gate.should_process_job_folder(job_folder_path):
+                            continue
                         folders.append((entry.name, job_folder_path))
         except OSError as exc:
             badparts_logger.error(f"Failed to scan root directory for tracker folders: {exc}")
@@ -384,9 +392,12 @@ class TrackerBadPartsMonitor:
         status_map: Dict[str, bool] = {}
         event_map: Dict[str, TrackerBadPartEvent] = {}
         reactivated_tokens: Set[str] = set()
+        # Tracks tokens whose bad_part has been explicitly submitted for engineer notification.
+        # Only submitted tokens appear as active_events and trigger alerts.
+        submitted_tokens: Set[str] = set()
         for _, _, _, action in action_rows:
             action_name = str(action.get("action", "") or "").strip().lower()
-            if action_name not in ("bad_part", "unbad_part"):
+            if action_name not in ("bad_part", "unbad_part", "bad_part_submitted"):
                 continue
 
             pdf = str(action.get("file", "") or "").strip()
@@ -411,20 +422,31 @@ class TrackerBadPartsMonitor:
             if action_name == "bad_part":
                 if token in status_map and status_map[token] is False:
                     reactivated_tokens.add(token)
+                    submitted_tokens.discard(token)  # reset submission on reactivation
                 status_map[token] = True
-                detected_at = str(action.get("timestamp", "") or "")
+                action_ts = str(action.get("timestamp", "") or "")
+                detected_at = action_ts
                 event_map[token] = TrackerBadPartEvent(
                     key=key,
                     material_or_pdf=self._load_material_name(key),
                     detected_at=detected_at,
                 )
-            else:
+                # Backwards compat: bad parts written before the cutover date are treated as
+                # pre-submitted so they alert exactly as they did before this feature was added.
+                if action_ts < SUBMISSION_REQUIRED_AFTER:
+                    submitted_tokens.add(token)
+            elif action_name == "unbad_part":
                 status_map[token] = False
+                submitted_tokens.discard(token)
+            elif action_name == "bad_part_submitted":
+                submitted_tokens.add(token)
 
         active_events: Dict[str, TrackerBadPartEvent] = {}
         for token, is_active in status_map.items():
             if not is_active:
                 continue
+            if token not in submitted_tokens:
+                continue  # pending — operator has not tapped the Report button yet
             event = event_map.get(token)
             if event is not None:
                 active_events[token] = event
