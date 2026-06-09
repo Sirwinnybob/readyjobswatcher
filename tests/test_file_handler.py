@@ -1,5 +1,11 @@
 import pytest
-from ready_jobs_watcher.file_handler import JobProcessor, should_ignore_file
+import ready_jobs_watcher.file_handler as file_handler
+from ready_jobs_watcher.file_handler import (
+    JobProcessor,
+    should_ignore_file,
+    should_ignore_folder,
+    is_retryable_os_error,
+)
 
 
 # ==================== extract_job_number tests ====================
@@ -79,3 +85,35 @@ def test_extract_job_number_none_input():
 ])
 def test_should_ignore_file(filename, expected):
     assert should_ignore_file(filename) == expected
+
+
+def test_should_ignore_folder_new_folder_variants():
+    assert should_ignore_folder("New Folder") is True
+    assert should_ignore_folder("new folder") is True
+    assert should_ignore_folder("New Folder (2)") is True
+    assert should_ignore_folder(" New   Folder  (10) ") is True
+    assert should_ignore_folder("New Folder Copy") is False
+
+
+def test_should_ignore_folder_matches_newplus_templates(monkeypatch):
+    monkeypatch.setattr(
+        file_handler,
+        "_load_newplus_template_folder_names",
+        lambda: {"both", "jobs template", "frameless"},
+    )
+    assert should_ignore_folder("BOTH") is True
+    assert should_ignore_folder("JOBS Template") is True
+    assert should_ignore_folder("Frameless") is True
+    assert should_ignore_folder("Some Real Job Name") is False
+
+
+def test_is_retryable_os_error_detects_transient_network_winerror():
+    err = OSError("network path unavailable")
+    err.winerror = 53
+    assert is_retryable_os_error(err) is True
+
+
+def test_is_retryable_os_error_rejects_non_transient_error():
+    err = OSError("invalid argument")
+    err.errno = 22
+    assert is_retryable_os_error(err) is False

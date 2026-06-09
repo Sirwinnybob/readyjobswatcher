@@ -143,8 +143,11 @@ def _build_candidates(job_folder_name: str, actions: List[Dict], metadata_by_pdf
     return unresolved
 
 
-def refresh_unresolved_bad_parts_for_job(config: Config, job_folder_name: str) -> bool:
+def refresh_unresolved_bad_parts_for_job(config: Config, job_folder_name: str, deployment_gate=None) -> bool:
     job_root = os.path.join(config.ROOT_DIR, job_folder_name)
+    if deployment_gate is not None and not deployment_gate.should_process_job_folder(job_root):
+        _remove_candidates_file(config, job_folder_name)
+        return False
     cnc_dir = os.path.join(job_root, config.CNC_SUBDIR)
     tracker_dir = os.path.join(cnc_dir, ".tracker")
     metadata_dir = os.path.join(cnc_dir, ".metadata")
@@ -166,7 +169,7 @@ def refresh_unresolved_bad_parts_for_job(config: Config, job_folder_name: str) -
     return True
 
 
-def refresh_unresolved_bad_parts_all(config: Config) -> int:
+def refresh_unresolved_bad_parts_all(config: Config, deployment_gate=None) -> int:
     refreshed = 0
     root_dir = config.ROOT_DIR
     if not os.path.isdir(root_dir):
@@ -176,7 +179,7 @@ def refresh_unresolved_bad_parts_all(config: Config) -> int:
             for entry in it:
                 if not entry.is_dir():
                     continue
-                if refresh_unresolved_bad_parts_for_job(config, entry.name):
+                if refresh_unresolved_bad_parts_for_job(config, entry.name, deployment_gate=deployment_gate):
                     refreshed += 1
     except Exception as exc:
         main_logger.error(f"Failed refreshing unresolved bad parts across jobs: {exc}", exc_info=True)

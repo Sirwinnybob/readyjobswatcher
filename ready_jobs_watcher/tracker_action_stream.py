@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import glob
+from json import JSONDecodeError
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 _CNC_OP_MAP = {
@@ -85,32 +86,101 @@ def _load_migrated_event_actions(
     rows: List[Tuple[str, int, str, str, int, Dict[str, Any]]] = []
     for path in ndjson_files:
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                for line_idx, line in enumerate(f):
-                    raw = line.strip()
-                    if not raw:
-                        continue
-                    try:
-                        payload = json.loads(raw)
-                    except Exception as exc:
-                        if logger is not None:
-                            logger.warning("Skipping malformed tracker NDJSON line %s:%s (%s)", path, line_idx + 1, exc)
-                        continue
-                    if not isinstance(payload, dict):
-                        continue
-                    action = mapper(payload)
-                    if not isinstance(action, dict):
-                        continue
-                    ts = str(action.get("timestamp", "") or "")
-                    lamport = _coerce_int(action.get("_lamport")) or 0
-                    event_id = str(action.get("_event_id", "") or "")
-                    rows.append((ts, lamport, event_id, path, line_idx, action))
+            for event_idx, payload in _iter_event_payloads(path, logger=logger):
+                if not isinstance(payload, dict):
+                    continue
+                action = mapper(payload)
+                if not isinstance(action, dict):
+                    continue
+                ts = str(action.get("timestamp", "") or "")
+                lamport = _coerce_int(action.get("_lamport")) or 0
+                event_id = str(action.get("_event_id", "") or "")
+                rows.append((ts, lamport, event_id, path, event_idx, action))
         except Exception as exc:
             if logger is not None:
                 logger.warning("Skipping malformed tracker NDJSON stream %s (%s)", path, exc)
 
     rows.sort(key=lambda row: (row[0], row[1], row[2], row[3], row[4]))
     return [row[5] for row in rows]
+
+
+def _iter_event_payloads(path: str, logger=None) -> List[Tuple[int, Dict[str, Any]]]:
+    """
+    Parse tracker event stream values in a tolerant way.
+
+    Supports:
+    - strict NDJSON (one object per line),
+    - pretty-printed multiline JSON objects concatenated in a stream,
+    - top-level JSON arrays of event objects.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    decoder = json.JSONDecoder()
+    out: List[Tuple[int, Dict[str, Any]]] = []
+    idx = 0
+    event_idx = 0
+    malformed_count = 0
+    n = len(text)
+
+    while idx < n:
+        while idx < n and text[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+
+        try:
+            payload, end_idx = decoder.raw_decode(text, idx)
+        except JSONDecodeError as exc:
+            malformed_count += 1
+            if logger is not None and malformed_count <= 3:
+                line_no = text.count("\n", 0, idx) + 1
+                logger.warning("Skipping malformed tracker NDJSON line %s:%s (%s)", path, line_no, exc)
+            idx = _next_recovery_index(text, idx)
+            if idx < 0:
+                break
+            continue
+
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    out.append((event_idx, item))
+                    event_idx += 1
+        elif isinstance(payload, dict):
+            out.append((event_idx, payload))
+            event_idx += 1
+
+        idx = end_idx
+
+    if logger is not None and malformed_count > 3:
+        logger.warning(
+            "Skipping malformed tracker NDJSON line %s (suppressed %s additional malformed fragments)",
+            path,
+            malformed_count - 3,
+        )
+
+    return out
+
+
+def _next_recovery_index(text: str, current_idx: int) -> int:
+    """
+    Recovery cursor used after a malformed JSON fragment.
+    Prefer moving to next newline boundary, then next object/array start.
+    """
+    next_newline = text.find("\n", current_idx + 1)
+    next_obj = text.find("{", current_idx + 1)
+    next_arr = text.find("[", current_idx + 1)
+
+    candidates = []
+    if next_newline != -1:
+        candidates.append(next_newline + 1)
+    if next_obj != -1:
+        candidates.append(next_obj)
+    if next_arr != -1:
+        candidates.append(next_arr)
+    if not candidates:
+        return -1
+    return min(candidates)
 
 
 def _load_legacy_json_actions(

@@ -26,10 +26,12 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List
+from uuid import uuid4
 
 logger = logging.getLogger('main')
 
 _INIT_FROM = re.compile(r'<init_from>([\s\S]*?)</init_from>')
+_TRANSPARENCY_FLOAT = re.compile(r'<transparency>\s*<float>([\d.]+)</float>\s*</transparency>', re.IGNORECASE)
 
 def _find_assimp_exe(configured_path: str | None = None) -> str | None:
     candidates = (
@@ -105,6 +107,27 @@ def _fix_windows_paths(content: str) -> str:
         lambda m: "<init_from>" + m.group(1).replace("\\\\", "/").replace("\\", "/") + "</init_from>",
         content
     )
+
+
+def _resolve_glass_transparency() -> float:
+    raw = os.environ.get("GLASS_TRANSPARENCY", "0.8")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 0.8
+    # Keep the value in sensible alpha range.
+    return max(0.0, min(1.0, value))
+
+
+def _fix_collada_transparency(content: str) -> str:
+    """
+    Cabinet Vision DAE transparency often imports as too-opaque in Assimp.
+    Match KKC_Portal behavior by forcing COLLADA transparency floats to a
+    configurable glass value (default 0.8).
+    """
+    glass_transparency = _resolve_glass_transparency()
+    replacement = f"<transparency><float>{glass_transparency:g}</float></transparency>"
+    return _TRANSPARENCY_FLOAT.sub(replacement, content)
 
 
 def _local_name(tag: str) -> str:
@@ -561,6 +584,7 @@ def _triangulate_collada_polygons(xml_text: str) -> str:
 def _prepare_dae_for_assimp(source_dae: Path, cleaned_dae: Path) -> None:
     content = source_dae.read_text(encoding='utf-8', errors='ignore')
     content = _fix_windows_paths(content)
+    content = _fix_collada_transparency(content)
     content = _triangulate_collada_polygons(content)
     cleaned_dae.write_text(content, encoding='utf-8')
 
@@ -674,47 +698,73 @@ def _embed_external_images_in_glb(glb_path: Path) -> bool:
     return True
 
 
+def _run_assimp_export(
+    assimp_exe: str,
+    room_dir: Path,
+    tmp_dae: Path,
+    tmp_glb: Path,
+    extra_flags: List[str],
+) -> subprocess.CompletedProcess:
+    command = [
+        assimp_exe,
+        'export',
+        f'.\\{tmp_dae.name}',
+        f'.\\{tmp_glb.name}',
+        'glb2',
+        *extra_flags,
+    ]
+    creationflags = 0
+    startupinfo = None
+    if os.name == "nt":
+        # Prevent console pop-ups for each Assimp conversion on Windows.
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
+
+    return subprocess.run(
+        command,
+        cwd=str(room_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+        creationflags=creationflags,
+        startupinfo=startupinfo,
+    )
+
+
 def _convert_with_assimp(dae_path: Path, glb_path: Path, assimp_exe: str) -> None:
     room_dir = dae_path.parent
-    tmp_dae = room_dir / '.tmp_assimp_input.dae'
-    tmp_glb = room_dir / '.tmp_assimp_output.glb'
+    run_id = uuid4().hex
+    tmp_dae = room_dir / f'.tmp_assimp_input.{run_id}.dae'
+    tmp_glb = room_dir / f'.tmp_assimp_output.{run_id}.glb'
     try:
         _prepare_dae_for_assimp(dae_path, tmp_dae)
-        command = [
-            assimp_exe,
-            'export',
-            f'.\\{tmp_dae.name}',
-            f'.\\{tmp_glb.name}',
-            'glb2',
-            '-tri',
-            '-gn',
-            '-jiv',
-            '-et',
-            '-emb',
-        ]
-        creationflags = 0
-        startupinfo = None
-        if os.name == "nt":
-            # Prevent console pop-ups for each Assimp conversion on Windows.
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 0  # SW_HIDE
+        flags = ['-tri', '-gn', '-jiv', '-et', '-emb']
+        result = _run_assimp_export(assimp_exe, room_dir, tmp_dae, tmp_glb, flags)
 
-        result = subprocess.run(
-            command,
-            cwd=str(room_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            creationflags=creationflags,
-            startupinfo=startupinfo,
-        )
+        if result.returncode != 0 or not tmp_glb.exists():
+            stdout = (result.stdout or '').strip()
+            stderr = (result.stderr or '').strip()
+            error_text = f"{stdout}\n{stderr}".lower()
+            if "failed to loa" in error_text and "-emb" in flags:
+                logger.warning(
+                    "Assimp export with -emb failed for %s; retrying without embedded texture export.",
+                    dae_path
+                )
+                result = _run_assimp_export(
+                    assimp_exe,
+                    room_dir,
+                    tmp_dae,
+                    tmp_glb,
+                    ['-tri', '-gn', '-jiv', '-et'],
+                )
+
         if result.returncode != 0 or not tmp_glb.exists():
             stderr = (result.stderr or '').strip()
             stdout = (result.stdout or '').strip()
             raise RuntimeError(
-                f"Assimp export failed rc={result.returncode} stderr={stderr[:500]} stdout={stdout[:300]}"
+                f"Assimp export failed rc={result.returncode} stderr={stderr[:1000]} stdout={stdout[:1200]}"
             )
         try:
             _embed_external_images_in_glb(tmp_glb)

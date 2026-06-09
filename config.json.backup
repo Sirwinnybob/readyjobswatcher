@@ -1,9 +1,22 @@
 {
+    "root_dir": "Y:\\Ready Jobs",
+    "cnc_subdir": "CNC",
+    "backup_dir": "C:\\Syncthing Backup",
+    "backup_folders": [
+        "Y:\\Ready Jobs",
+        "Y:\\Upcoming Jobs"
+    ],
     "backup_times": [
         "16:25",
         "12:00"
     ],
     "pdf_conversion_delay_seconds": 30,
-    "new_folder_delay_seconds": 1200,
-    "tracker_reconcile_interval_seconds": 300
+    "new_folder_delay_seconds": 120,
+    "daily_restart_time": "03:00",
+    "bad_parts_mode": "tracker",
+    "bad_parts_popup_enabled": true,
+    "bad_parts_toast_enabled": true,
+    "bad_parts_sound_profile": "triple_beep",
+    "tracker_reconcile_interval_seconds": 300,
+    "assimp_path": "C:\\Scripts\\Assimp\\assimp-v6.0.5-isolated\\install\\bin\\assimp.exe"
 }

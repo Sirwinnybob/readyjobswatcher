@@ -50,7 +50,7 @@ class Config:
         }
         # PDF conversion and folder processing delays
         self.pdf_conversion_delay_seconds = 30  # Default: 30 seconds
-        self.new_folder_delay_seconds = 1200  # Default: 20 minutes
+        self.new_folder_delay_seconds = 120  # Default: 2 minutes
         # Daily restart time (to prevent memory leaks and clear stale state)
         self.daily_restart_time = '03:00'  # Default: 3 AM
         # Bad-parts alerting mode and escalation settings
@@ -59,6 +59,10 @@ class Config:
         self.bad_parts_toast_enabled = True
         self.bad_parts_sound_profile = "triple_beep"  # triple_beep | none
         self.tracker_reconcile_interval_seconds = 300
+        self.metadata_cache_debounce_seconds = 8
+        self.metadata_end_of_day_time = "20:00"
+        self.metadata_snapshot_enabled = True
+        self.metadata_snapshot_archive_dir = os.path.join(BASE_DATA_DIR, "metadata_snapshots")
         self.assimp_path: Optional[str] = None
         self.load()
 
@@ -126,6 +130,30 @@ class Config:
                     "Config validation failed: tracker_reconcile_interval_seconds must be a number >= 30"
                 )
                 return False
+        if "metadata_cache_debounce_seconds" in config:
+            value = config["metadata_cache_debounce_seconds"]
+            if not isinstance(value, (int, float)) or value < 0:
+                main_logger.error("Config validation failed: metadata_cache_debounce_seconds must be a number >= 0")
+                return False
+        if "metadata_end_of_day_time" in config:
+            value = config["metadata_end_of_day_time"]
+            if not isinstance(value, str) or ":" not in value:
+                main_logger.error("Config validation failed: metadata_end_of_day_time must be HH:MM")
+                return False
+            try:
+                hour, minute = map(int, value.split(":"))
+                if not (0 <= hour < 24 and 0 <= minute < 60):
+                    raise ValueError
+            except ValueError:
+                main_logger.error("Config validation failed: metadata_end_of_day_time must be HH:MM")
+                return False
+        if "metadata_snapshot_enabled" in config and not isinstance(config["metadata_snapshot_enabled"], bool):
+            main_logger.error("Config validation failed: metadata_snapshot_enabled must be a bool")
+            return False
+        if "metadata_snapshot_archive_dir" in config:
+            if not isinstance(config["metadata_snapshot_archive_dir"], str):
+                main_logger.error("Config validation failed: metadata_snapshot_archive_dir must be a string")
+                return False
         if "assimp_path" in config and config["assimp_path"] is not None:
             if not isinstance(config["assimp_path"], str):
                 main_logger.error("Config validation failed: assimp_path must be a string or null")
@@ -182,6 +210,15 @@ class Config:
                 self.tracker_reconcile_interval_seconds = int(
                     config.get("tracker_reconcile_interval_seconds", self.tracker_reconcile_interval_seconds)
                 )
+                self.metadata_cache_debounce_seconds = float(
+                    config.get("metadata_cache_debounce_seconds", self.metadata_cache_debounce_seconds)
+                )
+                self.metadata_end_of_day_time = config.get("metadata_end_of_day_time", self.metadata_end_of_day_time)
+                self.metadata_snapshot_enabled = config.get("metadata_snapshot_enabled", self.metadata_snapshot_enabled)
+                self.metadata_snapshot_archive_dir = config.get(
+                    "metadata_snapshot_archive_dir",
+                    self.metadata_snapshot_archive_dir,
+                )
                 self.assimp_path = config.get("assimp_path", self.assimp_path)
                 main_logger.info(f"Loaded backup times from config: {self.BACKUP_TIMES}")
             else:
@@ -209,6 +246,15 @@ class Config:
                         self.bad_parts_sound_profile = config.get("bad_parts_sound_profile", self.bad_parts_sound_profile)
                         self.tracker_reconcile_interval_seconds = int(
                             config.get("tracker_reconcile_interval_seconds", self.tracker_reconcile_interval_seconds)
+                        )
+                        self.metadata_cache_debounce_seconds = float(
+                            config.get("metadata_cache_debounce_seconds", self.metadata_cache_debounce_seconds)
+                        )
+                        self.metadata_end_of_day_time = config.get("metadata_end_of_day_time", self.metadata_end_of_day_time)
+                        self.metadata_snapshot_enabled = config.get("metadata_snapshot_enabled", self.metadata_snapshot_enabled)
+                        self.metadata_snapshot_archive_dir = config.get(
+                            "metadata_snapshot_archive_dir",
+                            self.metadata_snapshot_archive_dir,
                         )
                         self.assimp_path = config.get("assimp_path", self.assimp_path)
                         main_logger.info("Successfully restored config from backup")
@@ -249,6 +295,10 @@ class Config:
                 'bad_parts_toast_enabled': self.bad_parts_toast_enabled,
                 'bad_parts_sound_profile': self.bad_parts_sound_profile,
                 'tracker_reconcile_interval_seconds': self.tracker_reconcile_interval_seconds,
+                'metadata_cache_debounce_seconds': self.metadata_cache_debounce_seconds,
+                'metadata_end_of_day_time': self.metadata_end_of_day_time,
+                'metadata_snapshot_enabled': self.metadata_snapshot_enabled,
+                'metadata_snapshot_archive_dir': self.metadata_snapshot_archive_dir,
                 'assimp_path': self.assimp_path
             }
 

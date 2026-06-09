@@ -42,6 +42,7 @@ config.json
 # Runtime data files
 pending_queue.json
 pending_queue.json.backup
+metadata_snapshots/
 
 # Backup directories
 backup_*/

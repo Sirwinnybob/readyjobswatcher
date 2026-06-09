@@ -10,17 +10,19 @@ import threading
 import time
 import shutil
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
     from .main import Application
     from .alert_coordinator import AlertCoordinator
     from .tracker_bad_parts import TrackerBadPartsMonitor
+    from .metadata_refresh import MetadataRefreshService
 
 from .utils import is_hidden, set_hidden_attribute, delete_codebase_folders, log_system_stats
 from .file_handler import JobProcessor
 from .config import Config
 from .remake_candidates_indexer import refresh_unresolved_bad_parts_all
+from .deployment_gate import MODE_UNKNOWN, DeploymentGateManager
 
 main_logger = logging.getLogger('main')
 
@@ -115,7 +117,8 @@ def delete_old_backups(config: Config) -> None:
 def scan_cnc_pdfs_for_bad_parts(
     config: Config,
     tracker_monitor: "TrackerBadPartsMonitor" = None,
-    alert_coordinator: "AlertCoordinator" = None
+    alert_coordinator: "AlertCoordinator" = None,
+    deployment_gate=None,
 ) -> None:
     """
     Perform a complete recursive scan of all CNC PDF files to check for bad parts.
@@ -152,6 +155,9 @@ def scan_cnc_pdfs_for_bad_parts(
 
                 full_path = entry.path
                 if JobProcessor.is_job_folder(full_path):
+                    if deployment_gate is not None and not deployment_gate.should_process_job_folder(full_path):
+                        cnc_logger.info("Skipping pending job during CNC bad-part scan: %s", full_path)
+                        continue
                     cnc_path = os.path.join(full_path, config.CNC_SUBDIR)
                     if os.path.isdir(cnc_path):
                         with os.scandir(cnc_path) as cnc_it:
@@ -192,6 +198,8 @@ def cnc_scan_scheduler(
     stop_event: threading.Event,
     tracker_monitor: "TrackerBadPartsMonitor" = None,
     alert_coordinator: "AlertCoordinator" = None
+    ,
+    deployment_gate=None
 ) -> None:
     """
     Background worker loop to periodically scan CNC PDFs according to schedule.
@@ -203,7 +211,7 @@ def cnc_scan_scheduler(
     while not stop_event.is_set():
         if config.bad_parts_mode == "tracker":
             try:
-                scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator)
+                scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator, deployment_gate)
             except Exception as e:
                 cnc_logger.error(f"Error in tracker reconcile scan: {e}", exc_info=True)
             interval = max(30, int(getattr(config, "tracker_reconcile_interval_seconds", 300)))
@@ -233,10 +241,10 @@ def cnc_scan_scheduler(
                     stop_event.wait(sleep_seconds)
                     if stop_event.is_set():
                         break
-                    scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator)
+                    scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator, deployment_gate)
                 else:
                     cnc_logger.warning("CNC scan scheduler: sleep_seconds was not positive, scanning immediately.")
-                    scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator)
+                    scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator, deployment_gate)
 
             except ValueError:
                 cnc_logger.error(f"Invalid CNC scan time format for {today_weekday}: {scan_time_str}")
@@ -277,6 +285,49 @@ def stats_logger_scheduler(stop_event: threading.Event) -> None:
             main_logger.error(f"Error logging system stats: {e}")
 
     main_logger.info("Stats logger scheduler stopped")
+
+
+def process_metadata_end_of_day_once(metadata_refresh_service: "MetadataRefreshService") -> dict:
+    """Run the metadata cache/archive daily sweep once."""
+    return metadata_refresh_service.run_scheduled_sweep(consolidate_trackers=True)
+
+
+def metadata_end_of_day_scheduler(config: Config, stop_event: threading.Event, metadata_refresh_service: "MetadataRefreshService") -> None:
+    """Run Ready Jobs-owned cache refresh, archive, and CNC/hardwoods condensing once per day."""
+    main_logger.info("Metadata end-of-day scheduler started. Time: %s", config.metadata_end_of_day_time)
+
+    while not stop_event.is_set():
+        try:
+            now = datetime.datetime.now()
+            try:
+                hour, minute = map(int, config.metadata_end_of_day_time.split(":"))
+            except (ValueError, AttributeError):
+                main_logger.error("Invalid metadata_end_of_day_time: %s, using 20:00", config.metadata_end_of_day_time)
+                hour, minute = 20, 0
+
+            scheduled_time_today = datetime.datetime.combine(now.date(), datetime.time(hour, minute))
+            if now >= scheduled_time_today:
+                scheduled_time_today += datetime.timedelta(days=1)
+            sleep_seconds = (scheduled_time_today - now).total_seconds()
+            main_logger.info(
+                "Next metadata end-of-day sweep scheduled for %s (in %.1f hours)",
+                scheduled_time_today,
+                sleep_seconds / 3600,
+            )
+
+            if stop_event.wait(sleep_seconds):
+                break
+
+            try:
+                summary = process_metadata_end_of_day_once(metadata_refresh_service)
+                main_logger.info("Metadata end-of-day sweep complete: %s", summary)
+            except Exception as exc:
+                main_logger.error("Metadata end-of-day sweep failed: %s", exc, exc_info=True)
+        except Exception as exc:
+            main_logger.error("Error in metadata end-of-day scheduler: %s", exc, exc_info=True)
+            stop_event.wait(3600)
+
+    main_logger.info("Metadata end-of-day scheduler stopped")
 
 
 def daily_restart_scheduler(config: Config, stop_event: threading.Event, app: 'Application') -> None:
@@ -348,3 +399,96 @@ def daily_restart_scheduler(config: Config, stop_event: threading.Event, app: 'A
             stop_event.wait(3600)
 
     main_logger.info("Daily restart scheduler stopped")
+
+
+def _parse_iso_utc(value: Optional[str]) -> Optional[datetime.datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def process_pending_autorelease_once(
+    deployment_gate: DeploymentGateManager,
+    release_callback: Callable[[str, str], bool],
+    root_dir: Optional[str] = None,
+) -> int:
+    """
+    Sweep pending jobs and auto-release any due entries.
+
+    Args:
+        deployment_gate: Gate manager used to read current job states.
+        release_callback: Callback invoked for due jobs as (job_folder_name, selected_mode).
+            Return True when the release action was accepted/scheduled.
+        root_dir: Optional override for resolving job folder paths.
+    """
+    if root_dir is None:
+        root_dir = deployment_gate.root_dir
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    released_count = 0
+
+    for state in deployment_gate.list_job_states():
+        if bool(state.get("deployed", True)):
+            continue
+
+        timers = state.get("timers") if isinstance(state.get("timers"), dict) else {}
+        auto_release_at = _parse_iso_utc(timers.get("autoReleaseAt"))
+        if auto_release_at is None or auto_release_at > now:
+            continue
+
+        job_folder_name = str(state.get("jobFolderName") or "")
+        if not job_folder_name:
+            continue
+
+        job_folder_path = os.path.join(root_dir, job_folder_name)
+        if not os.path.isdir(job_folder_path):
+            main_logger.info("Skipping pending auto-release for missing folder: %s", job_folder_path)
+            continue
+
+        selected_mode = str(state.get("selectedMode") or MODE_UNKNOWN)
+        if selected_mode == MODE_UNKNOWN:
+            mode_detection = state.get("modeDetection") if isinstance(state.get("modeDetection"), dict) else {}
+            fallback_mode = str(mode_detection.get("candidate") or MODE_UNKNOWN)
+            if fallback_mode != MODE_UNKNOWN:
+                selected_mode = fallback_mode
+
+        try:
+            if release_callback(job_folder_name, selected_mode):
+                released_count += 1
+        except Exception as exc:
+            main_logger.error("Pending auto-release failed for %s: %s", job_folder_name, exc, exc_info=True)
+
+    return released_count
+
+
+def pending_autorelease_scheduler(
+    deployment_gate: DeploymentGateManager,
+    release_callback: Callable[[str, str], bool],
+    stop_event: threading.Event,
+    *,
+    sweep_interval_seconds: int = 60,
+) -> None:
+    """
+    Background loop that periodically auto-releases due pending jobs.
+    """
+    interval = max(1, int(sweep_interval_seconds))
+    main_logger.info("Pending auto-release scheduler started (interval=%ss)", interval)
+
+    while not stop_event.is_set():
+        try:
+            released = process_pending_autorelease_once(deployment_gate, release_callback)
+            if released:
+                main_logger.info("Pending auto-release sweep released %s job(s)", released)
+        except Exception as exc:
+            main_logger.error("Error in pending auto-release scheduler: %s", exc, exc_info=True)
+
+        if stop_event.wait(interval):
+            break
+
+    main_logger.info("Pending auto-release scheduler stopped")

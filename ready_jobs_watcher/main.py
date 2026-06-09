@@ -16,19 +16,35 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 from .config import Config, BASE_DATA_DIR
-from .file_handler import JobProcessor
+from .file_handler import JobProcessor, is_retryable_os_error
 from .utils import clear_old_logs, is_hidden
 from .bad_parts_checker import load_blacklist, load_permanently_ignored_blacklist
 from .watchers import RenameHandler, PdfChangeHandler
-from .scheduler import backup_scheduler, cnc_scan_scheduler, stats_logger_scheduler, daily_restart_scheduler
+from .scheduler import (
+    backup_scheduler,
+    cnc_scan_scheduler,
+    stats_logger_scheduler,
+    daily_restart_scheduler,
+    pending_autorelease_scheduler,
+    metadata_end_of_day_scheduler,
+)
 from PyQt6.QtWidgets import QApplication
 from .gui import SettingsWindow
 from .tray_icon import create_tray_icon
 from .tracker_bad_parts import TrackerBadPartsMonitor
 from .alert_coordinator import AlertCoordinator, AlertBatch
-from .cabinet_sheet_indexer import build_reference_index_for_job
+from .cabinet_sheet_indexer import (
+    build_reference_index_for_job,
+    detect_mode_for_job,
+    detect_mode_template_mismatch_for_job,
+)
 from .hardwoods_cutlist_indexer import build_hardwoods_cutlist_index_for_job
 from .dae_converter import convert_3d_models_for_job, scan_root_for_missing_glbs
+from .deployment_gate import DeploymentGateManager
+from .notifications import send_notification
+from .metadata_refresh import MetadataRefreshService
+
+ROOT_RECONNECT_POLL_SECONDS = 30
 
 
 # --- Logging Setup ---
@@ -96,12 +112,18 @@ class Application:
         self.observer = Observer()
         self.pdf_observer = Observer()
         self.desktop_observer = Observer()
+        self._observer_lock = threading.RLock()
+        self._pending_operations_restored = False
+        self._root_unavailable_logged = False
 
         self.retry_thread = None
         self.backup_thread = None
         self.cnc_scan_thread = None
         self.stats_thread = None
         self.restart_thread = None
+        self.pending_autorelease_thread = None
+        self.metadata_end_of_day_thread = None
+        self.observer_monitor_thread = None
         self.tray_thread = None
 
         self.qapp = None
@@ -109,7 +131,15 @@ class Application:
         self.icon = None
         self._pending_alert_batches = []
         self._pending_alert_lock = threading.Lock()
-        self.tracker_monitor = TrackerBadPartsMonitor(self.config)
+        self._pending_job_prompts = []
+        self._pending_job_prompt_lock = threading.Lock()
+        self._pending_job_timers = {}
+        self._pending_job_timers_lock = threading.Lock()
+        self._pending_auto_release_notices = []
+        self._pending_auto_release_notices_lock = threading.Lock()
+        self.deployment_gate = DeploymentGateManager(self.config.ROOT_DIR)
+        self.metadata_refresh_service = MetadataRefreshService(self.config)
+        self.tracker_monitor = TrackerBadPartsMonitor(self.config, deployment_gate=self.deployment_gate)
         self.alert_coordinator = AlertCoordinator(
             self.config,
             self.tracker_monitor,
@@ -132,6 +162,368 @@ class Application:
         for batch in batches:
             self.settings_window.emit_bad_parts_alert(batch)
 
+    def _queue_pending_job_prompt(self, job_folder_name: str):
+        if self.settings_window:
+            self.settings_window.emit_pending_job_prompt(job_folder_name)
+            return
+        with self._pending_job_prompt_lock:
+            self._pending_job_prompts.append(job_folder_name)
+
+    def _flush_pending_job_prompts(self):
+        if not self.settings_window:
+            return
+        with self._pending_job_prompt_lock:
+            jobs = list(self._pending_job_prompts)
+            self._pending_job_prompts.clear()
+        for job in jobs:
+            self.settings_window.emit_pending_job_prompt(job)
+
+    def _queue_auto_release_notice(self, job_folder_name: str):
+        if self.settings_window:
+            self.settings_window.emit_auto_release_notice(job_folder_name)
+            return
+        with self._pending_auto_release_notices_lock:
+            self._pending_auto_release_notices.append(job_folder_name)
+
+    def _flush_pending_auto_release_notices(self):
+        if not self.settings_window:
+            return
+        with self._pending_auto_release_notices_lock:
+            jobs = list(self._pending_auto_release_notices)
+            self._pending_auto_release_notices.clear()
+        for job in jobs:
+            self.settings_window.emit_auto_release_notice(job)
+
+    def on_new_job_folder_detected(self, folder_path: str):
+        root_norm = os.path.normcase(os.path.normpath(self.config.ROOT_DIR))
+        parent_norm = os.path.normcase(os.path.normpath(os.path.dirname(folder_path)))
+        if parent_norm != root_norm or not JobProcessor.is_job_folder(folder_path):
+            logging.debug("Ignoring pending gate creation for non-root/non-job folder: %s", folder_path)
+            return
+        job_folder_name = os.path.basename(os.path.normpath(folder_path))
+        detected_mode = "UNKNOWN"
+        detection_source = "UNKNOWN"
+        try:
+            detected_mode, detection_source = detect_mode_for_job(folder_path)
+        except Exception as exc:
+            logging.warning("Mode detection failed for %s: %s", folder_path, exc)
+        state = self.deployment_gate.ensure_pending_for_new_job(
+            job_folder_name,
+            detected_mode=detected_mode,
+            detection_source=detection_source,
+        )
+        self._queue_pending_job_prompt(job_folder_name)
+        try:
+            mismatch = detect_mode_template_mismatch_for_job(folder_path)
+            if mismatch is not None:
+                expected = mismatch.get("deliveryMode", "UNKNOWN")
+                exported = mismatch.get("assemblyMode", "UNKNOWN")
+                warning = (
+                    f"{job_folder_name}: template mismatch detected. "
+                    f"Delivery mode is {expected}, but assembly export looks like {exported}."
+                )
+                logging.warning(warning)
+                send_notification(
+                    title="Ready Jobs Template Mismatch",
+                    message=warning,
+                    duration="long",
+                )
+        except Exception as exc:
+            logging.warning("Template mismatch validation failed for %s: %s", folder_path, exc)
+        logging.info(
+            "New job marked pending: job=%s modeCandidate=%s source=%s",
+            job_folder_name,
+            state.get("modeDetection", {}).get("candidate"),
+            state.get("modeDetection", {}).get("source"),
+        )
+
+    def _schedule_pending_job_prompt(self, job_folder_name: str, delay_seconds: int):
+        delay_seconds = max(1, int(delay_seconds))
+
+        def _timer_callback():
+            with self._pending_job_timers_lock:
+                self._pending_job_timers.pop(job_folder_name, None)
+            self._queue_pending_job_prompt(job_folder_name)
+
+        with self._pending_job_timers_lock:
+            existing = self._pending_job_timers.get(job_folder_name)
+            if existing is not None:
+                existing.cancel()
+            timer = threading.Timer(delay_seconds, _timer_callback)
+            timer.name = f"PendingPrompt-{job_folder_name}"
+            timer.daemon = True
+            self._pending_job_timers[job_folder_name] = timer
+            timer.start()
+
+    def remind_pending_job(self, job_folder_name: str, minutes: int = 15):
+        self.deployment_gate.schedule_reminder(job_folder_name, minutes=minutes)
+        self._schedule_pending_job_prompt(job_folder_name, delay_seconds=minutes * 60)
+
+    def retry_pending_job(self, job_folder_name: str, minutes: int = 3):
+        self.deployment_gate.schedule_retry(job_folder_name, minutes=minutes)
+        self._schedule_pending_job_prompt(job_folder_name, delay_seconds=minutes * 60)
+
+    def set_job_hidden_from_production(self, job_folder_name: str, hidden: bool):
+        state = self.deployment_gate.set_hidden_from_production(job_folder_name, hidden)
+        self.schedule_metadata_refresh_for_job(job_folder_name, "deployment_gate_updated")
+        logging.info(
+            "Job visibility updated: job=%s hiddenFromProduction=%s",
+            job_folder_name,
+            state.get("hiddenFromProduction", False),
+        )
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+
+    def set_job_selected_mode(self, job_folder_name: str, selected_mode: str):
+        state = self.deployment_gate.set_selected_mode(job_folder_name, selected_mode)
+        self.schedule_metadata_refresh_for_job(job_folder_name, "deployment_gate_updated")
+        logging.info(
+            "Job selected mode updated: job=%s selectedMode=%s",
+            job_folder_name,
+            state.get("selectedMode", "UNKNOWN"),
+        )
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+
+    def set_job_detected_mode(self, job_folder_name: str, detected_mode: str, source: str = "MANUAL_OVERRIDE"):
+        state = self.deployment_gate.set_mode_detection(
+            job_folder_name,
+            detected_mode,
+            source=source,
+            mark_as_operator_action=True,
+        )
+        self.schedule_metadata_refresh_for_job(job_folder_name, "deployment_gate_updated")
+        logging.info(
+            "Job detected mode updated: job=%s detectedMode=%s source=%s",
+            job_folder_name,
+            (state.get("modeDetection") or {}).get("candidate", "UNKNOWN"),
+            (state.get("modeDetection") or {}).get("source", "UNKNOWN"),
+        )
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+
+    def _backfill_modes_for_existing_jobs(self):
+        rows = self.deployment_gate.list_job_states()
+        for row in rows:
+            job_folder_name = str(row.get("jobFolderName", "")).strip()
+            if not job_folder_name:
+                continue
+            job_path = os.path.join(self.config.ROOT_DIR, job_folder_name)
+            if not os.path.isdir(job_path) or not JobProcessor.is_job_folder(job_path):
+                continue
+
+            selected_mode = str(row.get("selectedMode") or "UNKNOWN")
+            mode_detection = row.get("modeDetection", {}) if isinstance(row.get("modeDetection"), dict) else {}
+            detected_mode = str(mode_detection.get("candidate") or "UNKNOWN")
+            detection_source = str(mode_detection.get("source") or "UNKNOWN")
+
+            next_detected_mode = detected_mode
+            next_detection_source = detection_source
+            if detected_mode == "UNKNOWN":
+                try:
+                    next_detected_mode, next_detection_source = detect_mode_for_job(job_path)
+                except Exception as exc:
+                    logging.warning("Mode backfill detection failed for %s: %s", job_path, exc)
+                    next_detected_mode, next_detection_source = "UNKNOWN", "UNKNOWN"
+                if next_detected_mode != detected_mode or next_detection_source != detection_source:
+                    self.deployment_gate.set_mode_detection(
+                        job_folder_name,
+                        candidate=next_detected_mode,
+                        source=next_detection_source,
+                        mark_as_operator_action=False,
+                    )
+
+            if selected_mode == "UNKNOWN" and next_detected_mode != "UNKNOWN":
+                self.deployment_gate.set_selected_mode(
+                    job_folder_name,
+                    next_detected_mode,
+                    mark_as_operator_action=False,
+                )
+
+    def get_jobs_dashboard_rows(self):
+        self._backfill_modes_for_existing_jobs()
+        return self.deployment_gate.list_job_states()
+
+    def deploy_pending_job(self, job_folder_name: str, selected_mode: str):
+        self.deployment_gate.mark_deployed(job_folder_name, selected_mode=selected_mode)
+        self.deployment_gate.clear_timers(job_folder_name)
+        with self._pending_job_timers_lock:
+            existing = self._pending_job_timers.pop(job_folder_name, None)
+            if existing is not None:
+                existing.cancel()
+        parse_ready = self._parse_job_after_deploy(job_folder_name)
+        self.deployment_gate.mark_parse_ready(job_folder_name, parse_ready=parse_ready)
+        self.schedule_metadata_refresh_for_job(job_folder_name, "job_deployed")
+        logging.info(
+            "Job deployed: job=%s parseReady=%s selectedMode=%s",
+            job_folder_name,
+            parse_ready,
+            selected_mode,
+        )
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+
+    def auto_release_pending_job(self, job_folder_name: str, selected_mode: str) -> bool:
+        state = self.deployment_gate.load_state(job_folder_name, create_if_missing=False, default_deployed=True)
+        if bool(state.get("deployed", True)):
+            return False
+        self.deployment_gate.update_state(job_folder_name, hiddenFromProduction=False, operator_action=False)
+        self.deploy_pending_job(job_folder_name, selected_mode)
+        self._queue_auto_release_notice(job_folder_name)
+        logging.info("Pending job auto-released after inactivity: %s", job_folder_name)
+        return True
+
+    def _parse_job_after_deploy(self, job_folder_name: str) -> bool:
+        job_path = os.path.join(self.config.ROOT_DIR, job_folder_name)
+        if not os.path.isdir(job_path):
+            return False
+        try:
+            self.job_processor.process_job_folder(job_path)
+        except Exception as exc:
+            logging.error("Job processor failed during deploy parse for %s: %s", job_folder_name, exc, exc_info=True)
+        reference_ok = False
+        hardwood_ok = False
+        try:
+            reference_ok = bool(build_reference_index_for_job(job_path))
+        except Exception as exc:
+            logging.error("Reference index build failed during deploy parse for %s: %s", job_folder_name, exc, exc_info=True)
+        try:
+            hardwood_ok = bool(build_hardwoods_cutlist_index_for_job(job_path, deployment_gate=self.deployment_gate))
+        except Exception as exc:
+            logging.error("Hardwoods index build failed during deploy parse for %s: %s", job_folder_name, exc, exc_info=True)
+        return reference_ok or hardwood_ok
+
+    def reparse_job(self, job_folder_name: str) -> bool:
+        """
+        Delete all program-generated files/folders for this job, and re-parse it from scratch.
+        """
+        job_path = os.path.join(self.config.ROOT_DIR, job_folder_name)
+        if not os.path.isdir(job_path):
+            logging.error("Cannot re-parse job: %s is not a directory.", job_path)
+            return False
+
+        logging.info("Re-parsing job %s (removing old parsed data first)...", job_folder_name)
+
+        # 1. Safely remove generated files:
+        # a) Delete DARK MODE subfolder
+        dark_mode_dir = os.path.join(job_path, "DARK MODE")
+        if os.path.isdir(dark_mode_dir):
+            import shutil
+            try:
+                shutil.rmtree(dark_mode_dir)
+                logging.info("Deleted DARK MODE folder for %s", job_folder_name)
+            except Exception as e:
+                logging.error("Failed to delete DARK MODE directory for %s: %s", job_folder_name, e)
+
+        # b) Delete generated remake bad parts candidate file inside CNC/.metadata/
+        from .remake_candidates_indexer import REMAKE_CANDIDATES_FILENAME
+        candidates_file = os.path.join(job_path, self.config.CNC_SUBDIR, ".metadata", REMAKE_CANDIDATES_FILENAME)
+        if os.path.isfile(candidates_file):
+            try:
+                os.remove(candidates_file)
+                logging.info("Deleted generated remake bad parts candidate file: %s", candidates_file)
+            except Exception as e:
+                logging.error("Failed to delete remake bad parts candidate file %s: %s", candidates_file, e)
+
+        # c) Delete generated 3d_medium.glb files inside 3D/<ROOM>/3d_medium.glb
+        three_d_dir = os.path.join(job_path, "3D")
+        if os.path.isdir(three_d_dir):
+            try:
+                for root, dirs, files in os.walk(three_d_dir):
+                    for file in files:
+                        if file == "3d_medium.glb":
+                            file_path = os.path.join(root, file)
+                            try:
+                                os.remove(file_path)
+                                logging.info("Deleted generated GLB file: %s", file_path)
+                            except Exception as e:
+                                logging.error("Failed to delete GLB file %s: %s", file_path, e)
+            except Exception as e:
+                logging.error("Failed to scan/delete GLB files for %s: %s", job_folder_name, e)
+
+        # d) Delete specific program-created metadata files/folders and cache_static.json
+        metadata_dir = os.path.join(job_path, ".metadata")
+        if os.path.isdir(metadata_dir):
+            import shutil
+
+            # Delete cabinet_sheet_index.json
+            ref_index_path = os.path.join(metadata_dir, "cabinet_sheet_index.json")
+            if os.path.isfile(ref_index_path):
+                try:
+                    os.remove(ref_index_path)
+                    logging.info("Deleted metadata file: %s", ref_index_path)
+                except Exception as e:
+                    logging.error("Failed to delete metadata file %s: %s", ref_index_path, e)
+
+            # Delete cache_static.json
+            cache_static_path = os.path.join(metadata_dir, "cache_static.json")
+            if os.path.isfile(cache_static_path):
+                try:
+                    os.remove(cache_static_path)
+                    logging.info("Deleted metadata file: %s", cache_static_path)
+                except Exception as e:
+                    logging.error("Failed to delete metadata file %s: %s", cache_static_path, e)
+
+            # Delete hardwoods/ subdirectory
+            hardwoods_dir = os.path.join(metadata_dir, "hardwoods")
+            if os.path.isdir(hardwoods_dir):
+                try:
+                    shutil.rmtree(hardwoods_dir)
+                    logging.info("Deleted metadata folder: %s", hardwoods_dir)
+                except Exception as e:
+                    logging.error("Failed to delete metadata directory %s: %s", hardwoods_dir, e)
+
+        # 2. Reset parseReady to False in deployment gate
+        self.deployment_gate.mark_parse_ready(job_folder_name, parse_ready=False)
+        self.schedule_metadata_refresh_for_job(job_folder_name, "job_reparse_started")
+
+        # 3. Perform re-parsing steps
+        # a) Process job folder (prefixes files if needed)
+        try:
+            self.job_processor.process_job_folder(job_path)
+        except Exception as exc:
+            logging.error("Job processor failed during re-parse for %s: %s", job_folder_name, exc, exc_info=True)
+
+        # b) Build reference index
+        reference_ok = False
+        try:
+            reference_ok = bool(build_reference_index_for_job(job_path))
+        except Exception as exc:
+            logging.error("Reference index build failed during re-parse for %s: %s", job_folder_name, exc, exc_info=True)
+
+        # c) Build hardwoods cutlist index
+        hardwood_ok = False
+        try:
+            hardwood_ok = bool(build_hardwoods_cutlist_index_for_job(job_path, deployment_gate=self.deployment_gate))
+        except Exception as exc:
+            logging.error("Hardwoods index build failed during re-parse for %s: %s", job_folder_name, exc, exc_info=True)
+
+        # d) Convert 3D DAE models to GLB
+        try:
+            convert_3d_models_for_job(job_path)
+        except Exception as exc:
+            logging.error("3D model conversion failed during re-parse for %s: %s", job_folder_name, exc, exc_info=True)
+
+        # e) Convert PDFs to dark mode
+        try:
+            from .pdf_dark_mode import process_directory
+            process_directory(job_path, force=True)
+        except Exception as exc:
+            logging.error("PDF dark mode conversion failed during re-parse for %s: %s", job_folder_name, exc, exc_info=True)
+
+        # 4. Re-evaluate parseReady state and mark in deployment gate
+        parse_ready = reference_ok or hardwood_ok
+        self.deployment_gate.mark_parse_ready(job_folder_name, parse_ready=parse_ready)
+        self.schedule_metadata_refresh_for_job(job_folder_name, "job_reparse_complete")
+
+        logging.info("Re-parse complete for %s. Parse ready: %s", job_folder_name, parse_ready)
+
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+
+        return True
+
+
     def _configure_assimp_path(self):
         """
         Apply optional config-level Assimp override to the process environment.
@@ -144,6 +536,13 @@ class Application:
             logging.info(f"Using existing ASSIMP_PATH from environment: {os.environ.get('ASSIMP_PATH')}")
         else:
             logging.info("ASSIMP_PATH not configured; dae_converter will use default assimp discovery.")
+
+    def schedule_metadata_refresh_for_job(self, job_folder_name: str, reason: str):
+        try:
+            job_folder = os.path.join(self.config.ROOT_DIR, job_folder_name)
+            self.metadata_refresh_service.schedule_job(job_folder, reason)
+        except Exception as exc:
+            logging.error("Failed scheduling metadata refresh for %s: %s", job_folder_name, exc, exc_info=True)
 
     def start(self):
         """Initializes and starts all application components."""
@@ -207,6 +606,9 @@ class Application:
             ('cnc_scan_thread', self.cnc_scan_thread),
             ('stats_thread', self.stats_thread),
             ('restart_thread', self.restart_thread),
+            ('pending_autorelease_thread', self.pending_autorelease_thread),
+            ('metadata_end_of_day_thread', self.metadata_end_of_day_thread),
+            ('observer_monitor_thread', self.observer_monitor_thread),
             ('tray_thread', self.tray_thread),
         ]
 
@@ -218,6 +620,11 @@ class Application:
                     logging.error(f"Error joining {name}: {e}")
                 if thread.is_alive():
                     logging.warning(f"{name} did not stop within timeout")
+
+        try:
+            self.metadata_refresh_service.stop()
+        except Exception as e:
+            logging.error(f"Error stopping metadata refresh service: {e}")
 
         # Stop thread pool executor
         if self.executor:
@@ -233,6 +640,14 @@ class Application:
                 self.alert_coordinator.stop()
             except Exception as e:
                 logging.error(f"Error stopping alert coordinator: {e}")
+
+        with self._pending_job_timers_lock:
+            for timer in self._pending_job_timers.values():
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+            self._pending_job_timers.clear()
 
         # Stop tray icon and GUI
         if self.icon:
@@ -425,7 +840,7 @@ class Application:
 
         self.cnc_scan_thread = threading.Thread(
             target=cnc_scan_scheduler,
-            args=(self.config, self.stop_event, self.tracker_monitor, self.alert_coordinator),
+            args=(self.config, self.stop_event, self.tracker_monitor, self.alert_coordinator, self.deployment_gate),
             daemon=True
         )
         self.cnc_scan_thread.start()
@@ -436,6 +851,28 @@ class Application:
         self.restart_thread = threading.Thread(target=daily_restart_scheduler, args=(self.config, self.stop_event, self), daemon=True)
         self.restart_thread.start()
         logging.info(f"Daily restart scheduled for {self.config.daily_restart_time}")
+
+        self.pending_autorelease_thread = threading.Thread(
+            target=pending_autorelease_scheduler,
+            args=(self.deployment_gate, self.auto_release_pending_job, self.stop_event),
+            daemon=True,
+            name="PendingAutoReleaseScheduler",
+        )
+        self.pending_autorelease_thread.start()
+        self.metadata_end_of_day_thread = threading.Thread(
+            target=metadata_end_of_day_scheduler,
+            args=(self.config, self.stop_event, self.metadata_refresh_service),
+            daemon=True,
+            name="MetadataEndOfDayScheduler",
+        )
+        self.metadata_end_of_day_thread.start()
+        self.observer_monitor_thread = threading.Thread(
+            target=self._observer_reconnect_loop,
+            args=(self.stop_event,),
+            daemon=True,
+            name="ObserverReconnectScheduler",
+        )
+        self.observer_monitor_thread.start()
 
     def restore_pending_operations(self, rename_handler, pdf_handler):
         """
@@ -448,34 +885,144 @@ class Application:
         # Use the improved resume method from PendingQueue which properly handles delays and uses synchronous conversion
         self.pending_queue.resume_pending_operations(pdf_handler, rename_handler)
 
+    def _is_root_available(self) -> bool:
+        root_dir = getattr(self.config, "ROOT_DIR", "")
+        if not root_dir:
+            return False
+        try:
+            return os.path.isdir(root_dir)
+        except OSError:
+            return False
+
+    def _observers_are_running(self) -> bool:
+        return bool(
+            self.observer
+            and self.observer.is_alive()
+            and self.pdf_observer
+            and self.pdf_observer.is_alive()
+        )
+
+    def _stop_observer_if_running(self, observer, name: str):
+        if not observer:
+            return
+        try:
+            if observer.is_alive():
+                observer.stop()
+        except Exception as exc:
+            logging.warning("Failed stopping %s: %s", name, exc)
+        try:
+            if observer.is_alive():
+                observer.join(timeout=3)
+        except Exception as exc:
+            logging.warning("Failed joining %s: %s", name, exc)
+
+    def _observer_reconnect_loop(self, stop_event: threading.Event):
+        poll_seconds = max(5, int(getattr(self.config, "root_offline_retry_seconds", ROOT_RECONNECT_POLL_SECONDS)))
+        was_available = None
+        while not stop_event.is_set():
+            is_available = self._is_root_available()
+
+            if is_available:
+                started = self.start_observers()
+                if was_available is False and started:
+                    logging.info("Ready Jobs root is back online. Running catch-up scan.")
+                    try:
+                        self.initial_scan()
+                    except Exception as exc:
+                        logging.error("Catch-up scan failed after reconnect: %s", exc, exc_info=True)
+            else:
+                if was_available is not False:
+                    logging.warning(
+                        "Ready Jobs root is offline/unavailable: %s. Watchers paused; auto-retry is active.",
+                        self.config.ROOT_DIR,
+                    )
+                if self._observers_are_running():
+                    with self._observer_lock:
+                        self._stop_observer_if_running(self.observer, "main_observer")
+                        self._stop_observer_if_running(self.pdf_observer, "pdf_observer")
+                        self.observer = Observer()
+                        self.pdf_observer = Observer()
+                self._root_unavailable_logged = True
+
+            was_available = is_available
+            if stop_event.wait(poll_seconds):
+                break
+
     def start_observers(self):
-        """Starts the filesystem watchers."""
-        event_handler = RenameHandler(self.config, self.job_processor, self, pending_queue=self.pending_queue, executor=self.executor)
-        self.observer.schedule(event_handler, self.config.ROOT_DIR, recursive=True)
-        self.observer.start()
-        logging.info(f"Watching {self.config.ROOT_DIR} for folder changes...")
+        """Starts the filesystem watchers. Returns True when both core observers are running."""
+        root_dir = self.config.ROOT_DIR
+        if not self._is_root_available():
+            if not self._root_unavailable_logged:
+                logging.warning(
+                    "Ready Jobs root unavailable at startup: %s. App will keep running and retry observers.",
+                    root_dir,
+                )
+                self._root_unavailable_logged = True
+            return False
 
-        # Pass rename_handler reference so PDF handler can check for pending folders
-        pdf_event_handler = PdfChangeHandler(
-            self.config,
-            rename_handler=event_handler,
-            pending_queue=self.pending_queue,
-            executor=self.executor,
-            tracker_monitor=self.tracker_monitor,
-            alert_coordinator=self.alert_coordinator
-        )
-        self.pdf_observer.schedule(pdf_event_handler, self.config.ROOT_DIR, recursive=True)
-        self.pdf_observer.start()
-        logging.info(f"Watching {self.config.ROOT_DIR} for PDF changes...")
+        with self._observer_lock:
+            if self._observers_are_running():
+                self._root_unavailable_logged = False
+                return True
 
-        # Restore pending operations from last session
-        self.restore_pending_operations(event_handler, pdf_event_handler)
+            # Ensure fresh observer instances before attempting restart.
+            self._stop_observer_if_running(self.observer, "main_observer")
+            self._stop_observer_if_running(self.pdf_observer, "pdf_observer")
+            self.observer = Observer()
+            self.pdf_observer = Observer()
 
-        logging.info(
-            "Desktop bad-parts log resolver watcher is disabled. "
-            "Ready Jobs Watcher runs notification/indexing only; "
-            "resolution is owned by process_run_folders_v2.py."
-        )
+            event_handler = RenameHandler(
+                self.config,
+                self.job_processor,
+                self,
+                pending_queue=self.pending_queue,
+                executor=self.executor,
+                deployment_gate=self.deployment_gate,
+            )
+            # Pass rename_handler reference so PDF handler can check for pending folders
+            pdf_event_handler = PdfChangeHandler(
+                self.config,
+                rename_handler=event_handler,
+                pending_queue=self.pending_queue,
+                executor=self.executor,
+                tracker_monitor=self.tracker_monitor,
+                alert_coordinator=self.alert_coordinator,
+                deployment_gate=self.deployment_gate,
+                metadata_refresh_service=getattr(self, "metadata_refresh_service", None),
+            )
+            try:
+                self.observer.schedule(event_handler, root_dir, recursive=True)
+                self.observer.start()
+                self.pdf_observer.schedule(pdf_event_handler, root_dir, recursive=True)
+                self.pdf_observer.start()
+            except Exception as exc:
+                logging.warning(
+                    "Failed to start filesystem observers for %s: %s. Retrying while app stays online.",
+                    root_dir,
+                    exc,
+                )
+                self._stop_observer_if_running(self.observer, "main_observer")
+                self._stop_observer_if_running(self.pdf_observer, "pdf_observer")
+                self.observer = Observer()
+                self.pdf_observer = Observer()
+                self._root_unavailable_logged = True
+                return False
+
+            logging.info(f"Watching {root_dir} for folder changes...")
+            logging.info(f"Watching {root_dir} for PDF changes...")
+            self._root_unavailable_logged = False
+
+            # Restore pending operations from last session once per app process.
+            if not self._pending_operations_restored:
+                self.restore_pending_operations(event_handler, pdf_event_handler)
+                self._pending_operations_restored = True
+
+            logging.info(
+                "Desktop bad-parts log resolver watcher is disabled. "
+                "Ready Jobs Watcher runs notification/indexing only; "
+                "resolution is owned by process_run_folders_v2.py."
+            )
+            return True
 
     def setup_gui(self):
         """Sets up the PyQt6 QApplication, settings window, and system tray icon."""
@@ -492,6 +1039,8 @@ class Application:
         self.icon = create_tray_icon(self.settings_window, self.config, self)
         self.icon.show()
         self._flush_pending_bad_parts_popups()
+        self._flush_pending_job_prompts()
+        self._flush_pending_auto_release_notices()
 
         # We start the initial scan slightly delayed similar to Tkinter's after
         import threading
@@ -508,6 +1057,42 @@ class Application:
         glb_thread = threading.Thread(target=_glb_startup_check, daemon=True, name="StartupGlbCheck")
         glb_thread.start()
 
+        # Startup check: rebuild cabinet_sheet_index.json for any deployed job that is missing one.
+        def _cabinet_index_startup_check():
+            try:
+                import os as _os
+                from .cabinet_sheet_indexer import build_reference_index_for_job, REFERENCE_INDEX_FILENAME
+                root = self.config.ROOT_DIR
+                for entry in _os.scandir(root):
+                    if not entry.is_dir():
+                        continue
+                    index_path = _os.path.join(entry.path, ".metadata", REFERENCE_INDEX_FILENAME)
+                    if not _os.path.exists(index_path):
+                        continue  # never indexed — watcher will catch it when PDFs appear
+                    # Rebuild if the index is stale (older than any PDF in the job folder)
+                    index_mtime = _os.path.getmtime(index_path)
+                    needs_rebuild = False
+                    for dirpath, _dirs, files in _os.walk(entry.path):
+                        for fname in files:
+                            if fname.lower().endswith(".pdf"):
+                                pdf_mtime = _os.path.getmtime(_os.path.join(dirpath, fname))
+                                if pdf_mtime > index_mtime:
+                                    needs_rebuild = True
+                                    break
+                        if needs_rebuild:
+                            break
+                    if needs_rebuild:
+                        logging.info("Startup: rebuilding stale cabinet index for %s", entry.name)
+                        try:
+                            build_reference_index_for_job(entry.path)
+                        except Exception as exc:
+                            logging.error("Startup cabinet index rebuild failed for %s: %s", entry.name, exc, exc_info=True)
+            except Exception as e:
+                logging.error("Startup cabinet index check failed: %s", e, exc_info=True)
+
+        index_thread = threading.Thread(target=_cabinet_index_startup_check, daemon=True, name="StartupCabinetIndexCheck")
+        index_thread.start()
+
         # Start the event loop
         sys.exit(self.qapp.exec())
 
@@ -519,7 +1104,15 @@ class Application:
     def scan_cnc_pdfs_for_bad_parts(self):
         """Trigger an immediate scan of all existing CNC PDFs."""
         from .scheduler import scan_cnc_pdfs_for_bad_parts
-        scan_cnc_pdfs_for_bad_parts(self.config, self.tracker_monitor, self.alert_coordinator)
+        try:
+            scan_cnc_pdfs_for_bad_parts(
+                self.config,
+                self.tracker_monitor,
+                self.alert_coordinator,
+                self.deployment_gate,
+            )
+        except Exception as exc:
+            logging.error("Immediate CNC scan failed (will retry on schedule): %s", exc, exc_info=True)
 
     def initial_scan(self):
         """Performs an initial scan of the root directory to handle any backlog."""
@@ -527,6 +1120,10 @@ class Application:
             logging.info("Initial scan skipped (GUI open).")
             return
         logging.info("Starting initial scan...")
+        # Stamp a hidden gate on any folder that doesn't have one yet — this ensures
+        # new/unknown folders are invisible to tablets until explicitly deployed.
+        from .deployment_gate import ensure_hidden_gates_for_all_folders
+        ensure_hidden_gates_for_all_folders(self.config.ROOT_DIR)
         try:
             with os.scandir(self.config.ROOT_DIR) as it:
                 for entry in it:
@@ -536,12 +1133,15 @@ class Application:
                             logging.info(f"Skipping hidden item: {full_path}")
                             continue
                         self.job_processor.process_job_folder(full_path)
+                        if not self.deployment_gate.should_process_job_folder(full_path):
+                            logging.info(f"Skipping pending job during initial parse: {full_path}")
+                            continue
                         try:
                             build_reference_index_for_job(full_path)
                         except Exception as e:
                             logging.error(f"Reference index build failed for {full_path}: {e}", exc_info=True)
                         try:
-                            build_hardwoods_cutlist_index_for_job(full_path)
+                            build_hardwoods_cutlist_index_for_job(full_path, deployment_gate=self.deployment_gate)
                         except Exception as e:
                             logging.error(f"Hardwoods cutlist index build failed for {full_path}: {e}", exc_info=True)
                         try:
@@ -598,12 +1198,11 @@ class Application:
                         logging.warning(f"Retry failed: file disappeared: {old_path}")
                         to_remove.append(old_path)
                     except OSError as e:
-                        # Handle sharing violations (file in use)
-                        if hasattr(e, 'winerror') and e.winerror == 32:
+                        if is_retryable_os_error(e):
                             next_retry_time = time.time() + (self.config.RETRY_INTERVAL_MINUTES * 60)
                             with self.pending_renames_lock:
                                 self.PENDING_RENAMES[old_path] = (job_num, dir_path, original_name, next_retry_time)
-                            logging.warning(f"Retry failed (file in use): {old_path}. Will retry later.")
+                            logging.warning(f"Retry failed (transient OS error): {old_path} ({e}). Will retry later.")
                         else:
                             logging.error(f"Retry failed for {old_path}: {e}")
                             to_remove.append(old_path)

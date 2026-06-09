@@ -40,7 +40,7 @@ class RenameHandler(FileSystemEventHandler):
     Detects new job folders and files, scheduling them for delayed renaming
     and processing to ensure template files are not renamed prematurely.
     """
-    def __init__(self, config, job_processor, app_state, pending_queue=None, executor=None):
+    def __init__(self, config, job_processor, app_state, pending_queue=None, executor=None, deployment_gate=None):
         """
         Initialize the RenameHandler.
 
@@ -60,43 +60,69 @@ class RenameHandler(FileSystemEventHandler):
         self._pending_folders = {}  # Track folders waiting to be processed: {folder_path: scheduled_time}
         self._pending_folders_lock = threading.Lock()  # Lock for thread-safe access
         self._folder_delay_seconds = config.new_folder_delay_seconds
+        self.deployment_gate = deployment_gate
 
-    def _schedule_folder_processing(self, folder_path: str):
+    def _is_top_level_job_folder(self, folder_path: str) -> bool:
+        root_norm = os.path.normcase(os.path.normpath(self.config.ROOT_DIR))
+        parent_norm = os.path.normcase(os.path.normpath(os.path.dirname(folder_path)))
+        is_top_level = parent_norm == root_norm
+        is_job_folder = self.job_processor.is_job_folder(folder_path)
+        return is_top_level and is_job_folder
+
+    def _schedule_folder_processing(self, folder_path: str, delay_seconds: Optional[float] = None, persist_in_queue: bool = True):
         """
         Schedule a folder to be processed after a configured delay.
 
         Args:
             folder_path (str): Full path to the detected folder.
         """
-        scheduled_time = time.time() + self._folder_delay_seconds
+        delay = self._folder_delay_seconds if delay_seconds is None else max(0.0, float(delay_seconds))
+        scheduled_time = time.time() + delay
 
         with self._pending_folders_lock:
             self._pending_folders[folder_path] = scheduled_time
 
-        main_logger.info(f"Scheduled folder processing in {self._folder_delay_seconds}s: {folder_path}")
+        main_logger.info(f"Scheduled folder processing in {delay}s: {folder_path}")
 
         # Save to persistent queue
-        if self.pending_queue:
+        if self.pending_queue and persist_in_queue:
             self.pending_queue.add_pending_folder(folder_path, scheduled_time)
 
         # Actual task to process the folder
         def _process_task():
             try:
-                # Check if still scheduled (might have been cancelled)
+                current_time = time.time()
                 should_process = False
                 with self._pending_folders_lock:
-                    if folder_path in self._pending_folders:
-                        main_logger.info(f"Processing delayed folder: {folder_path}")
-                        del self._pending_folders[folder_path]
-                        should_process = True
-                    else:
+                    run_at = self._pending_folders.get(folder_path)
+                    if run_at is None:
                         main_logger.debug(f"Folder processing was cancelled: {folder_path}")
+                    elif run_at > current_time + 0.5:
+                        main_logger.debug(f"Skipping outdated folder timer run for {folder_path}; newer schedule exists.")
+                    else:
+                        main_logger.info(f"Processing delayed folder: {folder_path}")
+                        should_process = True
 
                 if should_process:
-                    # Remove from persistent queue
-                    if self.pending_queue:
-                        self.pending_queue.remove_pending_folder(folder_path)
-                    self.job_processor.process_job_folder(folder_path)
+                    processed_ok = bool(self.job_processor.process_job_folder(folder_path))
+                    if processed_ok:
+                        with self._pending_folders_lock:
+                            self._pending_folders.pop(folder_path, None)
+                        if self.pending_queue:
+                            self.pending_queue.remove_pending_folder(folder_path)
+                    else:
+                        retry_delay = max(30.0, float(self._folder_delay_seconds))
+                        next_run_at = time.time() + retry_delay
+                        with self._pending_folders_lock:
+                            self._pending_folders[folder_path] = next_run_at
+                        if self.pending_queue:
+                            self.pending_queue.add_pending_folder(folder_path, next_run_at)
+                        self._schedule_folder_processing(folder_path, delay_seconds=retry_delay, persist_in_queue=False)
+                        main_logger.warning(
+                            "Delayed folder processing deferred after transient failure; retry in %ss: %s",
+                            retry_delay,
+                            folder_path,
+                        )
             except Exception as e:
                 main_logger.error(f"Error in delayed folder processing for {folder_path}: {e}", exc_info=True)
 
@@ -109,7 +135,7 @@ class RenameHandler(FileSystemEventHandler):
                 thread.start()
 
         # Use a timer to wait outside of the thread pool
-        timer = threading.Timer(self._folder_delay_seconds, _timer_callback)
+        timer = threading.Timer(delay, _timer_callback)
         timer.name = f"Timer-FolderProcess-{os.path.basename(folder_path)}"
         timer.daemon = True
         timer.start()
@@ -135,13 +161,35 @@ class RenameHandler(FileSystemEventHandler):
             if event.is_directory:
                 folder_name = os.path.basename(event.src_path)
 
-                # Skip template folders (Face Frame, Frameless) until renamed
+                root_norm = os.path.normcase(os.path.normpath(self.config.ROOT_DIR))
+                parent_norm = os.path.normcase(os.path.normpath(os.path.dirname(event.src_path)))
+                is_top_level = parent_norm == root_norm
+
+                # For every new top-level folder (including ignored ones), immediately
+                # stamp a hidden deployment gate so tablets never see ungated folders.
+                if is_top_level and not is_hidden(event.src_path):
+                    from .deployment_gate import ensure_hidden_gate_for_folder
+                    ensure_hidden_gate_for_folder(self.config.ROOT_DIR, folder_name)
+
+                # Skip template folders (Face Frame, Frameless, New Folder, etc.)
                 if should_ignore_folder(folder_name):
                     main_logger.debug(f"Skipping template folder: {event.src_path}")
                     return
 
-                # New job folder created - schedule processing after delay
-                main_logger.info(f"New folder created: {event.src_path}")
+                is_job_folder = self.job_processor.is_job_folder(event.src_path)
+                if not is_top_level or not is_job_folder:
+                    main_logger.debug(
+                        "Ignoring non-job directory create event: path=%s topLevel=%s jobFolder=%s",
+                        event.src_path,
+                        is_top_level,
+                        is_job_folder,
+                    )
+                    return
+
+                # New top-level job folder created - schedule processing after delay
+                main_logger.info(f"New job folder created: {event.src_path}")
+                if hasattr(self.app_state, "on_new_job_folder_detected"):
+                    self.app_state.on_new_job_folder_detected(event.src_path)
                 self._schedule_folder_processing(event.src_path)
             else:
                 file_name = os.path.basename(event.src_path)
@@ -204,7 +252,33 @@ class RenameHandler(FileSystemEventHandler):
                     main_logger.debug(f"Skipping template folder: {event.dest_path}")
                     return
 
+                if self._is_top_level_job_folder(event.dest_path):
+                    main_logger.info(f"Top-level job folder moved/renamed: {event.dest_path}")
+                    if hasattr(self.app_state, "on_new_job_folder_detected"):
+                        self.app_state.on_new_job_folder_detected(event.dest_path)
+                    # Run an immediate pass so files in the renamed folder are prefixed right away.
+                    try:
+                        self.job_processor.process_job_folder(event.dest_path)
+                    except Exception as exc:
+                        main_logger.warning(
+                            "Immediate folder processing after rename failed; delayed retry will handle it: %s (%s)",
+                            event.dest_path,
+                            exc,
+                        )
+                    self._schedule_folder_processing(event.dest_path)
+                    return
+
                 self.job_processor.process_job_folder(event.dest_path, include_cnc=True)
+            else:
+                file_name = os.path.basename(event.dest_path)
+                if should_ignore_file(file_name):
+                    main_logger.debug(f"Skipping ignored moved file: {event.dest_path}")
+                    return
+                parent_folder = os.path.dirname(event.dest_path)
+                parent_base_name = os.path.basename(parent_folder)
+                job_num = self.job_processor.extract_job_number(parent_base_name)
+                if job_num:
+                    self.job_processor.process_file(event.dest_path, job_num, parent_folder)
         except Exception as e:
             main_logger.error(f"Error in RenameHandler.on_moved for {event.src_path} -> {event.dest_path}: {e}")
 
@@ -219,7 +293,9 @@ class PdfChangeHandler(FileSystemEventHandler):
         pending_queue=None,
         executor=None,
         tracker_monitor: Optional[TrackerBadPartsMonitor] = None,
-        alert_coordinator: Optional[AlertCoordinator] = None
+        alert_coordinator: Optional[AlertCoordinator] = None,
+        deployment_gate=None,
+        metadata_refresh_service=None,
     ):
         """
         Initialize the PdfChangeHandler.
@@ -247,6 +323,46 @@ class PdfChangeHandler(FileSystemEventHandler):
         self._index_reparse_delay_seconds = 10.0
         self._index_reparse_timers = {}
         self._index_reparse_lock = threading.Lock()
+        self._dae_reparse_timers = {}
+        self._dae_reparse_lock = threading.Lock()
+        self.deployment_gate = deployment_gate
+        self.metadata_refresh_service = metadata_refresh_service
+
+    def _is_root_available(self) -> bool:
+        try:
+            return os.path.isdir(self.config.ROOT_DIR)
+        except OSError:
+            return False
+
+    def _schedule_metadata_refresh(self, src_path: str, reason: str):
+        if self.metadata_refresh_service is None:
+            return
+        try:
+            scheduled = self.metadata_refresh_service.schedule_path(src_path, reason)
+            if scheduled:
+                main_logger.debug("Scheduled metadata cache refresh (%s): %s", reason, src_path)
+        except Exception as exc:
+            main_logger.error("Failed scheduling metadata cache refresh for %s: %s", src_path, exc, exc_info=True)
+
+    def _reschedule_pending_pdf_conversion(self, pdf_path: str, invert_images: bool, delay_seconds: float = 60.0):
+        retry_delay = max(5.0, float(delay_seconds))
+        retry_at = time.time() + retry_delay
+        if self.pending_queue:
+            self.pending_queue.add_pending_pdf(pdf_path, retry_at, invert_images)
+        self._schedule_pdf_conversion(pdf_path, invert_images, delay_seconds=retry_delay)
+        main_logger.warning(
+            "Deferred PDF conversion due to transient/offline condition; retry in %ss: %s",
+            retry_delay,
+            pdf_path,
+        )
+
+    @staticmethod
+    def _resolve_job_folder_for_pdf(pdf_path: str) -> str:
+        normalized_path = pdf_path.replace('/', '\\')
+        folder = os.path.dirname(normalized_path)
+        if os.path.basename(folder).upper() == "DARK MODE":
+            return os.path.dirname(folder)
+        return folder
 
     @staticmethod
     def _is_tracker_stream_file(file_path: str) -> bool:
@@ -271,10 +387,15 @@ class PdfChangeHandler(FileSystemEventHandler):
             if events and self.alert_coordinator is not None:
                 self.alert_coordinator.submit_events(events)
             job_folder_name = derive_job_from_tracker_path(self.config, src_path)
+            if job_folder_name and self.deployment_gate is not None:
+                state = self.deployment_gate.load_state(job_folder_name, default_deployed=True)
+                if not bool(state.get("deployed", True)):
+                    main_logger.info("Skipping tracker scan refresh for pending job: %s", job_folder_name)
+                    return
             if job_folder_name:
-                refresh_unresolved_bad_parts_for_job(self.config, job_folder_name)
+                refresh_unresolved_bad_parts_for_job(self.config, job_folder_name, deployment_gate=self.deployment_gate)
             else:
-                refresh_unresolved_bad_parts_all(self.config)
+                refresh_unresolved_bad_parts_all(self.config, deployment_gate=self.deployment_gate)
             main_logger.info(
                 "Tracker scan finished (%s): new_events=%s active_total=%s source=%s",
                 reason,
@@ -301,14 +422,28 @@ class PdfChangeHandler(FileSystemEventHandler):
             self._tracker_scan_timer.start()
 
     def _run_index_refresh(self, pdf_path: str, reason: str):
+        if self.deployment_gate is not None:
+            folder = os.path.dirname(pdf_path)
+            if os.path.basename(folder).upper() == "DARK MODE":
+                job_folder = os.path.dirname(folder)
+            else:
+                job_folder = folder
+            if not self.deployment_gate.should_process_job_folder(job_folder):
+                main_logger.info(
+                    "Skipping index refresh for pending job (%s): %s",
+                    reason,
+                    pdf_path,
+                )
+                return
         try:
             build_reference_index_for_pdf_event(pdf_path)
         except Exception as e:
             main_logger.error(f"Reference index refresh failed ({reason}): {pdf_path} ({e})", exc_info=True)
         try:
-            build_hardwoods_cutlist_index_for_pdf_event(pdf_path)
+            build_hardwoods_cutlist_index_for_pdf_event(pdf_path, deployment_gate=self.deployment_gate)
         except Exception as e:
             main_logger.error(f"Hardwoods cutlist index refresh failed ({reason}): {pdf_path} ({e})", exc_info=True)
+        self._schedule_metadata_refresh(pdf_path, "index_refresh_complete")
 
     def _schedule_index_refresh(self, pdf_path: str, reason: str):
         def _timer_callback():
@@ -348,7 +483,7 @@ class PdfChangeHandler(FileSystemEventHandler):
         if old_entries:
             main_logger.debug(f"Cleaned up {len(old_entries)} old cooldown entries")
 
-    def _schedule_pdf_conversion(self, pdf_path: str, invert_images: bool):
+    def _schedule_pdf_conversion(self, pdf_path: str, invert_images: bool, delay_seconds: Optional[float] = None):
         """
         Schedule a PDF conversion after the cooldown period.
 
@@ -364,7 +499,7 @@ class PdfChangeHandler(FileSystemEventHandler):
         if should_cleanup:
             self._cleanup_old_cooldown_entries()
 
-        delay_seconds = self._cooldown_seconds
+        delay_seconds = self._cooldown_seconds if delay_seconds is None else max(0.0, float(delay_seconds))
         main_logger.info(f"Scheduling PDF conversion in {delay_seconds}s: {os.path.basename(pdf_path)}")
 
         def _convert_task():
@@ -373,10 +508,29 @@ class PdfChangeHandler(FileSystemEventHandler):
 
                 # Check if file still exists before converting
                 if not os.path.exists(pdf_path):
-                    main_logger.warning(f"PDF no longer exists, skipping conversion: {pdf_path}")
-                    if self.pending_queue:
-                        self.pending_queue.remove_pending_pdf(pdf_path)
+                    if self._is_root_available():
+                        main_logger.warning(f"PDF no longer exists, skipping conversion: {pdf_path}")
+                        if self.pending_queue:
+                            self.pending_queue.remove_pending_pdf(pdf_path)
+                    else:
+                        self._reschedule_pending_pdf_conversion(pdf_path, invert_images, delay_seconds=60.0)
                     return
+
+                # Re-check deployment state at execution time to block conversions
+                # while jobs are pending deployment.
+                if self.deployment_gate is not None:
+                    job_folder = self._resolve_job_folder_for_pdf(pdf_path)
+                    if not self.deployment_gate.should_process_job_folder(job_folder):
+                        main_logger.info(
+                            "Skipping delayed dark mode conversion for pending job (awaiting deploy): %s",
+                            pdf_path,
+                        )
+                        self._reschedule_pending_pdf_conversion(
+                            pdf_path,
+                            invert_images,
+                            delay_seconds=max(60.0, float(self._cooldown_seconds)),
+                        )
+                        return
 
                 # Remove from persistent queue when conversion runs
                 if self.pending_queue:
@@ -387,6 +541,11 @@ class PdfChangeHandler(FileSystemEventHandler):
                 run_dark_mode_conversion(specific_file=pdf_path, invert_images=invert_images)
             except Exception as e:
                 main_logger.error(f"Error in delayed PDF conversion thread for {pdf_path}: {e}", exc_info=True)
+                if self._is_root_available():
+                    if self.pending_queue:
+                        self.pending_queue.remove_pending_pdf(pdf_path)
+                else:
+                    self._reschedule_pending_pdf_conversion(pdf_path, invert_images, delay_seconds=60.0)
 
         def _timer_callback():
             # Submit actual processing to executor or run in thread
@@ -406,6 +565,7 @@ class PdfChangeHandler(FileSystemEventHandler):
     def _schedule_dae_conversion(self, dae_path: str):
         """Schedule a DAE→GLB conversion after a short stabilisation delay."""
         delay_seconds = self._cooldown_seconds
+        normalized_path = os.path.normcase(os.path.abspath(dae_path))
 
         def _convert_task():
             try:
@@ -419,16 +579,27 @@ class PdfChangeHandler(FileSystemEventHandler):
                 main_logger.error(f"DAE conversion failed for {dae_path}: {e}", exc_info=True)
 
         def _timer_callback():
-            if self.executor:
-                self.executor.submit(_convert_task)
-            else:
-                thread = threading.Thread(target=_convert_task, daemon=True, name=f"DaeConvert-{os.path.basename(os.path.dirname(dae_path))}")
-                thread.start()
+            try:
+                if self.executor:
+                    self.executor.submit(_convert_task)
+                else:
+                    thread = threading.Thread(target=_convert_task, daemon=True, name=f"DaeConvert-{os.path.basename(os.path.dirname(dae_path))}")
+                    thread.start()
+            finally:
+                with self._dae_reparse_lock:
+                    self._dae_reparse_timers.pop(normalized_path, None)
 
-        timer = threading.Timer(delay_seconds, _timer_callback)
-        timer.name = f"Timer-DaeConvert-{os.path.basename(os.path.dirname(dae_path))}"
-        timer.daemon = True
-        timer.start()
+        with self._dae_reparse_lock:
+            existing = self._dae_reparse_timers.get(normalized_path)
+            if existing is not None:
+                existing.cancel()
+
+            timer = threading.Timer(delay_seconds, _timer_callback)
+            timer.name = f"Timer-DaeConvert-{os.path.basename(os.path.dirname(dae_path))}"
+            timer.daemon = True
+            self._dae_reparse_timers[normalized_path] = timer
+            timer.start()
+
         main_logger.info(f"Scheduled DAE conversion in {delay_seconds}s: {dae_path}")
 
     def _should_convert_to_dark_mode(self, pdf_path: str) -> bool:
@@ -478,6 +649,16 @@ class PdfChangeHandler(FileSystemEventHandler):
                     main_logger.debug(f"Skipping dark mode conversion for PDF in pending folder: {pdf_path}")
                     return False
 
+        # Block dark mode conversion while a job is pending deployment.
+        if self.deployment_gate is not None:
+            job_folder = self._resolve_job_folder_for_pdf(pdf_path)
+            if not self.deployment_gate.should_process_job_folder(job_folder):
+                main_logger.info(
+                    "Skipping dark mode conversion for pending job (awaiting deploy): %s",
+                    pdf_path,
+                )
+                return False
+
         return True
 
     def on_modified(self, event):
@@ -488,6 +669,8 @@ class PdfChangeHandler(FileSystemEventHandler):
             event (FileSystemEvent): The watchdog event instance.
         """
         try:
+            if not event.is_directory:
+                self._schedule_metadata_refresh(event.src_path, "modified")
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF modified event detected by recursive watcher: {event.src_path}")
                 if self._is_cnc_path(event.src_path):
@@ -539,6 +722,8 @@ class PdfChangeHandler(FileSystemEventHandler):
             event (FileSystemEvent): The watchdog event instance.
         """
         try:
+            if not event.is_directory:
+                self._schedule_metadata_refresh(event.src_path, "created")
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF created event detected by recursive watcher: {event.src_path}")
                 if self._is_cnc_path(event.src_path):
@@ -590,6 +775,8 @@ class PdfChangeHandler(FileSystemEventHandler):
             event (FileSystemEvent): The watchdog event instance.
         """
         try:
+            if not event.is_directory:
+                self._schedule_metadata_refresh(event.src_path, "deleted")
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF deleted event detected by recursive watcher: {event.src_path}")
                 with self._index_reparse_lock:
@@ -597,12 +784,20 @@ class PdfChangeHandler(FileSystemEventHandler):
                     if existing is not None:
                         existing.cancel()
                 if not self._is_cnc_path(event.src_path):
+                    folder = os.path.dirname(event.src_path)
+                    if os.path.basename(folder).upper() == "DARK MODE":
+                        job_folder = os.path.dirname(folder)
+                    else:
+                        job_folder = folder
+                    if self.deployment_gate is not None and not self.deployment_gate.should_process_job_folder(job_folder):
+                        main_logger.info("Skipping delete re-index for pending job: %s", event.src_path)
+                        return
                     try:
                         build_reference_index_for_pdf_event(event.src_path)
                     except Exception as e:
                         main_logger.error(f"Reference index refresh failed (deleted): {event.src_path} ({e})", exc_info=True)
                     try:
-                        build_hardwoods_cutlist_index_for_pdf_event(event.src_path)
+                        build_hardwoods_cutlist_index_for_pdf_event(event.src_path, deployment_gate=self.deployment_gate)
                     except Exception as e:
                         main_logger.error(f"Hardwoods cutlist index refresh failed (deleted): {event.src_path} ({e})", exc_info=True)
 

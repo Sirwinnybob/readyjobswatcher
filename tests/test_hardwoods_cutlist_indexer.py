@@ -114,6 +114,51 @@ def _door_row(y, qty, width, height, cab_text):
     return words
 
 
+def _legacy_door_header(y=202.5):
+    return [
+        _w(75, y, "Qty"),
+        _w(112, y, "|"),
+        _w(130, y, "Width"),
+        _w(168, y, "*"),
+        _w(180, y, "Height"),
+        _w(228, y, "|"),
+        _w(289, y, "|"),
+        _w(304, y, "Type"),
+        _w(336, y, "|"),
+        _w(352, y, "|"),
+        _w(366, y, "Hinge"),
+        _w(432, y, "|"),
+        _w(448, y, "Cab"),
+        _w(484, y, "(Qty)"),
+        _w(534, y, "|"),
+    ]
+
+
+def _legacy_door_row(y, qty, width, height, door_type="DF", hinge="N", cab_text=""):
+    words = [
+        _w(83, y, str(qty)),
+        _w(112, y, "|"),
+        _w(126, y, str(width)),
+        _w(168, y, "*"),
+        _w(180, y, str(height)),
+        _w(228, y, "|"),
+        _w(289, y, "|"),
+        _w(302, y, str(door_type)),
+        _w(336, y, "|"),
+        _w(352, y, "|"),
+        _w(366, y, str(hinge)),
+        _w(432, y, "|"),
+        _w(446, y, "|"),
+    ]
+    if cab_text:
+        for i, tok in enumerate(cab_text.split()):
+            words.append(_w(460 + i * 12, y, tok))
+        words.append(_w(534, y, "|"))
+    else:
+        words.append(_w(534, y, "|"))
+    return words
+
+
 def _load_output(job_dir: str):
     out_path = os.path.join(job_dir, ".metadata", "hardwoods", "cutlist_index.json")
     with open(out_path, "r", encoding="utf-8") as f:
@@ -152,6 +197,153 @@ def test_new_template_rows_include_material_field_and_values(tmp_path, monkeypat
     assert rows[0]["length"] == "54"
     assert rows[0]["cabinets"] == ["15", "16"]
     assert rows[0]["rowId"].startswith(f"{indexer.DOC_TYPE_FACE_FRAME}:1:0:")
+
+
+def test_section_marker_extracts_material_and_units_v2():
+    rows_by_y = [
+        (
+            130.0,
+            [
+                {"x0": 74.0, "x1": 100.0, "y0": 130.0, "y1": 138.0, "text": "Material:", "upper": "MATERIAL:"},
+                {"x0": 124.0, "x1": 138.0, "y0": 130.0, "y1": 138.0, "text": "'3/4", "upper": "'3/4"},
+                {"x0": 160.0, "x1": 205.0, "y0": 130.0, "y1": 138.0, "text": "Maple'", "upper": "MAPLE'"},
+                {"x0": 210.0, "x1": 214.0, "y0": 130.0, "y1": 138.0, "text": "|", "upper": "|"},
+                {"x0": 220.0, "x1": 252.0, "y0": 130.0, "y1": 138.0, "text": "Units:", "upper": "UNITS:"},
+                {"x0": 258.0, "x1": 274.0, "y0": 130.0, "y1": 138.0, "text": "BD", "upper": "BD"},
+                {"x0": 278.0, "x1": 294.0, "y0": 130.0, "y1": 138.0, "text": "FT", "upper": "FT"},
+                {"x0": 300.0, "x1": 304.0, "y0": 130.0, "y1": 138.0, "text": "|", "upper": "|"},
+            ],
+        )
+    ]
+
+    markers = indexer._extract_section_markers(indexer.DOC_TYPE_FACE_FRAME, rows_by_y)
+    assert len(markers) == 1
+    assert markers[0]["material"] == "3/4 Maple"
+    assert markers[0]["unitType"] == "BD_FT"
+    assert markers[0]["unitRaw"] == "BD FT"
+
+
+def test_rows_and_totals_emit_unit_type_with_material_sections(tmp_path, monkeypatch):
+    job_dir = tmp_path / "310 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "310 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [
+        _w(74, 130, "Material:"),
+        _w(124, 130, "'3/4"),
+        _w(160, 130, "Paint"),
+        _w(194, 130, "Grade"),
+        _w(226, 130, "Wood'"),
+        _w(255, 130, "|"),
+        _w(264, 130, "Units:"),
+        _w(305, 130, "BD"),
+        _w(322, 130, "FT"),
+        _w(338, 130, "|"),
+    ]
+    page_words += _std_header(160)
+    page_words += _std_row(184, 1, "Part A", "3.0", "24.0", "10 (1)")
+    page_words += [_w(75, 210, "Totals"), _w(250, 210, "Width"), _w(320, 210, "Length"), _w(390, 210, "Rips")]
+    page_words += [_w(250, 230, "3.0"), _w(320, 230, "24.0"), _w(390, 230, "1")]
+
+    page_words += [
+        _w(74, 260, "Material:"),
+        _w(124, 260, "'White"),
+        _w(170, 260, "Melamine'"),
+        _w(232, 260, "|"),
+        _w(242, 260, "Units:"),
+        _w(280, 260, "SHE"),
+        _w(304, 260, "|"),
+    ]
+    page_words += _std_header(290)
+    page_words += _std_row(314, 2, "Part B", "2.0", "30.0", "20 (2)")
+    page_words += [_w(75, 340, "Totals"), _w(250, 340, "Width"), _w(320, 340, "Length"), _w(390, 340, "Rips")]
+    page_words += [_w(250, 360, "2.0"), _w(320, 360, "30.0"), _w(390, 360, "2")]
+
+    doc_map = {str(face_frame): _FakeDoc([_FakePage(words=page_words)])}
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    face = docs[indexer.DOC_TYPE_FACE_FRAME]
+
+    assert [r["unitType"] for r in face["rows"]] == ["BD_FT", "SHEETS"]
+    assert [t["unitType"] for t in face["totals"]] == ["BD_FT", "SHEETS"]
+    assert face["rows"][0]["material"] == "3/4 Paint Grade Wood"
+    assert face["rows"][1]["material"] == "White Melamine"
+
+
+def test_unit_type_carries_across_spillover_pages(tmp_path, monkeypatch):
+    job_dir = tmp_path / "311 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "311 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    page1_words = []
+    page1_words += [
+        _w(74, 130, "Material:"),
+        _w(124, 130, "'3/4"),
+        _w(160, 130, "Solid"),
+        _w(200, 130, "Maple'"),
+        _w(236, 130, "|"),
+        _w(246, 130, "Units:"),
+        _w(284, 130, "BD"),
+        _w(301, 130, "FT"),
+        _w(317, 130, "|"),
+    ]
+    page1_words += _std_header(160)
+    page1_words += _std_row(184, 1, "Part A", "2.5", "10", "1")
+
+    page2_words = []
+    page2_words += _std_row(92, 1, "Part B", "2.5", "12", "2")
+    page2_words += _std_row(112, 1, "Part C", "2.5", "14", "3")
+
+    doc_map = {str(face_frame): _FakeDoc([_FakePage(words=page1_words), _FakePage(words=page2_words)])}
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    rows = docs[indexer.DOC_TYPE_FACE_FRAME]["rows"]
+
+    assert len(rows) == 3
+    assert all(r["unitType"] == "BD_FT" for r in rows)
+
+
+def test_missing_or_unknown_units_mark_unknown_and_warn(tmp_path, monkeypatch):
+    job_dir = tmp_path / "312 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "312 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    page_words += _std_header(160)
+    page_words += _std_row(184, 1, "Part A", "2.5", "10", "1")
+    page_words += [_w(75, 210, "Totals"), _w(250, 210, "Width"), _w(320, 210, "Length"), _w(390, 210, "Rips")]
+    page_words += [_w(250, 230, "2.5"), _w(320, 230, "10"), _w(390, 230, "1")]
+
+    doc_map = {str(face_frame): _FakeDoc([_FakePage(words=page_words)])}
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    warnings = []
+
+    def _capture_warning(msg, *args, **kwargs):
+        rendered = msg % args if args else msg
+        warnings.append(str(rendered))
+
+    monkeypatch.setattr(indexer.main_logger, "warning", _capture_warning)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    face = docs[indexer.DOC_TYPE_FACE_FRAME]
+
+    assert face["rows"][0]["unitType"] == "UNKNOWN"
+    assert face["totals"][0]["unitType"] == "UNKNOWN"
+    assert any("HARDWOODS_UNIT_UNKNOWN" in line for line in warnings)
 
 
 def test_multiple_material_sections_on_same_page_all_rows_captured(tmp_path, monkeypatch):
@@ -330,6 +522,250 @@ def test_cutlist_spillover_without_repeated_header_uses_previous_table_geometry(
     assert len(rows) == 3
     assert [r["page"] for r in rows] == [1, 2, 2]
     assert all(r["material"] == "3/4 Paint Grade Wood" for r in rows)
+
+
+def test_mixed_layout_page_parses_pre_header_spillover_before_repeated_header(tmp_path, monkeypatch):
+    job_dir = tmp_path / "568 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "568 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    # Page 1: establish geometry + active material.
+    page1_words = []
+    page1_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Solid"), _w(202, 130, "White"), _w(244, 130, "Oak'")]
+    page1_words += _std_header(160)
+    page1_words += _std_row(184, 1, "Bottom Rail", "2.5", "20", "10")
+
+    # Page 2: spillover rows before repeated header (real-world failure shape).
+    page2_words = []
+    page2_words += _std_row(92, 1, "Left Stile", "0.75", "31.75", "20")
+    page2_words += _std_row(112, 1, "Right Stile", "0.75", "31.75", "19")
+    page2_words += _std_row(132, 1, "Left Stile", "0.75", "17.75", "26")
+    page2_words += _std_row(152, 1, "Right Stile", "0.75", "17.75", "26")
+    page2_words += [_w(75, 206, "Totals"), _w(250, 206, "Width"), _w(320, 206, "Length"), _w(390, 206, "Rips")]
+
+    # Later repeated section on the same page.
+    page2_words += [
+        _w(74, 376, "Material:"),
+        _w(124, 376, "'3/4"),
+        _w(160, 376, "Wilsonart"),
+        _w(220, 376, "Coronado"),
+        _w(290, 376, "Oak"),
+        _w(320, 376, "8244'"),
+    ]
+    page2_words += _std_header(409)
+    page2_words += _std_row(429, 6, "Filler", "1.5", "30.5", "28, 31, 32, 34, 36, 38")
+
+    doc_map = {str(face_frame): _FakeDoc([_FakePage(words=page1_words), _FakePage(words=page2_words)])}
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    rows = docs[indexer.DOC_TYPE_FACE_FRAME]["rows"]
+
+    assert len(rows) == 6
+    page2_rows = [r for r in rows if r["page"] == 2]
+    assert len(page2_rows) == 5
+
+    # First four are spillover rows that must not be dropped.
+    assert page2_rows[0]["description"] == "Left Stile"
+    assert page2_rows[0]["length"] == "31.75"
+    assert page2_rows[0]["material"] == "3/4 Solid White Oak"
+
+    assert page2_rows[1]["description"] == "Right Stile"
+    assert page2_rows[1]["length"] == "31.75"
+    assert page2_rows[1]["material"] == "3/4 Solid White Oak"
+
+    assert page2_rows[2]["description"] == "Left Stile"
+    assert page2_rows[2]["length"] == "17.75"
+    assert page2_rows[2]["material"] == "3/4 Solid White Oak"
+
+    assert page2_rows[3]["description"] == "Right Stile"
+    assert page2_rows[3]["length"] == "17.75"
+    assert page2_rows[3]["material"] == "3/4 Solid White Oak"
+
+    # Later section row should still use local material marker.
+    assert page2_rows[4]["description"] == "Filler"
+    assert page2_rows[4]["material"] == "3/4 Wilsonart Coronado Oak 8244"
+
+
+def test_logs_warning_when_row_like_lines_exceed_parsed_rows(tmp_path, monkeypatch):
+    job_dir = tmp_path / "777 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "777 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    # Row-like line before the first detected header (no prior geometry available).
+    page_words += _std_row(92, 1, "Left Stile", "0.75", "31.75", "20")
+    page_words += [_w(74, 130, "Material:"), _w(124, 130, "'3/4"), _w(160, 130, "Maple'")]
+    page_words += _std_header(160)
+    page_words += _std_row(184, 1, "Bottom Rail", "4.75", "54", "15, 16")
+
+    doc_map = {str(face_frame): _FakeDoc([_FakePage(words=page_words)])}
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    warnings = []
+
+    def _capture_warning(msg, *args, **kwargs):
+        rendered = msg % args if args else msg
+        warnings.append(str(rendered))
+
+    monkeypatch.setattr(indexer.main_logger, "warning", _capture_warning)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    assert any("HARDWOODS_ROW_GAP" in line for line in warnings)
+
+
+def test_legacy_door_list_multi_section_parses_all_rows_without_gap_warning(tmp_path, monkeypatch):
+    job_dir = tmp_path / "597 - TEST"
+    job_dir.mkdir()
+    door_list = job_dir / "597 - Door List.pdf"
+    door_list.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [_w(74, 142, "Door"), _w(111, 142, "Type:"), _w(151, 142, "'Coat"), _w(188, 142, "Hook"), _w(220, 142, "Board"), _w(256, 142, "(White"), _w(304, 142, "Oak"), _w(330, 142, "Rift)'")]
+    page_words += _legacy_door_header(202.5)
+    page_words += [_w(215, 215.7, "|")]
+    page_words += _legacy_door_row(241.7, 1, "64.5", "6", "DF", "N", "")
+    page_words += [
+        _w(74, 273.0, "Door"),
+        _w(111, 273.0, "Type:"),
+        _w(151, 273.0, "'Plywood"),
+        _w(210, 273.0, "Slab"),
+        _w(246, 273.0, "Vertical"),
+        _w(305, 273.0, "(Rift"),
+        _w(338, 273.0, "White"),
+        _w(374, 273.0, "Oak"),
+        _w(400, 273.0, "PLY)'"),
+    ]
+    page_words += _legacy_door_header(333.5)
+    page_words += [_w(346, 346.7, "|")]
+    page_words += _legacy_door_row(372.7, 4, "34.625", "12", "DF", "N", "23 (2), 24 (2)")
+    page_words += _legacy_door_row(391.5, 2, "28.875", "12", "DF", "N", "1 (2)")
+    page_words += _legacy_door_row(410.3, 4, "24.75", "12", "DF", "N", "30 (4)")
+    page_words += _legacy_door_row(429.1, 4, "22.375", "12", "DF", "N", "16 (4)")
+
+    doc_map = {str(door_list): _FakeDoc([_FakePage(words=page_words)])}
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    warnings = []
+
+    def _capture_warning(msg, *args, **kwargs):
+        rendered = msg % args if args else msg
+        warnings.append(str(rendered))
+
+    monkeypatch.setattr(indexer.main_logger, "warning", _capture_warning)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    rows = docs[indexer.DOC_TYPE_DOOR_LIST]["rows"]
+
+    assert len(rows) == 5
+    assert rows[0]["material"] == "Coat Hook Board (White Oak Rift)"
+    assert rows[1]["material"] == "Plywood Slab Vertical (Rift White Oak PLY)"
+    assert rows[-1]["cabinets"] == ["16"]
+    assert not any("HARDWOODS_ROW_GAP" in line for line in warnings)
+
+
+def test_legacy_door_list_blank_cabinets_parse_without_gap_warning(tmp_path, monkeypatch):
+    job_dir = tmp_path / "615 - TEST"
+    job_dir.mkdir()
+    door_list = job_dir / "615 - Door List.pdf"
+    door_list.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [_w(74, 142, "Door"), _w(111, 142, "Type:"), _w(151, 142, "'Slab"), _w(186, 142, "Horizantal"), _w(260, 142, "Grain"), _w(300, 142, "(White"), _w(348, 142, "Oak)'")]
+    page_words += _legacy_door_header(202.5)
+    page_words += [_w(215, 215.7, "|")]
+    page_words += _legacy_door_row(241.7, 4, "14.5", "11.25", "DF", "N", "")
+    page_words += _legacy_door_row(260.5, 1, "36", "6", "FF", "N", "")
+    page_words += _legacy_door_row(279.3, 2, "14.5", "6", "DF", "N", "")
+    page_words += [_w(74, 310.7, "Door"), _w(111, 310.7, "Type:"), _w(151, 310.7, "'Square"), _w(210, 310.7, "Raised"), _w(262, 310.7, "Panel"), _w(304, 310.7, "2"), _w(316, 310.7, '1/4"'), _w(348, 310.7, "(White"), _w(396, 310.7, "Oak)'")]
+    page_words += _legacy_door_header(371.2)
+    page_words += [_w(384, 384.3, "|")]
+    page_words += _legacy_door_row(410.3, 4, "16.3125", "30.5", "P", "P", "4 (4)")
+    page_words += _legacy_door_row(429.1, 1, "12.4925", "26.68", "P", "P", "4")
+
+    doc_map = {str(door_list): _FakeDoc([_FakePage(words=page_words)])}
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    warnings = []
+
+    def _capture_warning(msg, *args, **kwargs):
+        rendered = msg % args if args else msg
+        warnings.append(str(rendered))
+
+    monkeypatch.setattr(indexer.main_logger, "warning", _capture_warning)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    rows = docs[indexer.DOC_TYPE_DOOR_LIST]["rows"]
+
+    assert len(rows) == 5
+    assert rows[0]["cabinets"] == []
+    assert rows[1]["description"] == "Slab Horizantal Grain (White Oak)"
+    assert rows[3]["material"] == 'Square Raised Panel 2 1/4" (White Oak)'
+    assert not any("HARDWOODS_ROW_GAP" in line for line in warnings)
+
+
+def test_placeholder_door_list_is_ignored_without_template_mismatch_warning(tmp_path, monkeypatch):
+    job_dir = tmp_path / "512 - TEST"
+    job_dir.mkdir()
+    metadata_dir = job_dir / ".metadata" / "hardwoods"
+    metadata_dir.mkdir(parents=True)
+    stale = metadata_dir / "cutlist_index.json"
+    stale.write_text('{"documents":[]}', encoding="utf-8")
+    door_list = job_dir / "512 - Door List.pdf"
+    door_list.write_text("placeholder", encoding="utf-8")
+
+    placeholder_words = [
+        _w(80, 56.7, "IF"),
+        _w(105, 56.7, "YOU'RE"),
+        _w(150, 56.7, "SEEING"),
+        _w(80, 111.9, "THIS"),
+        _w(120, 111.9, "IT"),
+        _w(140, 111.9, "MEANS"),
+        _w(80, 167.1, "ENGINEER"),
+        _w(150, 167.1, "DIDN'T"),
+        _w(205, 167.1, "DO"),
+    ]
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=placeholder_words)]))
+
+    errors = []
+
+    def _capture_error(msg, *args, **kwargs):
+        rendered = msg % args if args else msg
+        errors.append(str(rendered))
+
+    monkeypatch.setattr(indexer.main_logger, "error", _capture_error)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    assert not stale.exists()
+    assert not any("template mismatch" in line.lower() for line in errors)
+
+
+def test_zero_page_nailer_cut_list_is_skipped_without_template_mismatch_warning(tmp_path, monkeypatch):
+    job_dir = tmp_path / "615 - TEST"
+    job_dir.mkdir()
+    nailer = job_dir / "615 - Nailer Cut List.pdf"
+    nailer.write_text("placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([]))
+
+    errors = []
+
+    def _capture_error(msg, *args, **kwargs):
+        rendered = msg % args if args else msg
+        errors.append(str(rendered))
+
+    monkeypatch.setattr(indexer.main_logger, "error", _capture_error)
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is False
+    assert not any("template mismatch" in line.lower() for line in errors)
 
 
 def test_replacement_reorder_preserves_row_ids_by_material_length_width(tmp_path, monkeypatch):

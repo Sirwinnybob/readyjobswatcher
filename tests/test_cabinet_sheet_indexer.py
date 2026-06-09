@@ -126,7 +126,9 @@ class TestParsePlansTable(unittest.TestCase):
 
     def test_basic_extraction(self):
         text = self.HEADER + "1\nStd Tall\n29\n95.5\n24\n0.5\n0.5\n"
-        self.assertEqual(_parse_plans_table(self._lines(text)), {"1"})
+        result = _parse_plans_table(self._lines(text))
+        self.assertEqual(set(result.keys()), {"1"})
+        self.assertEqual(result["1"], "Std Tall")
 
     def test_multiple_cabinets(self):
         text = (
@@ -135,7 +137,9 @@ class TestParsePlansTable(unittest.TestCase):
             + "2\nRefrigerator\n40\n95.5\n26\n0\n0\n"
             + "3\nBase Cabinet\n74.5\n35.25\n24\n0.5\n2.375\n"
         )
-        self.assertEqual(_parse_plans_table(self._lines(text)), {"1", "2", "3"})
+        result = _parse_plans_table(self._lines(text))
+        self.assertEqual(set(result.keys()), {"1", "2", "3"})
+        self.assertEqual(result["2"], "Refrigerator")
 
     def test_zero_cabinet_skipped(self):
         text = self.HEADER + "0\nER-1\n30\n35.953\n28.2923\n0\n0\n5\nBase Cabinet\n52\n35.25\n24\n0.5\n0.5\n"
@@ -145,7 +149,7 @@ class TestParsePlansTable(unittest.TestCase):
 
     def test_no_table_returns_empty(self):
         text = "Some random text\nNo table here\n42\nCabinet\n30\n36\n24\n0\n0\n"
-        self.assertEqual(_parse_plans_table(self._lines(text)), set())
+        self.assertEqual(_parse_plans_table(self._lines(text)), {})
 
     def test_unit_name_on_same_line_as_hash(self):
         # Both | # | and | Unit Name | on the same line (as Cabinet Vision emits them)
@@ -153,7 +157,9 @@ class TestParsePlansTable(unittest.TestCase):
             "| # | | Unit Name |\n| Width |\n| Height |\n| Depth |\n| L.SCR | | R.SCR |\n"
             "10\nBase Cabinet\n60\n35.25\n24\n0\n0.5\n"
         )
-        self.assertEqual(_parse_plans_table(self._lines(text)), {"10"})
+        result = _parse_plans_table(self._lines(text))
+        self.assertIn("10", result)
+        self.assertEqual(result["10"], "Base Cabinet")
 
     def test_stops_at_pipe_line_after_data(self):
         # After data rows, a pipe line terminates extraction
@@ -182,8 +188,21 @@ class TestParsePlansTable(unittest.TestCase):
             "9\nStd Upper\n35\n41\n12\n0\n0.5\n"
         )
         result = _parse_plans_table(self._lines(text))
-        self.assertEqual(result, {"5", "6", "7", "8", "9"})
+        self.assertEqual(set(result.keys()), {"5", "6", "7", "8", "9"})
         self.assertNotIn("0", result)
+
+    def test_unit_names_captured(self):
+        # Unit names must be preserved so rule scanner can match "hood", "wood top" etc.
+        text = (
+            self.HEADER
+            + "5\nRange Hood\n36\n18\n12\n0\n0\n"
+            + "6\nWood Top\n60\n3\n26\n0\n0\n"
+            + "7\nFloating Shelf\n48\n1.5\n12\n0\n0\n"
+        )
+        result = _parse_plans_table(self._lines(text))
+        self.assertEqual(result["5"], "Range Hood")
+        self.assertEqual(result["6"], "Wood Top")
+        self.assertEqual(result["7"], "Floating Shelf")
 
 
 class TestTryParseWithMarkers(unittest.TestCase):
@@ -368,10 +387,12 @@ class TestParsePlansPdfWithMarkers(unittest.TestCase):
         self.assertIn("5", result.cabinet_to_pages)
         self.assertIn("6", result.cabinet_to_pages)
         self.assertNotIn("0", result.cabinet_to_pages)
-        # page_details populated even in fallback; no room/wall in this text
+        # page_details populated with cabinetNames; no room/wall in this text
         self.assertIn("1", result.page_details)
         self.assertIsNone(result.page_details["1"]["room"])
         self.assertIsNone(result.page_details["1"]["wall"])
+        self.assertEqual(result.page_details["1"]["cabinetNames"]["5"], "Base Cabinet")
+        self.assertEqual(result.page_details["1"]["cabinetNames"]["6"], "Base Cabinet")
 
     def test_fallback_plans_populates_page_details_with_room_wall(self):
         # Plans format: wall and room as separate pipe-delimited fields
@@ -383,13 +404,14 @@ class TestParsePlansPdfWithMarkers(unittest.TestCase):
             "| Height |\n"
             "| Depth |\n"
             "| L.SCR | | R.SCR |\n"
-            "5\nBase Cabinet\n52\n35.25\n24\n0.5\n0.5\n"
+            "5\nRange Hood\n52\n35.25\n24\n0.5\n0.5\n"
         )
         result = self._run([page_text])
         self.assertIn("5", result.cabinet_to_pages)
         self.assertIn("1", result.page_details)
         self.assertEqual(result.page_details["1"]["room"], "Room #1 (KITCHEN)")
         self.assertEqual(result.page_details["1"]["wall"], "Wall #2")
+        self.assertEqual(result.page_details["1"]["cabinetNames"]["5"], "Range Hood")
 
 
 # ---------------------------------------------------------------------------

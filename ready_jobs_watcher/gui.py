@@ -6,7 +6,7 @@ Allows users to configure paths, backup schedules, operation delays,
 and alert behavior, as well as view running logs.
 """
 import logging
-from typing import List
+from typing import Dict, List, Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -28,6 +28,19 @@ class LogSignal(QObject):
 
 class AlertSignal(QObject):
     new_batch = pyqtSignal(object)
+
+
+class PendingJobSignal(QObject):
+    new_job = pyqtSignal(str)
+
+
+class AutoReleaseSignal(QObject):
+    new_job = pyqtSignal(str)
+
+
+class JobsDashboardSignal(QObject):
+    refresh_requested = pyqtSignal()
+
 
 class QtLogHandler(logging.Handler):
     def __init__(self, log_signal):
@@ -245,8 +258,17 @@ class SettingsWindow(QWidget):
         self.log_signal.new_log.connect(self.append_log)
         self.alert_signal = AlertSignal()
         self.alert_signal.new_batch.connect(self._show_bad_parts_alert_dialog)
+        self.pending_job_signal = PendingJobSignal()
+        self.pending_job_signal.new_job.connect(self._show_pending_job_prompt_dialog)
+        self.auto_release_signal = AutoReleaseSignal()
+        self.auto_release_signal.new_job.connect(self._show_auto_release_dialog)
+        self.jobs_dashboard_signal = JobsDashboardSignal()
+        self.jobs_dashboard_signal.refresh_requested.connect(self._refresh_jobs_dashboard)
         self.alert_coordinator = None
         self.bad_parts_center_dialog = None
+        self.jobs_table = None
+        self.jobs_selected_mode_combo = None
+        self.jobs_detected_mode_combo = None
 
         self.qt_handler = QtLogHandler(self.log_signal)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -272,6 +294,7 @@ class SettingsWindow(QWidget):
         self.setup_schedule_tab()
         self.setup_processing_tab()
         self.setup_actions_tab()
+        self.setup_jobs_tab()
         self.setup_log_tab()
 
         # Bottom Buttons
@@ -469,6 +492,90 @@ class SettingsWindow(QWidget):
 
         self.tabs.addTab(tab, "Actions")
 
+    def setup_jobs_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        info_label = QLabel(
+            "Deployment/visibility state from each job's .metadata/deployment_gate.json"
+        )
+        layout.addWidget(info_label)
+
+        headers = [
+            "Job",
+            "Deployed",
+            "Parse Ready",
+            "Hidden From Prod",
+            "Visible",
+            "Selected Mode",
+            "Detected Mode",
+            "Mode Source",
+            "Retry At",
+            "Remind At",
+            "Updated At",
+        ]
+        self.jobs_table = QTableWidget(0, len(headers), tab)
+        self.jobs_table.setHorizontalHeaderLabels(headers)
+        self.jobs_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.jobs_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.jobs_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.jobs_table.verticalHeader().setVisible(False)
+        self.jobs_table.setAlternatingRowColors(True)
+        self.jobs_table.setSortingEnabled(False)
+        self.jobs_table.itemSelectionChanged.connect(self._sync_mode_combos_to_selected_row)
+        header = self.jobs_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.jobs_table)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Selected Mode:"))
+        self.jobs_selected_mode_combo = QComboBox(tab)
+        self.jobs_selected_mode_combo.addItems(["FACE-FRAME", "FRAMELESS", "BOTH", "UNKNOWN"])
+        mode_row.addWidget(self.jobs_selected_mode_combo)
+        set_selected_mode_btn = QPushButton("Set Selected Mode")
+        set_selected_mode_btn.clicked.connect(self._set_selected_mode_for_job)
+        mode_row.addWidget(set_selected_mode_btn)
+
+        mode_row.addSpacing(20)
+        mode_row.addWidget(QLabel("Detected Mode:"))
+        self.jobs_detected_mode_combo = QComboBox(tab)
+        self.jobs_detected_mode_combo.addItems(["FACE-FRAME", "FRAMELESS", "BOTH", "UNKNOWN"])
+        mode_row.addWidget(self.jobs_detected_mode_combo)
+        set_detected_mode_btn = QPushButton("Set Detected Mode")
+        set_detected_mode_btn.clicked.connect(self._set_detected_mode_for_job)
+        mode_row.addWidget(set_detected_mode_btn)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
+
+        actions = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.refresh_jobs_dashboard)
+        deploy_btn = QPushButton("Deploy Selected")
+        deploy_btn.clicked.connect(self._deploy_selected_job)
+        reparse_btn = QPushButton("Re-parse Selected")
+        reparse_btn.clicked.connect(self._reparse_selected_job)
+        retry_btn = QPushButton("Retry 3 min")
+        retry_btn.clicked.connect(lambda: self._retry_selected_job(minutes=3))
+        remind_btn = QPushButton("Remind 15 min")
+        remind_btn.clicked.connect(lambda: self._remind_selected_job(minutes=15))
+        hide_btn = QPushButton("Hide Selected")
+        hide_btn.clicked.connect(lambda: self._set_selected_job_hidden(True))
+        unhide_btn = QPushButton("Unhide Selected")
+        unhide_btn.clicked.connect(lambda: self._set_selected_job_hidden(False))
+
+        actions.addWidget(refresh_btn)
+        actions.addWidget(deploy_btn)
+        actions.addWidget(reparse_btn)
+        actions.addWidget(retry_btn)
+        actions.addWidget(remind_btn)
+        actions.addStretch()
+        actions.addWidget(hide_btn)
+        actions.addWidget(unhide_btn)
+        layout.addLayout(actions)
+
+        self.tabs.addTab(tab, "Jobs & Visibility")
+        self.refresh_jobs_dashboard()
+
     def trigger_backup(self):
         if self.app_instance:
             import threading
@@ -529,6 +636,328 @@ class SettingsWindow(QWidget):
 
     def emit_bad_parts_alert(self, batch: AlertBatch):
         self.alert_signal.new_batch.emit(batch)
+
+    def emit_pending_job_prompt(self, job_folder_name: str):
+        self.pending_job_signal.new_job.emit(str(job_folder_name))
+
+    def emit_auto_release_notice(self, job_folder_name: str):
+        self.auto_release_signal.new_job.emit(str(job_folder_name))
+
+    def refresh_jobs_dashboard(self):
+        self.jobs_dashboard_signal.refresh_requested.emit()
+
+    def _refresh_jobs_dashboard(self):
+        if self.jobs_table is None:
+            return
+        if not self.app_instance or not hasattr(self.app_instance, "get_jobs_dashboard_rows"):
+            self.jobs_table.setRowCount(0)
+            return
+        rows = self.app_instance.get_jobs_dashboard_rows()
+        self._populate_jobs_table(rows)
+
+    def _populate_jobs_table(self, rows: List[Dict]):
+        if self.jobs_table is None:
+            return
+        self.jobs_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            deployed = bool(row.get("deployed", True))
+            parse_ready = bool(row.get("parseReady", deployed))
+            hidden = bool(row.get("hiddenFromProduction", False))
+            mode_detection = row.get("modeDetection", {}) if isinstance(row.get("modeDetection"), dict) else {}
+            timers = row.get("timers", {}) if isinstance(row.get("timers"), dict) else {}
+            visible = deployed and parse_ready and not hidden
+
+            values = [
+                str(row.get("jobFolderName", "")),
+                "Yes" if deployed else "No",
+                "Yes" if parse_ready else "No",
+                "Yes" if hidden else "No",
+                "Yes" if visible else "No",
+                str(row.get("selectedMode", "UNKNOWN")),
+                str(mode_detection.get("candidate", "UNKNOWN")),
+                str(mode_detection.get("source", "UNKNOWN")),
+                str(timers.get("retryAt") or "-"),
+                str(timers.get("remindAt") or "-"),
+                str(row.get("updatedAt") or "-"),
+            ]
+            for col_index, value in enumerate(values):
+                self.jobs_table.setItem(row_index, col_index, QTableWidgetItem(value))
+        self._sync_mode_combos_to_selected_row()
+
+    def _selected_job_folder_name(self) -> Optional[str]:
+        if self.jobs_table is None:
+            return None
+        selection = self.jobs_table.selectionModel()
+        if selection is None:
+            return None
+        rows = selection.selectedRows()
+        if not rows:
+            return None
+        row_index = rows[0].row()
+        item = self.jobs_table.item(row_index, 0)
+        if item is None:
+            return None
+        return item.text().strip() or None
+
+    def _selected_row_mode_value(self, column_index: int) -> Optional[str]:
+        if self.jobs_table is None:
+            return None
+        selection = self.jobs_table.selectionModel()
+        if selection is None:
+            return None
+        rows = selection.selectedRows()
+        if not rows:
+            return None
+        row_index = rows[0].row()
+        item = self.jobs_table.item(row_index, column_index)
+        if item is None:
+            return None
+        value = item.text().strip()
+        return value or None
+
+    def _sync_mode_combos_to_selected_row(self):
+        if self.jobs_selected_mode_combo is None or self.jobs_detected_mode_combo is None:
+            return
+        selected_mode = self._selected_row_mode_value(5) or "UNKNOWN"
+        detected_mode = self._selected_row_mode_value(6) or "UNKNOWN"
+        self.jobs_selected_mode_combo.setCurrentText(selected_mode)
+        self.jobs_detected_mode_combo.setCurrentText(detected_mode)
+
+    def _set_selected_job_hidden(self, hidden: bool):
+        job_folder_name = self._selected_job_folder_name()
+        if not job_folder_name:
+            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
+            return
+        if not self.app_instance:
+            return
+        self.app_instance.set_job_hidden_from_production(job_folder_name, hidden)
+        self.refresh_jobs_dashboard()
+
+    def _remind_selected_job(self, minutes: int = 15):
+        job_folder_name = self._selected_job_folder_name()
+        if not job_folder_name:
+            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
+            return
+        if not self.app_instance:
+            return
+        self.app_instance.remind_pending_job(job_folder_name, minutes=minutes)
+        self.refresh_jobs_dashboard()
+
+    def _retry_selected_job(self, minutes: int = 3):
+        job_folder_name = self._selected_job_folder_name()
+        if not job_folder_name:
+            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
+            return
+        if not self.app_instance:
+            return
+        self.app_instance.retry_pending_job(job_folder_name, minutes=minutes)
+        self.refresh_jobs_dashboard()
+
+    def _deploy_selected_job(self):
+        job_folder_name = self._selected_job_folder_name()
+        if not job_folder_name:
+            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
+            return
+        self._show_pending_job_prompt_dialog(job_folder_name)
+
+    def _reparse_selected_job(self):
+        job_folder_name = self._selected_job_folder_name()
+        if not job_folder_name:
+            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
+            return
+        if not self.app_instance:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Re-parse Job",
+            f"Are you sure you want to fully re-parse job '{job_folder_name}'?\n\nThis will remove all generated metadata, GLBs, and dark mode PDFs, then re-process them.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            import threading
+            threading.Thread(
+                target=self.app_instance.reparse_job,
+                args=(job_folder_name,),
+                daemon=True,
+            ).start()
+            QMessageBox.information(
+                self,
+                "Re-parse Job",
+                f"Re-parsing for job '{job_folder_name}' has been started in the background."
+            )
+
+    def _set_selected_mode_for_job(self):
+        job_folder_name = self._selected_job_folder_name()
+        if not job_folder_name:
+            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
+            return
+        if not self.app_instance or not hasattr(self.app_instance, "set_job_selected_mode"):
+            return
+        mode = "UNKNOWN"
+        if self.jobs_selected_mode_combo is not None:
+            mode = self.jobs_selected_mode_combo.currentText().strip() or "UNKNOWN"
+        self.app_instance.set_job_selected_mode(job_folder_name, mode)
+        self.refresh_jobs_dashboard()
+
+    def _set_detected_mode_for_job(self):
+        job_folder_name = self._selected_job_folder_name()
+        if not job_folder_name:
+            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
+            return
+        if not self.app_instance or not hasattr(self.app_instance, "set_job_detected_mode"):
+            return
+        mode = "UNKNOWN"
+        if self.jobs_detected_mode_combo is not None:
+            mode = self.jobs_detected_mode_combo.currentText().strip() or "UNKNOWN"
+        self.app_instance.set_job_detected_mode(job_folder_name, mode, source="MANUAL_OVERRIDE")
+        self.refresh_jobs_dashboard()
+
+    def _get_job_row_by_name(self, job_folder_name: str) -> Optional[Dict]:
+        if not self.app_instance or not hasattr(self.app_instance, "get_jobs_dashboard_rows"):
+            return None
+        name = str(job_folder_name or "").strip()
+        if not name:
+            return None
+        for row in self.app_instance.get_jobs_dashboard_rows():
+            if str(row.get("jobFolderName", "")).strip().lower() == name.lower():
+                return row
+        return None
+
+    def _show_pending_job_prompt_dialog(self, job_folder_name: str):
+        if not self.app_instance:
+            return
+        job_folder_name = str(job_folder_name or "").strip()
+        if not job_folder_name:
+            return
+
+        state = self._get_job_row_by_name(job_folder_name) or {}
+        mode_detection = state.get("modeDetection", {}) if isinstance(state.get("modeDetection"), dict) else {}
+        detected_mode = str(mode_detection.get("candidate") or "UNKNOWN")
+        detected_source = str(mode_detection.get("source") or "UNKNOWN")
+        selected_mode = str(state.get("selectedMode") or "UNKNOWN")
+        hidden_state = bool(state.get("hiddenFromProduction", False))
+        default_mode = selected_mode if selected_mode and selected_mode != "UNKNOWN" else detected_mode
+        if not default_mode:
+            default_mode = "UNKNOWN"
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Pending Job: {job_folder_name}")
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.resize(540, 250)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"New job is pending deployment:\n{job_folder_name}"))
+        layout.addWidget(QLabel(f"Detected mode: {detected_mode} ({detected_source})"))
+        hidden_status_label = QLabel()
+        hidden_status_label.setText(f"Hidden From Production: {'Yes' if hidden_state else 'No'}")
+        layout.addWidget(hidden_status_label)
+
+        form = QFormLayout()
+        mode_combo = QComboBox(dialog)
+        mode_combo.setEditable(True)
+        mode_combo.addItems(["FACE-FRAME", "FRAMELESS", "BOTH", "UNKNOWN"])
+        mode_combo.setCurrentText(default_mode)
+        form.addRow("Deploy Mode:", mode_combo)
+        layout.addLayout(form)
+
+        action_row = QHBoxLayout()
+        retry_btn = QPushButton("Retry 3 min")
+        remind_btn = QPushButton("Remind 15 min")
+        hide_btn = QPushButton("Hide")
+        visible_btn = QPushButton("Visible")
+        deploy_btn = QPushButton("DEPLOY")
+        cancel_btn = QPushButton("Cancel")
+
+        def _retry_action():
+            self.app_instance.retry_pending_job(job_folder_name)
+            self.refresh_jobs_dashboard()
+            dialog.accept()
+
+        def _remind_action():
+            self.app_instance.remind_pending_job(job_folder_name)
+            self.refresh_jobs_dashboard()
+            dialog.accept()
+
+        def _deploy_action():
+            selected = mode_combo.currentText().strip() or "UNKNOWN"
+            import threading
+            threading.Thread(
+                target=self.app_instance.deploy_pending_job,
+                args=(job_folder_name, selected),
+                daemon=True,
+            ).start()
+            self.refresh_jobs_dashboard()
+            dialog.accept()
+
+        def _hide_action():
+            self.app_instance.set_job_hidden_from_production(job_folder_name, True)
+            hidden_status_label.setText("Hidden From Production: Yes")
+            self.refresh_jobs_dashboard()
+
+        def _visible_action():
+            self.app_instance.set_job_hidden_from_production(job_folder_name, False)
+            hidden_status_label.setText("Hidden From Production: No")
+            self.refresh_jobs_dashboard()
+
+        retry_btn.clicked.connect(_retry_action)
+        remind_btn.clicked.connect(_remind_action)
+        hide_btn.clicked.connect(_hide_action)
+        visible_btn.clicked.connect(_visible_action)
+        deploy_btn.clicked.connect(_deploy_action)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        action_row.addWidget(retry_btn)
+        action_row.addWidget(remind_btn)
+        action_row.addWidget(hide_btn)
+        action_row.addWidget(visible_btn)
+        action_row.addStretch()
+        action_row.addWidget(cancel_btn)
+        action_row.addWidget(deploy_btn)
+        layout.addLayout(action_row)
+
+        dialog.exec()
+
+    def _show_auto_release_dialog(self, job_folder_name: str):
+        if not self.app_instance:
+            return
+        job_folder_name = str(job_folder_name or "").strip()
+        if not job_folder_name:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Job Auto-Released: {job_folder_name}")
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.resize(500, 180)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(
+            QLabel(
+                "This job auto-released after 30 hours with no action.\n"
+                "It has been deployed and made visible in production."
+            )
+        )
+        layout.addWidget(QLabel(job_folder_name))
+
+        action_row = QHBoxLayout()
+        undo_btn = QPushButton("Undo (Re-Hide)")
+        dismiss_btn = QPushButton("Dismiss")
+
+        def _undo_action():
+            self.app_instance.set_job_hidden_from_production(job_folder_name, True)
+            self.refresh_jobs_dashboard()
+            dialog.accept()
+
+        undo_btn.clicked.connect(_undo_action)
+        dismiss_btn.clicked.connect(dialog.accept)
+        action_row.addStretch()
+        action_row.addWidget(undo_btn)
+        action_row.addWidget(dismiss_btn)
+        layout.addLayout(action_row)
+        dialog.exec()
 
     def _show_bad_parts_alert_dialog(self, batch: AlertBatch):
         if not batch.events:

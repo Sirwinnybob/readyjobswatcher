@@ -90,3 +90,28 @@ def test_validate_config_bad_parts_sound_profile(config_instance):
     assert config_instance._validate_config({'bad_parts_sound_profile': 'triple_beep'}) is True
     assert config_instance._validate_config({'bad_parts_sound_profile': 'none'}) is True
     assert config_instance._validate_config({'bad_parts_sound_profile': 'buzz'}) is False
+
+
+def test_default_new_folder_delay_is_120_seconds(monkeypatch):
+    monkeypatch.setattr(Config, "load", lambda self: None)
+    cfg = Config()
+    assert cfg.new_folder_delay_seconds == 120
+
+
+def test_metadata_cache_defaults(monkeypatch):
+    monkeypatch.setattr(Config, "load", lambda self: None)
+    cfg = Config()
+    assert cfg.metadata_cache_debounce_seconds == 8
+    assert cfg.metadata_end_of_day_time == "20:00"
+    assert cfg.metadata_snapshot_enabled is True
+    assert cfg.metadata_snapshot_archive_dir.endswith("metadata_snapshots")
+
+
+def test_validate_metadata_cache_config(config_instance):
+    assert config_instance._validate_config({"metadata_cache_debounce_seconds": 8}) is True
+    assert config_instance._validate_config({"metadata_cache_debounce_seconds": 0}) is True
+    assert config_instance._validate_config({"metadata_cache_debounce_seconds": -1}) is False
+    assert config_instance._validate_config({"metadata_end_of_day_time": "20:00"}) is True
+    assert config_instance._validate_config({"metadata_end_of_day_time": "25:00"}) is False
+    assert config_instance._validate_config({"metadata_snapshot_enabled": True}) is True
+    assert config_instance._validate_config({"metadata_snapshot_enabled": "yes"}) is False

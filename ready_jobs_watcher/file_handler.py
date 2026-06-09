@@ -8,6 +8,7 @@ import os
 import re
 import logging
 import time
+import errno
 from typing import Optional, Set
 
 from .utils import is_hidden
@@ -36,6 +37,90 @@ IGNORED_FOLDER_NAMES: Set[str] = {
     'face frame',
     'frameless',
 }
+
+NEWPLUS_TEMPLATES_DIR = (
+    os.environ.get("RJW_NEWPLUS_TEMPLATES_DIR")
+    or r"C:\Users\chadc\AppData\Local\Microsoft\PowerToys\NewPlus\Templates"
+)
+_TEMPLATE_CACHE_SECONDS = 60.0
+_template_folder_names_cache: Set[str] = set()
+_template_folder_names_cache_at = 0.0
+_NEW_FOLDER_PATTERN = re.compile(r"^new folder(?:\s*\(\d+\))?$", re.IGNORECASE)
+RETRYABLE_OS_ERROR_WINERRORS = {
+    32,    # ERROR_SHARING_VIOLATION
+    33,    # ERROR_LOCK_VIOLATION
+    53,    # ERROR_BAD_NETPATH
+    59,    # ERROR_UNEXP_NET_ERR
+    64,    # ERROR_NETNAME_DELETED
+    67,    # ERROR_BAD_NET_NAME
+    121,   # ERROR_SEM_TIMEOUT
+    1231,  # ERROR_NETWORK_UNREACHABLE
+}
+
+
+def is_retryable_os_error(exc: BaseException) -> bool:
+    """
+    Return True when an OS-level error is likely transient and worth retrying.
+    """
+    if isinstance(exc, PermissionError):
+        return True
+
+    winerror = getattr(exc, "winerror", None)
+    if isinstance(winerror, int) and winerror in RETRYABLE_OS_ERROR_WINERRORS:
+        return True
+
+    err_no = getattr(exc, "errno", None)
+    if err_no in {
+        errno.EACCES,
+        errno.EBUSY,
+        errno.EIO,
+        errno.ENETDOWN,
+        errno.ENETRESET,
+        errno.ENETUNREACH,
+        errno.ETIMEDOUT,
+        errno.EHOSTUNREACH,
+    }:
+        return True
+
+    message = str(exc).lower()
+    transient_tokens = (
+        "network name",
+        "network path",
+        "not reachable",
+        "temporarily unavailable",
+        "semaphore timeout",
+        "sharing violation",
+        "in use by another process",
+        "device is not ready",
+    )
+    return any(token in message for token in transient_tokens)
+
+
+def _normalize_folder_name(folder_name: str) -> str:
+    return re.sub(r"\s+", " ", str(folder_name or "").strip()).lower()
+
+
+def _load_newplus_template_folder_names() -> Set[str]:
+    global _template_folder_names_cache
+    global _template_folder_names_cache_at
+    now = time.time()
+    if (now - _template_folder_names_cache_at) < _TEMPLATE_CACHE_SECONDS:
+        return set(_template_folder_names_cache)
+
+    names: Set[str] = set()
+    try:
+        if os.path.isdir(NEWPLUS_TEMPLATES_DIR):
+            for entry in os.scandir(NEWPLUS_TEMPLATES_DIR):
+                if entry.is_dir():
+                    normalized = _normalize_folder_name(entry.name)
+                    if normalized:
+                        names.add(normalized)
+    except Exception as exc:
+        logging.debug("Failed loading NewPlus template folder names: %s", exc)
+
+    _template_folder_names_cache = names
+    _template_folder_names_cache_at = now
+    return set(_template_folder_names_cache)
 
 
 def should_ignore_file(filename: str) -> bool:
@@ -76,7 +161,14 @@ def should_ignore_folder(folder_name: str) -> bool:
     Returns:
         bool: True if the folder should be ignored, False otherwise.
     """
-    return folder_name.lower() in IGNORED_FOLDER_NAMES
+    normalized = _normalize_folder_name(folder_name)
+    if normalized in IGNORED_FOLDER_NAMES:
+        return True
+    if _NEW_FOLDER_PATTERN.match(normalized):
+        return True
+    if normalized in _load_newplus_template_folder_names():
+        return True
+    return False
 
 
 class JobProcessor:
@@ -184,9 +276,8 @@ class JobProcessor:
         except FileNotFoundError:
             logging.warning(f"File disappeared during rename attempt: {file_path}")
         except OSError as e:
-            # Handle various OS errors (file in use, etc.)
-            if hasattr(e, 'winerror') and e.winerror == 32:  # ERROR_SHARING_VIOLATION - file in use
-                logging.warning(f"File in use (sharing violation): {file_path}. Scheduling retry.")
+            if is_retryable_os_error(e):
+                logging.warning(f"Transient OS error renaming {file_path}: {e}. Scheduling retry.")
                 with self.app_state.pending_renames_lock:
                     self.app_state.PENDING_RENAMES[file_path] = (job_num, dir_path, original_name, time.time() + (self.config.RETRY_INTERVAL_MINUTES * 60))
             else:
@@ -194,7 +285,7 @@ class JobProcessor:
         except Exception as e:
             logging.error(f"Error renaming {file_path}: {e}")
 
-    def process_job_folder(self, job_folder: str, include_cnc: bool = False):
+    def process_job_folder(self, job_folder: str, include_cnc: bool = False) -> bool:
         """
         Scan a job folder and process all applicable files within it.
 
@@ -205,29 +296,29 @@ class JobProcessor:
         logging.debug(f"Processing job folder {job_folder}, include_cnc={include_cnc}")
         if self.app_state.PAUSE_PROCESSING:
             logging.debug(f"Processing paused (GUI open): Skipping folder {job_folder}")
-            return
+            return True
 
         # Skip hidden folders
         if is_hidden(job_folder):
             logging.debug(f"Skipping hidden folder: {job_folder}")
-            return
+            return True
 
         folder_base_name = os.path.basename(job_folder)
 
         # Skip template folders (Face Frame, Frameless) until they're renamed to job numbers
         if should_ignore_folder(folder_base_name):
             logging.debug(f"Skipping template folder (waiting to be renamed): {job_folder}")
-            return
+            return True
 
         job_num = self.extract_job_number(folder_base_name)
 
         if not job_num:
             logging.warning(f"Could not extract job number from '{folder_base_name}'. Skipping folder.")
-            return
+            return True
 
         if not os.path.isdir(job_folder):
             logging.warning(f"Path is not a directory: {job_folder}. Skipping.")
-            return
+            return True
 
         try:
             with os.scandir(job_folder) as it:
@@ -240,10 +331,10 @@ class JobProcessor:
                         self.process_file(entry.path, job_num, job_folder)
         except PermissionError:
             logging.warning(f"Permission denied accessing folder: {job_folder}")
-            return
+            return False
         except OSError as e:
             logging.error(f"Error listing folder {job_folder}: {e}")
-            return
+            return not is_retryable_os_error(e)
 
         if include_cnc:
             cnc_path = os.path.join(job_folder, self.config.CNC_SUBDIR)
@@ -257,4 +348,7 @@ class JobProcessor:
                                 self.process_file(entry.path, job_num, cnc_path)
                 except (PermissionError, OSError) as e:
                     logging.warning(f"Cannot access CNC folder {cnc_path}: {e}")
-                    return
+                    if isinstance(e, PermissionError):
+                        return False
+                    return not is_retryable_os_error(e)
+        return True

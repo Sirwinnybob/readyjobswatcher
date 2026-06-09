@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from .tracker_action_stream import load_hardwoods_tracker_actions
+from .refresh_signals import touch_hardwoods_refresh_signal
 
 main_logger = logging.getLogger("main")
 
@@ -42,12 +43,20 @@ _ROW_QTY_PATTERN = re.compile(r"^\d+$")
 _HEADER_LENGTH_PATTERN = re.compile(r"^(LENGTH|HEIGHT)$", re.IGNORECASE)
 _MATERIAL_LINE_PATTERN = re.compile(r"^MATERIAL\s*:\s*(.+)$", re.IGNORECASE)
 _DOOR_TYPE_LINE_PATTERN = re.compile(r"^DOOR\s+TYPE\s*:\s*(.+)$", re.IGNORECASE)
+_UNITS_SEGMENT_PATTERN = re.compile(r"\bUNITS?\s*:\s*([^|]+)", re.IGNORECASE)
 _CABINET_SKIP_MARKER = "|@cab:"
 _TRACKER_SET_DONE_COUNT = "set_done_count"
 _TRACKER_SET_BAD_COUNT = "set_bad_count"
+_UNIT_TYPE_SHEETS = "SHEETS"
+_UNIT_TYPE_BD_FT = "BD_FT"
+_UNIT_TYPE_UNKNOWN = "UNKNOWN"
 
 
 class TemplateMismatchError(Exception):
+    pass
+
+
+class SkippableDocumentError(Exception):
     pass
 
 
@@ -96,6 +105,38 @@ def _clean_marker_value(value: str) -> str:
     return cleaned.strip()
 
 
+def _normalize_unit_text(unit_raw: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9 ]+", " ", str(unit_raw or ""))
+    return re.sub(r"\s+", " ", text).strip().upper()
+
+
+def _unit_type_from_raw(unit_raw: str) -> str:
+    text = _normalize_unit_text(unit_raw)
+    if not text:
+        return _UNIT_TYPE_UNKNOWN
+    tokens = set(text.split())
+    if "SHE" in tokens or "SHEET" in tokens or "SHEETS" in tokens:
+        return _UNIT_TYPE_SHEETS
+    if ("BD" in tokens and "FT" in tokens) or ("BOARD" in tokens and ("FT" in tokens or "FOOT" in tokens or "FEET" in tokens)):
+        return _UNIT_TYPE_BD_FT
+    return _UNIT_TYPE_UNKNOWN
+
+
+def _extract_material_and_units_from_line(line_tail: str) -> Tuple[str, str, str]:
+    raw = str(line_tail or "").strip()
+    if not raw:
+        return "", _UNIT_TYPE_UNKNOWN, ""
+    material_segment = raw.split("|", 1)[0].strip()
+    material = _clean_marker_value(material_segment)
+
+    unit_match = _UNITS_SEGMENT_PATTERN.search(raw)
+    unit_raw = ""
+    if unit_match:
+        unit_raw = _normalize_unit_text(unit_match.group(1))
+    unit_type = _unit_type_from_raw(unit_raw)
+    return material, unit_type, unit_raw
+
+
 def _collect_words(page_obj) -> List[Dict]:
     words_raw = page_obj.get_text("words") or []
     out: List[Dict] = []
@@ -139,8 +180,25 @@ def _line_text(words: List[Dict]) -> str:
     return " ".join(w["text"] for w in words).strip()
 
 
-def _extract_section_markers(doc_type: str, rows_by_y: List[Tuple[float, List[Dict]]]) -> List[Tuple[float, str]]:
-    markers: List[Tuple[float, str]] = []
+def _rows_contain_phrase(rows_by_y: List[Tuple[float, List[Dict]]], phrase: str) -> bool:
+    needle = _normalize_text(phrase)
+    return any(needle in _normalize_text(_line_text(row_words)) for _, row_words in rows_by_y)
+
+
+def _is_placeholder_door_list(rows_by_y: List[Tuple[float, List[Dict]]]) -> bool:
+    return _rows_contain_phrase(rows_by_y, "if you're seeing") and _rows_contain_phrase(
+        rows_by_y, "engineer didn't do"
+    )
+
+
+def _is_legacy_cabinet_vision_cutlist(rows_by_y: List[Tuple[float, List[Dict]]], doc_type: str) -> bool:
+    if doc_type == DOC_TYPE_DOOR_LIST:
+        return False
+    return _rows_contain_phrase(rows_by_y[:5], "Created by CABINET VISION")
+
+
+def _extract_section_markers(doc_type: str, rows_by_y: List[Tuple[float, List[Dict]]]) -> List[Dict]:
+    markers: List[Dict] = []
     for y, row_words in rows_by_y:
         line = _line_text(row_words)
         if not line:
@@ -151,9 +209,29 @@ def _extract_section_markers(doc_type: str, rows_by_y: List[Tuple[float, List[Di
             m = _MATERIAL_LINE_PATTERN.match(line)
         if not m:
             continue
-        marker = _clean_marker_value(m.group(1))
+        if doc_type == DOC_TYPE_DOOR_LIST:
+            marker = _clean_marker_value(m.group(1))
+            if marker:
+                markers.append(
+                    {
+                        "y": y,
+                        "material": marker,
+                        "unitType": _UNIT_TYPE_UNKNOWN,
+                        "unitRaw": "",
+                    }
+                )
+            continue
+
+        marker, unit_type, unit_raw = _extract_material_and_units_from_line(m.group(1))
         if marker:
-            markers.append((y, marker))
+            markers.append(
+                {
+                    "y": y,
+                    "material": marker,
+                    "unitType": unit_type,
+                    "unitRaw": unit_raw,
+                }
+            )
     return markers
 
 
@@ -239,6 +317,7 @@ def _parse_row_values(
     doc_type: str,
     columns: Dict[str, List[str]],
     active_material: str,
+    active_unit_type: str,
     page_number: int,
     row_ordinal: int,
 ) -> Optional[Dict]:
@@ -258,7 +337,7 @@ def _parse_row_values(
         return None
 
     raw_cabinet_text = " ".join(columns.get("cabinet", [])).strip(" |")
-    if not re.search(r"\d", raw_cabinet_text):
+    if doc_type != DOC_TYPE_DOOR_LIST and not re.search(r"\d", raw_cabinet_text):
         return None
 
     if doc_type == DOC_TYPE_DOOR_LIST:
@@ -286,6 +365,7 @@ def _parse_row_values(
         "cabinets": cabinets,
         "rawCabinetText": raw_cabinet_text,
         "material": active_material,
+        "unitType": active_unit_type or _UNIT_TYPE_UNKNOWN,
     }
 
 
@@ -296,7 +376,8 @@ def _parse_rows_from_page(
     page_number: int,
     starting_row_ordinal: int,
     prior_material: str,
-    material_markers: List[Tuple[float, str]],
+    prior_unit_type: str,
+    material_markers: List[Dict],
     stop_before_y: Optional[float] = None,
 ) -> Tuple[List[Dict], int]:
     if not header_info:
@@ -328,14 +409,16 @@ def _parse_rows_from_page(
 
     idx = 0
     running_material = prior_material
+    running_unit_type = prior_unit_type or _UNIT_TYPE_UNKNOWN
     marker_index = 0
     while idx < len(parsed_rows_by_y):
         y, columns = parsed_rows_by_y[idx]
-        while marker_index < len(material_markers) and material_markers[marker_index][0] <= y + 0.5:
-            running_material = material_markers[marker_index][1]
+        while marker_index < len(material_markers) and float(material_markers[marker_index]["y"]) <= y + 0.5:
+            running_material = str(material_markers[marker_index].get("material") or running_material)
+            running_unit_type = str(material_markers[marker_index].get("unitType") or _UNIT_TYPE_UNKNOWN)
             marker_index += 1
 
-        row = _parse_row_values(doc_type, columns, running_material, page_number, row_ordinal)
+        row = _parse_row_values(doc_type, columns, running_material, running_unit_type, page_number, row_ordinal)
         if row is None:
             idx += 1
             continue
@@ -344,12 +427,17 @@ def _parse_rows_from_page(
         while j < len(parsed_rows_by_y):
             next_y, next_columns = parsed_rows_by_y[j]
             preview_material = running_material
+            preview_unit_type = running_unit_type
             preview_marker_index = marker_index
-            while preview_marker_index < len(material_markers) and material_markers[preview_marker_index][0] <= next_y + 0.5:
-                preview_material = material_markers[preview_marker_index][1]
+            while (
+                preview_marker_index < len(material_markers)
+                and float(material_markers[preview_marker_index]["y"]) <= next_y + 0.5
+            ):
+                preview_material = str(material_markers[preview_marker_index].get("material") or preview_material)
+                preview_unit_type = str(material_markers[preview_marker_index].get("unitType") or _UNIT_TYPE_UNKNOWN)
                 preview_marker_index += 1
 
-            if _parse_row_values(doc_type, next_columns, preview_material, page_number, row_ordinal + 1):
+            if _parse_row_values(doc_type, next_columns, preview_material, preview_unit_type, page_number, row_ordinal + 1):
                 break
             if _looks_like_cabinet_continuation(next_columns, doc_type):
                 tail = " ".join(next_columns.get("cabinet", [])).strip()
@@ -365,6 +453,27 @@ def _parse_rows_from_page(
         idx = j
 
     return out, row_ordinal
+
+
+def _is_row_like_line(_doc_type: str, row_words: List[Dict]) -> bool:
+    uppers = [w["upper"] for w in row_words]
+    if "TOTALS" in uppers:
+        return False
+    pipe_count = sum(1 for w in row_words if w["text"] == "|")
+    if pipe_count < 4:
+        return False
+    if not any(w["text"] == "*" for w in row_words):
+        return False
+    if not any(_ROW_QTY_PATTERN.match(w["text"]) for w in row_words):
+        return False
+    numeric_count = sum(1 for w in row_words if _NUMERIC_VALUE_PATTERN.match(w["text"]))
+    if numeric_count < 2:
+        return False
+    return True
+
+
+def _count_row_like_lines(doc_type: str, rows_by_y: List[Tuple[float, List[Dict]]]) -> int:
+    return sum(1 for _, row_words in rows_by_y if _is_row_like_line(doc_type, row_words))
 
 
 def _is_totals_terminator_text(text: str) -> bool:
@@ -562,27 +671,31 @@ def _normalize_totals_lengths_for_doc_type(doc_type: str, totals: List[Dict]) ->
 
 
 def _assign_material_to_totals(
-    totals: List[Dict], material_markers: List[Tuple[float, str]], prior_material: Optional[str]
-) -> Tuple[List[Dict], Optional[str]]:
+    totals: List[Dict], material_markers: List[Dict], prior_material: Optional[str], prior_unit_type: Optional[str]
+) -> Tuple[List[Dict], Optional[str], Optional[str]]:
     running_material = prior_material
+    running_unit_type = prior_unit_type or _UNIT_TYPE_UNKNOWN
     marker_index = 0
     totals_sorted = sorted(totals, key=lambda block: float(block.get("blockY", 0.0)))
 
     for block in totals_sorted:
         block_y = float(block.get("blockY", 0.0))
-        while marker_index < len(material_markers) and material_markers[marker_index][0] <= block_y + 0.5:
-            running_material = material_markers[marker_index][1]
+        while marker_index < len(material_markers) and float(material_markers[marker_index]["y"]) <= block_y + 0.5:
+            running_material = str(material_markers[marker_index].get("material") or running_material or "")
+            running_unit_type = str(material_markers[marker_index].get("unitType") or _UNIT_TYPE_UNKNOWN)
             marker_index += 1
         if running_material:
             block["material"] = running_material
+        block["unitType"] = running_unit_type or _UNIT_TYPE_UNKNOWN
 
     if material_markers:
-        running_material = material_markers[-1][1]
+        running_material = str(material_markers[-1].get("material") or running_material or "")
+        running_unit_type = str(material_markers[-1].get("unitType") or running_unit_type or _UNIT_TYPE_UNKNOWN)
 
     for block in totals_sorted:
         block.pop("blockY", None)
 
-    return totals_sorted, running_material
+    return totals_sorted, running_material, running_unit_type
 
 
 def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict], List[Dict]]:
@@ -590,29 +703,70 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
     totals: List[Dict] = []
     template_detected = False
     active_material: Optional[str] = None
+    active_unit_type: Optional[str] = None
     open_totals_block: Optional[Dict] = None
     last_header_info: Optional[Dict] = None
 
     doc = fitz.open(pdf_path)
     try:
+        if doc.page_count <= 0:
+            raise SkippableDocumentError("document has no pages")
+
         for page_index in range(doc.page_count):
             page_number = page_index + 1
             page_obj = doc[page_index]
             words = _collect_words(page_obj)
             rows_by_y = _group_words_by_y(words)
 
+            if page_index == 0:
+                if doc_type == DOC_TYPE_DOOR_LIST and _is_placeholder_door_list(rows_by_y):
+                    raise SkippableDocumentError("placeholder door list")
+                if _is_legacy_cabinet_vision_cutlist(rows_by_y, doc_type):
+                    raise SkippableDocumentError("legacy cabinet vision cut list layout")
+
             markers = _extract_section_markers(doc_type, rows_by_y)
             if markers and active_material is None:
-                active_material = markers[0][1]
+                active_material = str(markers[0].get("material") or "")
+                active_unit_type = str(markers[0].get("unitType") or _UNIT_TYPE_UNKNOWN)
 
+            if doc_type != DOC_TYPE_DOOR_LIST:
+                for marker in markers:
+                    marker_unit_type = str(marker.get("unitType") or _UNIT_TYPE_UNKNOWN)
+                    if marker_unit_type == _UNIT_TYPE_UNKNOWN:
+                        main_logger.warning(
+                            "HARDWOODS_UNIT_UNKNOWN doc=%s pdf=%s page=%s material=%s unit_raw=%s",
+                            doc_type,
+                            os.path.basename(pdf_path),
+                            page_number,
+                            str(marker.get("material") or ""),
+                            str(marker.get("unitRaw") or ""),
+                        )
+
+            prior_header_info = dict(last_header_info) if last_header_info else None
             header_rows = _find_header_rows(doc_type, rows_by_y)
             if header_rows:
                 template_detected = True
-                last_header_info = {"y": header_rows[-1]["y"], "centers": dict(header_rows[-1]["centers"])}
 
             page_rows: List[Dict] = []
             if header_rows:
                 row_ordinal = 0
+                first_header_y = float(header_rows[0]["y"])
+                if prior_header_info:
+                    pre_header_markers = [marker for marker in markers if float(marker.get("y", 0.0)) < first_header_y - 0.5]
+                    synthetic_header = {"y": -1_000_000.0, "centers": dict(prior_header_info["centers"])}
+                    pre_rows, row_ordinal = _parse_rows_from_page(
+                        doc_type=doc_type,
+                        rows_by_y=rows_by_y,
+                        header_info=synthetic_header,
+                        page_number=page_number,
+                        starting_row_ordinal=row_ordinal,
+                        prior_material=active_material or "",
+                        prior_unit_type=active_unit_type or _UNIT_TYPE_UNKNOWN,
+                        material_markers=pre_header_markers,
+                        stop_before_y=first_header_y,
+                    )
+                    page_rows.extend(pre_rows)
+
                 for idx, header_info in enumerate(header_rows):
                     table_y = float(header_info["y"])
                     next_header_y: Optional[float] = None
@@ -620,11 +774,15 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
                         next_header_y = float(header_rows[idx + 1]["y"])
 
                     in_table_markers = []
-                    for y, material in markers:
+                    for marker in markers:
+                        y = float(marker.get("y", 0.0))
+                        material = str(marker.get("material") or "")
+                        marker_unit_type = str(marker.get("unitType") or _UNIT_TYPE_UNKNOWN)
                         if y <= table_y + 0.5:
                             active_material = material
+                            active_unit_type = marker_unit_type
                         elif next_header_y is None or y < next_header_y - 0.5:
-                            in_table_markers.append((y, material))
+                            in_table_markers.append(marker)
 
                     parsed_rows, row_ordinal = _parse_rows_from_page(
                         doc_type=doc_type,
@@ -633,10 +791,13 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
                         page_number=page_number,
                         starting_row_ordinal=row_ordinal,
                         prior_material=active_material or "",
+                        prior_unit_type=active_unit_type or _UNIT_TYPE_UNKNOWN,
                         material_markers=in_table_markers,
                         stop_before_y=next_header_y,
                     )
                     page_rows.extend(parsed_rows)
+
+                last_header_info = {"y": header_rows[-1]["y"], "centers": dict(header_rows[-1]["centers"])}
             elif template_detected and last_header_info:
                 # Spillover/continuation page without repeated header:
                 # reuse the previous detected table geometry and parse full page rows.
@@ -648,17 +809,36 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
                     page_number=page_number,
                     starting_row_ordinal=0,
                     prior_material=active_material or "",
+                    prior_unit_type=active_unit_type or _UNIT_TYPE_UNKNOWN,
                     material_markers=markers,
+                )
+
+            row_like_count = _count_row_like_lines(doc_type, rows_by_y)
+            if row_like_count > len(page_rows):
+                main_logger.warning(
+                    "HARDWOODS_ROW_GAP doc=%s pdf=%s page=%s parsed=%s row_like=%s missing=%s",
+                    doc_type,
+                    os.path.basename(pdf_path),
+                    page_number,
+                    len(page_rows),
+                    row_like_count,
+                    row_like_count - len(page_rows),
                 )
 
             rows.extend(page_rows)
 
             if markers:
-                active_material = markers[-1][1]
+                active_material = str(markers[-1].get("material") or active_material or "")
+                active_unit_type = str(markers[-1].get("unitType") or active_unit_type or _UNIT_TYPE_UNKNOWN)
 
             page_totals = _parse_totals_blocks_from_words(rows_by_y, page_number)
             if page_totals:
-                page_totals, active_material = _assign_material_to_totals(page_totals, markers, active_material)
+                page_totals, active_material, active_unit_type = _assign_material_to_totals(
+                    page_totals,
+                    markers,
+                    active_material,
+                    active_unit_type,
+                )
                 totals.extend(page_totals)
                 open_totals_block = page_totals[-1]
             else:
@@ -728,13 +908,22 @@ def _find_hardwoods_docs(job_folder_path: str) -> Dict[str, Tuple[str, str]]:
     return docs
 
 
-def _write_index(job_folder_path: str, payload: Dict) -> str:
-    metadata_dir = os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR)
-    os.makedirs(metadata_dir, exist_ok=True)
-    out_path = os.path.join(metadata_dir, HARDWOODS_INDEX_FILENAME)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    return out_path
+def _write_index(job_folder_path: str, payload: Dict) -> Optional[str]:
+    try:
+        metadata_dir = os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR)
+        os.makedirs(metadata_dir, exist_ok=True)
+        out_path = os.path.join(metadata_dir, HARDWOODS_INDEX_FILENAME)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        touch_hardwoods_refresh_signal(
+            job_folder_path=job_folder_path,
+            reason="hardwoods_index_updated",
+            source="hardwoods_cutlist_indexer",
+        )
+        return out_path
+    except OSError as exc:
+        main_logger.warning("hardwoods_cutlist_indexer: could not write index for %s: %s", job_folder_path, exc)
+        return None
 
 
 def _index_path_for_job(job_folder_path: str) -> str:
@@ -776,13 +965,22 @@ def _load_existing_revision_state(job_folder_path: str) -> Optional[Dict]:
         return None
 
 
-def _write_revision_state(job_folder_path: str, payload: Dict) -> str:
-    metadata_dir = os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR)
-    os.makedirs(metadata_dir, exist_ok=True)
-    out_path = _revision_path_for_job(job_folder_path)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    return out_path
+def _write_revision_state(job_folder_path: str, payload: Dict) -> Optional[str]:
+    try:
+        metadata_dir = os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR)
+        os.makedirs(metadata_dir, exist_ok=True)
+        out_path = _revision_path_for_job(job_folder_path)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        touch_hardwoods_refresh_signal(
+            job_folder_path=job_folder_path,
+            reason="hardwoods_revision_updated",
+            source="hardwoods_cutlist_indexer",
+        )
+        return out_path
+    except OSError as exc:
+        main_logger.warning("hardwoods_cutlist_indexer: could not write revision state for %s: %s", job_folder_path, exc)
+        return None
 
 
 def _normalize_match_text(raw: str) -> str:
@@ -1185,15 +1383,24 @@ def _remove_index_if_exists(job_folder_path: str) -> bool:
     if os.path.exists(revision_path):
         os.remove(revision_path)
         removed = True
+    if removed:
+        touch_hardwoods_refresh_signal(
+            job_folder_path=job_folder_path,
+            reason="hardwoods_index_removed",
+            source="hardwoods_cutlist_indexer",
+        )
     return removed
 
 
-def build_hardwoods_cutlist_index_for_job(job_folder_path: str) -> bool:
+def build_hardwoods_cutlist_index_for_job(job_folder_path: str, deployment_gate=None) -> bool:
     """
     Build or refresh hardwoods cutlist index for a job folder.
     Returns True when an index file was written or removed.
     """
     if not os.path.isdir(job_folder_path):
+        return False
+    if deployment_gate is not None and not deployment_gate.should_process_job_folder(job_folder_path):
+        main_logger.info("Skipping hardwoods index (job pending deploy): %s", job_folder_path)
         return False
 
     docs = _find_hardwoods_docs(job_folder_path)
@@ -1204,6 +1411,9 @@ def build_hardwoods_cutlist_index_for_job(job_folder_path: str) -> bool:
     for doc_type, (filename, path) in sorted(docs.items(), key=lambda item: item[0]):
         try:
             page_count, rows, totals = _parse_document_rows(doc_type, path)
+        except SkippableDocumentError as e:
+            main_logger.info("Hardwoods parse skipped: %s (%s)", path, e)
+            continue
         except TemplateMismatchError as e:
             main_logger.error("Hardwoods parse skipped (template mismatch): %s (%s)", path, e)
             continue
@@ -1247,7 +1457,7 @@ def build_hardwoods_cutlist_index_for_job(job_folder_path: str) -> bool:
     return True
 
 
-def build_hardwoods_cutlist_index_for_pdf_event(pdf_path: str) -> bool:
+def build_hardwoods_cutlist_index_for_pdf_event(pdf_path: str, deployment_gate=None) -> bool:
     """
     Rebuild hardwoods cutlist index for a specific modified/created/deleted PDF.
     """
@@ -1265,4 +1475,4 @@ def build_hardwoods_cutlist_index_for_pdf_event(pdf_path: str) -> bool:
     if os.path.basename(job_folder).upper() == "CNC":
         return False
 
-    return build_hardwoods_cutlist_index_for_job(job_folder)
+    return build_hardwoods_cutlist_index_for_job(job_folder, deployment_gate=deployment_gate)
