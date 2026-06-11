@@ -389,6 +389,18 @@ def consolidate_cnc_tracker(job_folder: Path):
 
     actions = []
     device_files = []
+
+    # Read existing consolidated actions first
+    consolidated_file = tracker_dir / "consolidated.json"
+    if consolidated_file.exists():
+        try:
+            data = _read_json(consolidated_file, {})
+            if isinstance(data, dict) and "actions" in data:
+                actions.extend(data["actions"])
+        except Exception:
+            pass
+
+    # Scan for new device-specific action files
     for entry in os.scandir(tracker_dir):
         if not entry.is_file() or not entry.name.endswith(".json") or entry.name == "consolidated.json":
             continue
@@ -401,7 +413,8 @@ def consolidate_cnc_tracker(job_folder: Path):
         except Exception:
             pass
 
-    if not actions:
+    # If no new device files exist, do not rewrite or delete anything
+    if not device_files:
         return
 
     actions.sort(key=lambda a: a.get("timestamp", ""))
