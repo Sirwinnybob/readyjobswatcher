@@ -830,18 +830,9 @@ class SettingsWindow(QWidget):
         layout.addWidget(QLabel(job_folder_name))
 
         action_row = QHBoxLayout()
-        undo_btn = QPushButton("Undo (Re-Hide)")
         dismiss_btn = QPushButton("Dismiss")
-
-        def _undo_action():
-            self.app_instance.set_job_hidden_from_production(job_folder_name, True)
-            self.refresh_jobs_dashboard()
-            dialog.accept()
-
-        undo_btn.clicked.connect(_undo_action)
         dismiss_btn.clicked.connect(dialog.accept)
         action_row.addStretch()
-        action_row.addWidget(undo_btn)
         action_row.addWidget(dismiss_btn)
         layout.addLayout(action_row)
         dialog.exec()
