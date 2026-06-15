@@ -336,6 +336,24 @@ def load_job_gate_state(root_dir: str, job_folder_name: str) -> Dict:
     return DeploymentGateManager(root_dir).load_state(job_folder_name, create_if_missing=False, default_deployed=True)
 
 
+def derive_state(state: Dict) -> str:
+    """
+    Derive a single presentation state from raw gate booleans.
+
+    PENDING  -> not deployed (awaiting operator release)
+    PARSING  -> deployed but parse not yet complete
+    ACTIVE   -> deployed and parse complete (visible to production)
+
+    Defaults match load_state defaults (deployed=True, parseReady=True) so a
+    legacy gate with missing keys reads as ACTIVE.
+    """
+    if not bool(state.get("deployed", True)):
+        return "PENDING"
+    if not bool(state.get("parseReady", True)):
+        return "PARSING"
+    return "ACTIVE"
+
+
 def should_process_job_folder(root_dir: str, job_folder_path: str) -> bool:
     return DeploymentGateManager(root_dir).should_process_job_folder(job_folder_path)
 

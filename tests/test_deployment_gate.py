@@ -7,6 +7,7 @@ from ready_jobs_watcher.deployment_gate import (
     MODE_BOTH,
     MODE_UNKNOWN,
     DeploymentGateManager,
+    derive_state,
 )
 
 
@@ -148,6 +149,21 @@ class TestDeploymentGateManager(unittest.TestCase):
 
             state = gate.ensure_pending_for_new_job(job, detected_mode="bad-mode", detection_source="manual")
             self.assertEqual(state["modeDetection"]["candidate"], MODE_UNKNOWN)
+
+
+class TestDeriveState(unittest.TestCase):
+    def test_pending_when_not_deployed(self):
+        self.assertEqual(derive_state({"deployed": False, "parseReady": False}), "PENDING")
+        self.assertEqual(derive_state({"deployed": False, "parseReady": True}), "PENDING")
+
+    def test_parsing_when_deployed_but_not_parse_ready(self):
+        self.assertEqual(derive_state({"deployed": True, "parseReady": False}), "PARSING")
+
+    def test_active_when_deployed_and_parse_ready(self):
+        self.assertEqual(derive_state({"deployed": True, "parseReady": True}), "ACTIVE")
+
+    def test_missing_keys_default_to_active(self):
+        self.assertEqual(derive_state({}), "ACTIVE")
 
 
 if __name__ == "__main__":
