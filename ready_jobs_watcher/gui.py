@@ -709,6 +709,16 @@ class SettingsWindow(QWidget):
         dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         dialog.resize(540, 260)
+        dialog.setStyleSheet(
+            "QDialog#jobActionDialog { background: #F8FAFC; }"
+            "QLabel#dialogEyebrow { color: #F97316; font-size: 11px; font-weight: 600; }"
+            "QLabel#dialogJobName { color: #334155; font-size: 16px; font-weight: 600; }"
+            "QPushButton { padding: 6px 14px; border: 1px solid #CBD5E1; border-radius: 6px; "
+            "background: #FFFFFF; color: #334155; }"
+            "QPushButton:hover { background: #F1F5F9; }"
+            "QPushButton#primaryButton { background: #F97316; color: #FFFFFF; border: 1px solid #F97316; }"
+            "QPushButton#primaryButton:hover { background: #EA580C; }"
+        )
 
         layout = QVBoxLayout(dialog)
 
