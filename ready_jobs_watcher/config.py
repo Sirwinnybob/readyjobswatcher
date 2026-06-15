@@ -39,6 +39,7 @@ class Config:
         self.BACKUP_FOLDERS = [r'Y:\Ready Jobs', r'Y:\Upcoming Jobs']
         self.CONFIG_FILE = os.path.join(BASE_DATA_DIR, 'config.json')
         self.BACKUP_TIMES = ['00:00', '12:00']
+        self.backup_retention_days = 7
         self.CNC_SCAN_TIMES = {
             'mon': '09:35',
             'tue': '09:35',
@@ -200,6 +201,7 @@ class Config:
                 self.BACKUP_DIR = config.get('backup_dir', self.BACKUP_DIR)
                 self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
                 self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
+                self.backup_retention_days = int(config.get('backup_retention_days', self.backup_retention_days))
                 self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
                 self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
                 self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
@@ -237,6 +239,7 @@ class Config:
                         self.BACKUP_DIR = config.get('backup_dir', self.BACKUP_DIR)
                         self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
                         self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
+                        self.backup_retention_days = int(config.get('backup_retention_days', self.backup_retention_days))
                         self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
                         self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
                         self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
@@ -287,6 +290,7 @@ class Config:
                 'backup_dir': self.BACKUP_DIR,
                 'backup_folders': self.BACKUP_FOLDERS,
                 'backup_times': self.BACKUP_TIMES,
+                'backup_retention_days': self.backup_retention_days,
                 'pdf_conversion_delay_seconds': self.pdf_conversion_delay_seconds,
                 'new_folder_delay_seconds': self.new_folder_delay_seconds,
                 'daily_restart_time': self.daily_restart_time,

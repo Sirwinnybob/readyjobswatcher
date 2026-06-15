@@ -408,11 +408,16 @@ class SettingsWindow(QWidget):
         backup_layout.addLayout(btn_layout)
         backup_group.setLayout(backup_layout)
 
-        # Restart Time
+        # Restart Time + Retention
         form_layout = QFormLayout()
         self.restart_time_edit = QTimeEdit()
         self.restart_time_edit.setDisplayFormat("HH:mm")
         form_layout.addRow("Daily Restart Time:", self.restart_time_edit)
+
+        self.retention_spin = QSpinBox()
+        self.retention_spin.setRange(1, 365)
+        self.retention_spin.setSuffix(" days")
+        form_layout.addRow("Keep Backups For:", self.retention_spin)
 
         layout.addWidget(backup_group)
         layout.addLayout(form_layout)
@@ -1091,6 +1096,8 @@ class SettingsWindow(QWidget):
         self.backup_times_list.clear()
         self.backup_times_list.addItems(self.config.BACKUP_TIMES)
 
+        self.retention_spin.setValue(getattr(self.config, 'backup_retention_days', 7))
+
         h, m = map(int, self.config.daily_restart_time.split(':'))
         self.restart_time_edit.setTime(QTime(h, m))
 
@@ -1133,6 +1140,7 @@ class SettingsWindow(QWidget):
 
         self.config.BACKUP_FOLDERS = [self.backup_folders_list.item(i).text() for i in range(self.backup_folders_list.count())]
         self.config.BACKUP_TIMES = [self.backup_times_list.item(i).text() for i in range(self.backup_times_list.count())]
+        self.config.backup_retention_days = self.retention_spin.value()
 
         self.config.daily_restart_time = self.restart_time_edit.time().toString("HH:mm")
 
