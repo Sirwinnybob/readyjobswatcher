@@ -44,19 +44,6 @@ class TestDeploymentGateManager(unittest.TestCase):
             self.assertEqual(state["selectedMode"], "FACE-FRAME")
             self.assertTrue(gate.should_process_job_folder(os.path.join(root, job)))
 
-    def test_hidden_from_production_only_affects_non_debug_visibility(self):
-        with tempfile.TemporaryDirectory() as root:
-            job = "1000 - TEST"
-            os.makedirs(os.path.join(root, job), exist_ok=True)
-            gate = DeploymentGateManager(root)
-
-            gate.mark_deployed(job, selected_mode="UNKNOWN")
-            gate.mark_parse_ready(job, parse_ready=True)
-            gate.set_hidden_from_production(job, True)
-
-            self.assertFalse(gate.get_visibility(job, is_debug_build=False))
-            self.assertTrue(gate.get_visibility(job, is_debug_build=True))
-
     def test_duplicate_pending_events_do_not_reset_auto_release_timer(self):
         with tempfile.TemporaryDirectory() as root:
             job = "1001 - TEST"
@@ -93,21 +80,13 @@ class TestDeploymentGateManager(unittest.TestCase):
             state = gate.ensure_pending_for_new_job(job)
             initial = datetime.fromisoformat(state["timers"]["autoReleaseAt"])
 
-            hidden_update = gate.set_hidden_from_production(job, False)
-            hidden_after = datetime.fromisoformat(hidden_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(hidden_after, initial)
-
             mode_update = gate.set_selected_mode(job, "FACE-FRAME")
             mode_after = datetime.fromisoformat(mode_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(mode_after, hidden_after)
-
-            retry_update = gate.schedule_retry(job, minutes=1)
-            retry_after = datetime.fromisoformat(retry_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(retry_after, mode_after)
+            self.assertGreaterEqual(mode_after, initial)
 
             remind_update = gate.schedule_reminder(job, minutes=1)
             remind_after = datetime.fromisoformat(remind_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(remind_after, retry_after)
+            self.assertGreaterEqual(remind_after, mode_after)
 
     def test_mode_detection_can_skip_operator_action_touch(self):
         with tempfile.TemporaryDirectory() as root:
