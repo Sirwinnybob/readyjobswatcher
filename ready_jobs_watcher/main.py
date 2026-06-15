@@ -259,21 +259,6 @@ class Application:
         self.deployment_gate.schedule_reminder(job_folder_name, minutes=minutes)
         self._schedule_pending_job_prompt(job_folder_name, delay_seconds=minutes * 60)
 
-    def retry_pending_job(self, job_folder_name: str, minutes: int = 3):
-        self.deployment_gate.schedule_retry(job_folder_name, minutes=minutes)
-        self._schedule_pending_job_prompt(job_folder_name, delay_seconds=minutes * 60)
-
-    def set_job_hidden_from_production(self, job_folder_name: str, hidden: bool):
-        state = self.deployment_gate.set_hidden_from_production(job_folder_name, hidden)
-        self.schedule_metadata_refresh_for_job(job_folder_name, "deployment_gate_updated")
-        logging.info(
-            "Job visibility updated: job=%s hiddenFromProduction=%s",
-            job_folder_name,
-            state.get("hiddenFromProduction", False),
-        )
-        if self.settings_window:
-            self.settings_window.refresh_jobs_dashboard()
-
     def set_job_selected_mode(self, job_folder_name: str, selected_mode: str):
         state = self.deployment_gate.set_selected_mode(job_folder_name, selected_mode)
         self.schedule_metadata_refresh_for_job(job_folder_name, "deployment_gate_updated")

@@ -113,63 +113,6 @@ class TestReparseJob(unittest.TestCase):
             # Check settings GUI was refreshed
             app.settings_window.refresh_jobs_dashboard.assert_called_once()
 
-class TestReparseJobGui(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        from PyQt6.QtWidgets import QApplication
-        cls.qapp = QApplication.instance() or QApplication([])
-
-    @patch("ready_jobs_watcher.gui.QMessageBox")
-    def test_reparse_selected_job_calls_app_reparse(self, mock_msgbox):
-        from ready_jobs_watcher.gui import SettingsWindow
-        from PyQt6.QtWidgets import QMessageBox
-
-        # Mock application instance
-        mock_app = MagicMock()
-        mock_config = MagicMock()
-        mock_config.ROOT_DIR = "C:/temp"
-        mock_config.CNC_SUBDIR = "CNC"
-        mock_config.BACKUP_DIR = "Backup"
-        mock_config.BACKUP_FOLDERS = []
-        mock_config.BACKUP_TIMES = []
-        mock_config.daily_restart_time = "03:00"
-        mock_config.pdf_conversion_delay_seconds = 10
-        mock_config.new_folder_delay_seconds = 15
-        mock_config.bad_parts_mode = "tracker"
-        mock_config.bad_parts_popup_enabled = True
-        mock_config.bad_parts_toast_enabled = True
-        mock_config.bad_parts_sound_profile = "none"
-        mock_app.config = mock_config
-        # Mock settings window setup
-        window = SettingsWindow(mock_config, app_instance=mock_app)
-
-        # Scenario 1: No job selected
-        window._selected_job_folder_name = MagicMock(return_value=None)
-        window._reparse_selected_job()
-        mock_msgbox.information.assert_any_call(window, "Jobs Dashboard", "Select a job row first.")
-
-        # Scenario 2: Job selected, user cancels (No)
-        mock_msgbox.StandardButton.No = QMessageBox.StandardButton.No
-        mock_msgbox.StandardButton.Yes = QMessageBox.StandardButton.Yes
-        mock_msgbox.question.return_value = QMessageBox.StandardButton.No
-        window._selected_job_folder_name = MagicMock(return_value="123-JOB")
-        window._reparse_selected_job()
-        mock_app.reparse_job.assert_not_called()
-
-        # Scenario 3: Job selected, user confirms (Yes)
-        mock_msgbox.question.return_value = QMessageBox.StandardButton.Yes
-        with patch("threading.Thread") as mock_thread:
-            window._reparse_selected_job()
-            mock_thread.assert_called_once()
-            call_kwargs = mock_thread.call_args[1]
-            self.assertEqual(call_kwargs["target"], mock_app.reparse_job)
-            self.assertEqual(call_kwargs["args"], ("123-JOB",))
-            mock_msgbox.information.assert_any_call(
-                window,
-                "Re-parse Job",
-                "Re-parsing for job '123-JOB' has been started in the background."
-            )
-
 if __name__ == "__main__":
     unittest.main()
 

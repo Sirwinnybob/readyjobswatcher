@@ -7,6 +7,7 @@ from ready_jobs_watcher.deployment_gate import (
     MODE_BOTH,
     MODE_UNKNOWN,
     DeploymentGateManager,
+    derive_state,
 )
 
 
@@ -22,7 +23,7 @@ class TestDeploymentGateManager(unittest.TestCase):
             self.assertFalse(state["parseReady"])
             self.assertEqual(state["modeDetection"]["candidate"], MODE_BOTH)
             self.assertEqual(state["modeDetection"]["source"], "DELIVERY_SHEET")
-            self.assertTrue(state["hiddenFromProduction"])
+            self.assertFalse(state["hiddenFromProduction"])
             self.assertIsNotNone(state["timers"]["autoReleaseAt"])
             self.assertIsNotNone(state["timers"]["lastActionAt"])
             self.assertFalse(gate.should_process_job_folder(os.path.join(root, job)))
@@ -42,19 +43,6 @@ class TestDeploymentGateManager(unittest.TestCase):
             self.assertTrue(state["parseReady"])
             self.assertEqual(state["selectedMode"], "FACE-FRAME")
             self.assertTrue(gate.should_process_job_folder(os.path.join(root, job)))
-
-    def test_hidden_from_production_only_affects_non_debug_visibility(self):
-        with tempfile.TemporaryDirectory() as root:
-            job = "1000 - TEST"
-            os.makedirs(os.path.join(root, job), exist_ok=True)
-            gate = DeploymentGateManager(root)
-
-            gate.mark_deployed(job, selected_mode="UNKNOWN")
-            gate.mark_parse_ready(job, parse_ready=True)
-            gate.set_hidden_from_production(job, True)
-
-            self.assertFalse(gate.get_visibility(job, is_debug_build=False))
-            self.assertTrue(gate.get_visibility(job, is_debug_build=True))
 
     def test_duplicate_pending_events_do_not_reset_auto_release_timer(self):
         with tempfile.TemporaryDirectory() as root:
@@ -92,21 +80,13 @@ class TestDeploymentGateManager(unittest.TestCase):
             state = gate.ensure_pending_for_new_job(job)
             initial = datetime.fromisoformat(state["timers"]["autoReleaseAt"])
 
-            hidden_update = gate.set_hidden_from_production(job, False)
-            hidden_after = datetime.fromisoformat(hidden_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(hidden_after, initial)
-
             mode_update = gate.set_selected_mode(job, "FACE-FRAME")
             mode_after = datetime.fromisoformat(mode_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(mode_after, hidden_after)
-
-            retry_update = gate.schedule_retry(job, minutes=1)
-            retry_after = datetime.fromisoformat(retry_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(retry_after, mode_after)
+            self.assertGreaterEqual(mode_after, initial)
 
             remind_update = gate.schedule_reminder(job, minutes=1)
             remind_after = datetime.fromisoformat(remind_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(remind_after, retry_after)
+            self.assertGreaterEqual(remind_after, mode_after)
 
     def test_mode_detection_can_skip_operator_action_touch(self):
         with tempfile.TemporaryDirectory() as root:
@@ -148,6 +128,21 @@ class TestDeploymentGateManager(unittest.TestCase):
 
             state = gate.ensure_pending_for_new_job(job, detected_mode="bad-mode", detection_source="manual")
             self.assertEqual(state["modeDetection"]["candidate"], MODE_UNKNOWN)
+
+
+class TestDeriveState(unittest.TestCase):
+    def test_pending_when_not_deployed(self):
+        self.assertEqual(derive_state({"deployed": False, "parseReady": False}), "PENDING")
+        self.assertEqual(derive_state({"deployed": False, "parseReady": True}), "PENDING")
+
+    def test_parsing_when_deployed_but_not_parse_ready(self):
+        self.assertEqual(derive_state({"deployed": True, "parseReady": False}), "PARSING")
+
+    def test_active_when_deployed_and_parse_ready(self):
+        self.assertEqual(derive_state({"deployed": True, "parseReady": True}), "ACTIVE")
+
+    def test_missing_keys_default_to_active(self):
+        self.assertEqual(derive_state({}), "ACTIVE")
 
 
 if __name__ == "__main__":

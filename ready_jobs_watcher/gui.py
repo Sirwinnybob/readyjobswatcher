@@ -267,8 +267,6 @@ class SettingsWindow(QWidget):
         self.alert_coordinator = None
         self.bad_parts_center_dialog = None
         self.jobs_table = None
-        self.jobs_selected_mode_combo = None
-        self.jobs_detected_mode_combo = None
 
         self.qt_handler = QtLogHandler(self.log_signal)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -408,11 +406,16 @@ class SettingsWindow(QWidget):
         backup_layout.addLayout(btn_layout)
         backup_group.setLayout(backup_layout)
 
-        # Restart Time
+        # Restart Time + Retention
         form_layout = QFormLayout()
         self.restart_time_edit = QTimeEdit()
         self.restart_time_edit.setDisplayFormat("HH:mm")
         form_layout.addRow("Daily Restart Time:", self.restart_time_edit)
+
+        self.retention_spin = QSpinBox()
+        self.retention_spin.setRange(1, 365)
+        self.retention_spin.setSuffix(" days")
+        form_layout.addRow("Keep Backups For:", self.retention_spin)
 
         layout.addWidget(backup_group)
         layout.addLayout(form_layout)
@@ -497,20 +500,17 @@ class SettingsWindow(QWidget):
         layout = QVBoxLayout(tab)
 
         info_label = QLabel(
-            "Deployment/visibility state from each job's .metadata/deployment_gate.json"
+            "Job state from each job's .metadata/deployment_gate.json. "
+            "Double-click a row to release, snooze, or re-parse."
         )
         layout.addWidget(info_label)
 
         headers = [
             "Job",
-            "Deployed",
-            "Parse Ready",
-            "Hidden From Prod",
-            "Visible",
+            "State",
             "Selected Mode",
             "Detected Mode",
             "Mode Source",
-            "Retry At",
             "Remind At",
             "Updated At",
         ]
@@ -522,58 +522,19 @@ class SettingsWindow(QWidget):
         self.jobs_table.verticalHeader().setVisible(False)
         self.jobs_table.setAlternatingRowColors(True)
         self.jobs_table.setSortingEnabled(False)
-        self.jobs_table.itemSelectionChanged.connect(self._sync_mode_combos_to_selected_row)
+        self.jobs_table.itemDoubleClicked.connect(self._open_selected_job_dialog)
         header = self.jobs_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.jobs_table)
 
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Selected Mode:"))
-        self.jobs_selected_mode_combo = QComboBox(tab)
-        self.jobs_selected_mode_combo.addItems(["FACE-FRAME", "FRAMELESS", "BOTH", "UNKNOWN"])
-        mode_row.addWidget(self.jobs_selected_mode_combo)
-        set_selected_mode_btn = QPushButton("Set Selected Mode")
-        set_selected_mode_btn.clicked.connect(self._set_selected_mode_for_job)
-        mode_row.addWidget(set_selected_mode_btn)
-
-        mode_row.addSpacing(20)
-        mode_row.addWidget(QLabel("Detected Mode:"))
-        self.jobs_detected_mode_combo = QComboBox(tab)
-        self.jobs_detected_mode_combo.addItems(["FACE-FRAME", "FRAMELESS", "BOTH", "UNKNOWN"])
-        mode_row.addWidget(self.jobs_detected_mode_combo)
-        set_detected_mode_btn = QPushButton("Set Detected Mode")
-        set_detected_mode_btn.clicked.connect(self._set_detected_mode_for_job)
-        mode_row.addWidget(set_detected_mode_btn)
-        mode_row.addStretch()
-        layout.addLayout(mode_row)
-
         actions = QHBoxLayout()
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_jobs_dashboard)
-        deploy_btn = QPushButton("Deploy Selected")
-        deploy_btn.clicked.connect(self._deploy_selected_job)
-        reparse_btn = QPushButton("Re-parse Selected")
-        reparse_btn.clicked.connect(self._reparse_selected_job)
-        retry_btn = QPushButton("Retry 3 min")
-        retry_btn.clicked.connect(lambda: self._retry_selected_job(minutes=3))
-        remind_btn = QPushButton("Remind 15 min")
-        remind_btn.clicked.connect(lambda: self._remind_selected_job(minutes=15))
-        hide_btn = QPushButton("Hide Selected")
-        hide_btn.clicked.connect(lambda: self._set_selected_job_hidden(True))
-        unhide_btn = QPushButton("Unhide Selected")
-        unhide_btn.clicked.connect(lambda: self._set_selected_job_hidden(False))
-
         actions.addWidget(refresh_btn)
-        actions.addWidget(deploy_btn)
-        actions.addWidget(reparse_btn)
-        actions.addWidget(retry_btn)
-        actions.addWidget(remind_btn)
         actions.addStretch()
-        actions.addWidget(hide_btn)
-        actions.addWidget(unhide_btn)
         layout.addLayout(actions)
 
-        self.tabs.addTab(tab, "Jobs & Visibility")
+        self.tabs.addTab(tab, "Jobs")
         self.refresh_jobs_dashboard()
 
     def trigger_backup(self):
@@ -658,31 +619,36 @@ class SettingsWindow(QWidget):
     def _populate_jobs_table(self, rows: List[Dict]):
         if self.jobs_table is None:
             return
+        from .deployment_gate import derive_state
+
+        state_styles = {
+            "PENDING": (QColor("#FEF3C7"), QColor("#92400E")),
+            "PARSING": (QColor("#DBEAFE"), QColor("#1E40AF")),
+            "ACTIVE":  (QColor("#D1FAE5"), QColor("#065F46")),
+        }
+
         self.jobs_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
-            deployed = bool(row.get("deployed", True))
-            parse_ready = bool(row.get("parseReady", deployed))
-            hidden = bool(row.get("hiddenFromProduction", False))
             mode_detection = row.get("modeDetection", {}) if isinstance(row.get("modeDetection"), dict) else {}
             timers = row.get("timers", {}) if isinstance(row.get("timers"), dict) else {}
-            visible = deployed and parse_ready and not hidden
+            state_name = derive_state(row)
+            bg, fg = state_styles.get(state_name, (None, None))
 
             values = [
                 str(row.get("jobFolderName", "")),
-                "Yes" if deployed else "No",
-                "Yes" if parse_ready else "No",
-                "Yes" if hidden else "No",
-                "Yes" if visible else "No",
+                state_name,
                 str(row.get("selectedMode", "UNKNOWN")),
                 str(mode_detection.get("candidate", "UNKNOWN")),
                 str(mode_detection.get("source", "UNKNOWN")),
-                str(timers.get("retryAt") or "-"),
                 str(timers.get("remindAt") or "-"),
                 str(row.get("updatedAt") or "-"),
             ]
             for col_index, value in enumerate(values):
-                self.jobs_table.setItem(row_index, col_index, QTableWidgetItem(value))
-        self._sync_mode_combos_to_selected_row()
+                item = QTableWidgetItem(value)
+                if bg is not None:
+                    item.setBackground(bg)
+                    item.setForeground(fg)
+                self.jobs_table.setItem(row_index, col_index, item)
 
     def _selected_job_folder_name(self) -> Optional[str]:
         if self.jobs_table is None:
@@ -699,120 +665,11 @@ class SettingsWindow(QWidget):
             return None
         return item.text().strip() or None
 
-    def _selected_row_mode_value(self, column_index: int) -> Optional[str]:
-        if self.jobs_table is None:
-            return None
-        selection = self.jobs_table.selectionModel()
-        if selection is None:
-            return None
-        rows = selection.selectedRows()
-        if not rows:
-            return None
-        row_index = rows[0].row()
-        item = self.jobs_table.item(row_index, column_index)
-        if item is None:
-            return None
-        value = item.text().strip()
-        return value or None
-
-    def _sync_mode_combos_to_selected_row(self):
-        if self.jobs_selected_mode_combo is None or self.jobs_detected_mode_combo is None:
-            return
-        selected_mode = self._selected_row_mode_value(5) or "UNKNOWN"
-        detected_mode = self._selected_row_mode_value(6) or "UNKNOWN"
-        self.jobs_selected_mode_combo.setCurrentText(selected_mode)
-        self.jobs_detected_mode_combo.setCurrentText(detected_mode)
-
-    def _set_selected_job_hidden(self, hidden: bool):
+    def _open_selected_job_dialog(self, *args):
         job_folder_name = self._selected_job_folder_name()
         if not job_folder_name:
-            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
-            return
-        if not self.app_instance:
-            return
-        self.app_instance.set_job_hidden_from_production(job_folder_name, hidden)
-        self.refresh_jobs_dashboard()
-
-    def _remind_selected_job(self, minutes: int = 15):
-        job_folder_name = self._selected_job_folder_name()
-        if not job_folder_name:
-            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
-            return
-        if not self.app_instance:
-            return
-        self.app_instance.remind_pending_job(job_folder_name, minutes=minutes)
-        self.refresh_jobs_dashboard()
-
-    def _retry_selected_job(self, minutes: int = 3):
-        job_folder_name = self._selected_job_folder_name()
-        if not job_folder_name:
-            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
-            return
-        if not self.app_instance:
-            return
-        self.app_instance.retry_pending_job(job_folder_name, minutes=minutes)
-        self.refresh_jobs_dashboard()
-
-    def _deploy_selected_job(self):
-        job_folder_name = self._selected_job_folder_name()
-        if not job_folder_name:
-            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
             return
         self._show_pending_job_prompt_dialog(job_folder_name)
-
-    def _reparse_selected_job(self):
-        job_folder_name = self._selected_job_folder_name()
-        if not job_folder_name:
-            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
-            return
-        if not self.app_instance:
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "Re-parse Job",
-            f"Are you sure you want to fully re-parse job '{job_folder_name}'?\n\nThis will remove all generated metadata, GLBs, and dark mode PDFs, then re-process them.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            import threading
-            threading.Thread(
-                target=self.app_instance.reparse_job,
-                args=(job_folder_name,),
-                daemon=True,
-            ).start()
-            QMessageBox.information(
-                self,
-                "Re-parse Job",
-                f"Re-parsing for job '{job_folder_name}' has been started in the background."
-            )
-
-    def _set_selected_mode_for_job(self):
-        job_folder_name = self._selected_job_folder_name()
-        if not job_folder_name:
-            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
-            return
-        if not self.app_instance or not hasattr(self.app_instance, "set_job_selected_mode"):
-            return
-        mode = "UNKNOWN"
-        if self.jobs_selected_mode_combo is not None:
-            mode = self.jobs_selected_mode_combo.currentText().strip() or "UNKNOWN"
-        self.app_instance.set_job_selected_mode(job_folder_name, mode)
-        self.refresh_jobs_dashboard()
-
-    def _set_detected_mode_for_job(self):
-        job_folder_name = self._selected_job_folder_name()
-        if not job_folder_name:
-            QMessageBox.information(self, "Jobs Dashboard", "Select a job row first.")
-            return
-        if not self.app_instance or not hasattr(self.app_instance, "set_job_detected_mode"):
-            return
-        mode = "UNKNOWN"
-        if self.jobs_detected_mode_combo is not None:
-            mode = self.jobs_detected_mode_combo.currentText().strip() or "UNKNOWN"
-        self.app_instance.set_job_detected_mode(job_folder_name, mode, source="MANUAL_OVERRIDE")
-        self.refresh_jobs_dashboard()
 
     def _get_job_row_by_name(self, job_folder_name: str) -> Optional[Dict]:
         if not self.app_instance or not hasattr(self.app_instance, "get_jobs_dashboard_rows"):
@@ -832,92 +689,132 @@ class SettingsWindow(QWidget):
         if not job_folder_name:
             return
 
+        from .deployment_gate import derive_state
+
         state = self._get_job_row_by_name(job_folder_name) or {}
+        derived = derive_state(state)
         mode_detection = state.get("modeDetection", {}) if isinstance(state.get("modeDetection"), dict) else {}
         detected_mode = str(mode_detection.get("candidate") or "UNKNOWN")
         detected_source = str(mode_detection.get("source") or "UNKNOWN")
         selected_mode = str(state.get("selectedMode") or "UNKNOWN")
-        hidden_state = bool(state.get("hiddenFromProduction", False))
         default_mode = selected_mode if selected_mode and selected_mode != "UNKNOWN" else detected_mode
         if not default_mode:
             default_mode = "UNKNOWN"
 
+        eyebrow = "New job pending" if derived == "PENDING" else f"Released job ({derived})"
+
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"Pending Job: {job_folder_name}")
+        dialog.setObjectName("jobActionDialog")
+        dialog.setWindowTitle(f"Job: {job_folder_name}")
         dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        dialog.resize(540, 250)
+        dialog.resize(540, 260)
+        dialog.setStyleSheet(
+            "QDialog#jobActionDialog { background: #F8FAFC; }"
+            "QLabel#dialogEyebrow { color: #F97316; font-size: 11px; font-weight: 600; }"
+            "QLabel#dialogJobName { color: #334155; font-size: 16px; font-weight: 600; }"
+            "QPushButton { padding: 6px 14px; border: 1px solid #CBD5E1; border-radius: 6px; "
+            "background: #FFFFFF; color: #334155; }"
+            "QPushButton:hover { background: #F1F5F9; }"
+            "QPushButton#primaryButton { background: #F97316; color: #FFFFFF; border: 1px solid #F97316; }"
+            "QPushButton#primaryButton:hover { background: #EA580C; }"
+        )
 
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel(f"New job is pending deployment:\n{job_folder_name}"))
+
+        eyebrow_label = QLabel(eyebrow)
+        eyebrow_label.setObjectName("dialogEyebrow")
+        layout.addWidget(eyebrow_label)
+        job_label = QLabel(job_folder_name)
+        job_label.setObjectName("dialogJobName")
+        layout.addWidget(job_label)
         layout.addWidget(QLabel(f"Detected mode: {detected_mode} ({detected_source})"))
-        hidden_status_label = QLabel()
-        hidden_status_label.setText(f"Hidden From Production: {'Yes' if hidden_state else 'No'}")
-        layout.addWidget(hidden_status_label)
 
         form = QFormLayout()
         mode_combo = QComboBox(dialog)
         mode_combo.setEditable(True)
         mode_combo.addItems(["FACE-FRAME", "FRAMELESS", "BOTH", "UNKNOWN"])
         mode_combo.setCurrentText(default_mode)
+        if derived != "PENDING":
+            mode_combo.setEnabled(False)
         form.addRow("Deploy Mode:", mode_combo)
         layout.addLayout(form)
 
         action_row = QHBoxLayout()
-        retry_btn = QPushButton("Retry 3 min")
-        remind_btn = QPushButton("Remind 15 min")
-        hide_btn = QPushButton("Hide")
-        visible_btn = QPushButton("Visible")
-        deploy_btn = QPushButton("DEPLOY")
-        cancel_btn = QPushButton("Cancel")
 
-        def _retry_action():
-            self.app_instance.retry_pending_job(job_folder_name)
-            self.refresh_jobs_dashboard()
-            dialog.accept()
+        if derived == "PENDING":
+            remind_label = QLabel("Remind in")
+            remind_spin = QSpinBox(dialog)
+            remind_spin.setRange(1, 720)
+            remind_spin.setValue(15)
+            remind_spin.setSuffix(" min")
+            snooze_btn = QPushButton("Snooze")
+            cancel_btn = QPushButton("Cancel")
+            release_btn = QPushButton("Release")
+            release_btn.setObjectName("primaryButton")
 
-        def _remind_action():
-            self.app_instance.remind_pending_job(job_folder_name)
-            self.refresh_jobs_dashboard()
-            dialog.accept()
+            def _snooze_action():
+                self.app_instance.remind_pending_job(job_folder_name, minutes=remind_spin.value())
+                self.refresh_jobs_dashboard()
+                dialog.accept()
 
-        def _deploy_action():
-            selected = mode_combo.currentText().strip() or "UNKNOWN"
-            import threading
-            threading.Thread(
-                target=self.app_instance.deploy_pending_job,
-                args=(job_folder_name, selected),
-                daemon=True,
-            ).start()
-            self.refresh_jobs_dashboard()
-            dialog.accept()
+            def _release_action():
+                selected = mode_combo.currentText().strip() or "UNKNOWN"
+                import threading
+                threading.Thread(
+                    target=self.app_instance.deploy_pending_job,
+                    args=(job_folder_name, selected),
+                    daemon=True,
+                ).start()
+                self.refresh_jobs_dashboard()
+                dialog.accept()
 
-        def _hide_action():
-            self.app_instance.set_job_hidden_from_production(job_folder_name, True)
-            hidden_status_label.setText("Hidden From Production: Yes")
-            self.refresh_jobs_dashboard()
+            snooze_btn.clicked.connect(_snooze_action)
+            cancel_btn.clicked.connect(dialog.reject)
+            release_btn.clicked.connect(_release_action)
 
-        def _visible_action():
-            self.app_instance.set_job_hidden_from_production(job_folder_name, False)
-            hidden_status_label.setText("Hidden From Production: No")
-            self.refresh_jobs_dashboard()
+            action_row.addWidget(remind_label)
+            action_row.addWidget(remind_spin)
+            action_row.addWidget(snooze_btn)
+            action_row.addStretch()
+            action_row.addWidget(cancel_btn)
+            action_row.addWidget(release_btn)
+        else:
+            reparse_btn = QPushButton("Re-parse")
+            cancel_btn = QPushButton("Cancel")
 
-        retry_btn.clicked.connect(_retry_action)
-        remind_btn.clicked.connect(_remind_action)
-        hide_btn.clicked.connect(_hide_action)
-        visible_btn.clicked.connect(_visible_action)
-        deploy_btn.clicked.connect(_deploy_action)
-        cancel_btn.clicked.connect(dialog.reject)
+            def _reparse_action():
+                reply = QMessageBox.question(
+                    dialog,
+                    "Re-parse Job",
+                    f"Are you sure you want to fully re-parse job '{job_folder_name}'?\n\n"
+                    "This will remove all generated metadata, GLBs, and dark mode PDFs, then re-process them.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    import threading
+                    threading.Thread(
+                        target=self.app_instance.reparse_job,
+                        args=(job_folder_name,),
+                        daemon=True,
+                    ).start()
+                    QMessageBox.information(
+                        dialog,
+                        "Re-parse Job",
+                        f"Re-parsing for job '{job_folder_name}' has been started in the background.",
+                    )
+                    self.refresh_jobs_dashboard()
+                    dialog.accept()
 
-        action_row.addWidget(retry_btn)
-        action_row.addWidget(remind_btn)
-        action_row.addWidget(hide_btn)
-        action_row.addWidget(visible_btn)
-        action_row.addStretch()
-        action_row.addWidget(cancel_btn)
-        action_row.addWidget(deploy_btn)
+            reparse_btn.clicked.connect(_reparse_action)
+            cancel_btn.clicked.connect(dialog.reject)
+
+            action_row.addWidget(reparse_btn)
+            action_row.addStretch()
+            action_row.addWidget(cancel_btn)
+
         layout.addLayout(action_row)
-
         dialog.exec()
 
     def _show_auto_release_dialog(self, job_folder_name: str):
@@ -943,18 +840,9 @@ class SettingsWindow(QWidget):
         layout.addWidget(QLabel(job_folder_name))
 
         action_row = QHBoxLayout()
-        undo_btn = QPushButton("Undo (Re-Hide)")
         dismiss_btn = QPushButton("Dismiss")
-
-        def _undo_action():
-            self.app_instance.set_job_hidden_from_production(job_folder_name, True)
-            self.refresh_jobs_dashboard()
-            dialog.accept()
-
-        undo_btn.clicked.connect(_undo_action)
         dismiss_btn.clicked.connect(dialog.accept)
         action_row.addStretch()
-        action_row.addWidget(undo_btn)
         action_row.addWidget(dismiss_btn)
         layout.addLayout(action_row)
         dialog.exec()
@@ -1091,6 +979,8 @@ class SettingsWindow(QWidget):
         self.backup_times_list.clear()
         self.backup_times_list.addItems(self.config.BACKUP_TIMES)
 
+        self.retention_spin.setValue(getattr(self.config, 'backup_retention_days', 7))
+
         h, m = map(int, self.config.daily_restart_time.split(':'))
         self.restart_time_edit.setTime(QTime(h, m))
 
@@ -1133,6 +1023,7 @@ class SettingsWindow(QWidget):
 
         self.config.BACKUP_FOLDERS = [self.backup_folders_list.item(i).text() for i in range(self.backup_folders_list.count())]
         self.config.BACKUP_TIMES = [self.backup_times_list.item(i).text() for i in range(self.backup_times_list.count())]
+        self.config.backup_retention_days = self.retention_spin.value()
 
         self.config.daily_restart_time = self.restart_time_edit.time().toString("HH:mm")
 

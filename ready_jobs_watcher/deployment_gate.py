@@ -202,8 +202,6 @@ class DeploymentGateManager:
 
         state["deployed"] = False
         state["parseReady"] = False
-        if not had_existing_state or not was_pending:
-            state["hiddenFromProduction"] = True
         state["selectedMode"] = self.normalize_mode(state.get("selectedMode") or MODE_UNKNOWN)
         state["modeDetection"] = {
             "candidate": self.normalize_mode(detected_mode),
@@ -229,9 +227,6 @@ class DeploymentGateManager:
 
     def mark_parse_ready(self, job_folder_name: str, parse_ready: bool) -> Dict:
         return self.update_state(job_folder_name, parseReady=bool(parse_ready))
-
-    def set_hidden_from_production(self, job_folder_name: str, hidden: bool) -> Dict:
-        return self.update_state(job_folder_name, hiddenFromProduction=bool(hidden), operator_action=True)
 
     def set_selected_mode(
         self,
@@ -261,14 +256,6 @@ class DeploymentGateManager:
                 "source": source,
                 "detectedAt": self._now_iso(),
             },
-            operator_action=mark_as_operator_action,
-        )
-
-    def schedule_retry(self, job_folder_name: str, minutes: int = 3, *, mark_as_operator_action: bool = True) -> Dict:
-        retry_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)).isoformat()
-        return self.update_state(
-            job_folder_name,
-            timers={"retryAt": retry_at},
             operator_action=mark_as_operator_action,
         )
 
@@ -334,6 +321,24 @@ class DeploymentGateManager:
 
 def load_job_gate_state(root_dir: str, job_folder_name: str) -> Dict:
     return DeploymentGateManager(root_dir).load_state(job_folder_name, create_if_missing=False, default_deployed=True)
+
+
+def derive_state(state: Dict) -> str:
+    """
+    Derive a single presentation state from raw gate booleans.
+
+    PENDING  -> not deployed (awaiting operator release)
+    PARSING  -> deployed but parse not yet complete
+    ACTIVE   -> deployed and parse complete (visible to production)
+
+    Defaults match load_state defaults (deployed=True, parseReady=True) so a
+    legacy gate with missing keys reads as ACTIVE.
+    """
+    if not bool(state.get("deployed", True)):
+        return "PENDING"
+    if not bool(state.get("parseReady", True)):
+        return "PARSING"
+    return "ACTIVE"
 
 
 def should_process_job_folder(root_dir: str, job_folder_path: str) -> bool:

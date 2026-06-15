@@ -85,19 +85,19 @@ def perform_backup(config: Config, app: 'Application') -> None:
 
 def delete_old_backups(config: Config) -> None:
     """
-    Remove backups that exceed the configured retention threshold (7 days).
+    Remove backups that exceed the configured retention threshold.
 
     Args:
-        config (Config): Configuration containing the target backup directory.
+        config (Config): Configuration containing the target backup directory and retention period.
     """
-    backup_logger.debug("Deleting old backups")
-    threshold = datetime.datetime.now() - datetime.timedelta(days=7)
+    retention_days = getattr(config, 'backup_retention_days', 7)
+    backup_logger.info(f"Deleting backups older than {retention_days} days")
+    threshold = datetime.datetime.now() - datetime.timedelta(days=retention_days)
 
     if not os.path.exists(config.BACKUP_DIR):
         return
 
     try:
-        # Optimized using os.scandir instead of os.listdir and os.path.isdir
         with os.scandir(config.BACKUP_DIR) as it:
             for entry in it:
                 if entry.is_dir():
@@ -107,8 +107,11 @@ def delete_old_backups(config: Config) -> None:
                             date_str = f"{parts[-2]}_{parts[-1]}"
                             backup_date = datetime.datetime.strptime(date_str, '%Y-%m-%d_%H-%M')
                             if backup_date < threshold:
-                                shutil.rmtree(entry.path)
-                                backup_logger.info(f"Deleted old backup: {entry.path}")
+                                try:
+                                    shutil.rmtree(entry.path)
+                                    backup_logger.info(f"Deleted old backup: {entry.path}")
+                                except OSError as e:
+                                    backup_logger.error(f"Failed to delete old backup {entry.path}: {e}")
                         except ValueError:
                             pass
     except OSError as e:
