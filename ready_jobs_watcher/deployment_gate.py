@@ -202,8 +202,6 @@ class DeploymentGateManager:
 
         state["deployed"] = False
         state["parseReady"] = False
-        if not had_existing_state or not was_pending:
-            state["hiddenFromProduction"] = True
         state["selectedMode"] = self.normalize_mode(state.get("selectedMode") or MODE_UNKNOWN)
         state["modeDetection"] = {
             "candidate": self.normalize_mode(detected_mode),

@@ -23,7 +23,7 @@ class TestDeploymentGateManager(unittest.TestCase):
             self.assertFalse(state["parseReady"])
             self.assertEqual(state["modeDetection"]["candidate"], MODE_BOTH)
             self.assertEqual(state["modeDetection"]["source"], "DELIVERY_SHEET")
-            self.assertTrue(state["hiddenFromProduction"])
+            self.assertFalse(state["hiddenFromProduction"])
             self.assertIsNotNone(state["timers"]["autoReleaseAt"])
             self.assertIsNotNone(state["timers"]["lastActionAt"])
             self.assertFalse(gate.should_process_job_folder(os.path.join(root, job)))
