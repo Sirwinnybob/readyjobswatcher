@@ -689,92 +689,122 @@ class SettingsWindow(QWidget):
         if not job_folder_name:
             return
 
+        from .deployment_gate import derive_state
+
         state = self._get_job_row_by_name(job_folder_name) or {}
+        derived = derive_state(state)
         mode_detection = state.get("modeDetection", {}) if isinstance(state.get("modeDetection"), dict) else {}
         detected_mode = str(mode_detection.get("candidate") or "UNKNOWN")
         detected_source = str(mode_detection.get("source") or "UNKNOWN")
         selected_mode = str(state.get("selectedMode") or "UNKNOWN")
-        hidden_state = bool(state.get("hiddenFromProduction", False))
         default_mode = selected_mode if selected_mode and selected_mode != "UNKNOWN" else detected_mode
         if not default_mode:
             default_mode = "UNKNOWN"
 
+        eyebrow = "New job pending" if derived == "PENDING" else f"Released job ({derived})"
+
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"Pending Job: {job_folder_name}")
+        dialog.setObjectName("jobActionDialog")
+        dialog.setWindowTitle(f"Job: {job_folder_name}")
         dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        dialog.resize(540, 250)
+        dialog.resize(540, 260)
 
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel(f"New job is pending deployment:\n{job_folder_name}"))
+
+        eyebrow_label = QLabel(eyebrow)
+        eyebrow_label.setObjectName("dialogEyebrow")
+        layout.addWidget(eyebrow_label)
+        job_label = QLabel(job_folder_name)
+        job_label.setObjectName("dialogJobName")
+        layout.addWidget(job_label)
         layout.addWidget(QLabel(f"Detected mode: {detected_mode} ({detected_source})"))
-        hidden_status_label = QLabel()
-        hidden_status_label.setText(f"Hidden From Production: {'Yes' if hidden_state else 'No'}")
-        layout.addWidget(hidden_status_label)
 
         form = QFormLayout()
         mode_combo = QComboBox(dialog)
         mode_combo.setEditable(True)
         mode_combo.addItems(["FACE-FRAME", "FRAMELESS", "BOTH", "UNKNOWN"])
         mode_combo.setCurrentText(default_mode)
+        if derived != "PENDING":
+            mode_combo.setEnabled(False)
         form.addRow("Deploy Mode:", mode_combo)
         layout.addLayout(form)
 
         action_row = QHBoxLayout()
-        retry_btn = QPushButton("Retry 3 min")
-        remind_btn = QPushButton("Remind 15 min")
-        hide_btn = QPushButton("Hide")
-        visible_btn = QPushButton("Visible")
-        deploy_btn = QPushButton("DEPLOY")
-        cancel_btn = QPushButton("Cancel")
 
-        def _retry_action():
-            self.app_instance.retry_pending_job(job_folder_name)
-            self.refresh_jobs_dashboard()
-            dialog.accept()
+        if derived == "PENDING":
+            remind_label = QLabel("Remind in")
+            remind_spin = QSpinBox(dialog)
+            remind_spin.setRange(1, 720)
+            remind_spin.setValue(15)
+            remind_spin.setSuffix(" min")
+            snooze_btn = QPushButton("Snooze")
+            cancel_btn = QPushButton("Cancel")
+            release_btn = QPushButton("Release")
+            release_btn.setObjectName("primaryButton")
 
-        def _remind_action():
-            self.app_instance.remind_pending_job(job_folder_name)
-            self.refresh_jobs_dashboard()
-            dialog.accept()
+            def _snooze_action():
+                self.app_instance.remind_pending_job(job_folder_name, minutes=remind_spin.value())
+                self.refresh_jobs_dashboard()
+                dialog.accept()
 
-        def _deploy_action():
-            selected = mode_combo.currentText().strip() or "UNKNOWN"
-            import threading
-            threading.Thread(
-                target=self.app_instance.deploy_pending_job,
-                args=(job_folder_name, selected),
-                daemon=True,
-            ).start()
-            self.refresh_jobs_dashboard()
-            dialog.accept()
+            def _release_action():
+                selected = mode_combo.currentText().strip() or "UNKNOWN"
+                import threading
+                threading.Thread(
+                    target=self.app_instance.deploy_pending_job,
+                    args=(job_folder_name, selected),
+                    daemon=True,
+                ).start()
+                self.refresh_jobs_dashboard()
+                dialog.accept()
 
-        def _hide_action():
-            self.app_instance.set_job_hidden_from_production(job_folder_name, True)
-            hidden_status_label.setText("Hidden From Production: Yes")
-            self.refresh_jobs_dashboard()
+            snooze_btn.clicked.connect(_snooze_action)
+            cancel_btn.clicked.connect(dialog.reject)
+            release_btn.clicked.connect(_release_action)
 
-        def _visible_action():
-            self.app_instance.set_job_hidden_from_production(job_folder_name, False)
-            hidden_status_label.setText("Hidden From Production: No")
-            self.refresh_jobs_dashboard()
+            action_row.addWidget(remind_label)
+            action_row.addWidget(remind_spin)
+            action_row.addWidget(snooze_btn)
+            action_row.addStretch()
+            action_row.addWidget(cancel_btn)
+            action_row.addWidget(release_btn)
+        else:
+            reparse_btn = QPushButton("Re-parse")
+            cancel_btn = QPushButton("Cancel")
 
-        retry_btn.clicked.connect(_retry_action)
-        remind_btn.clicked.connect(_remind_action)
-        hide_btn.clicked.connect(_hide_action)
-        visible_btn.clicked.connect(_visible_action)
-        deploy_btn.clicked.connect(_deploy_action)
-        cancel_btn.clicked.connect(dialog.reject)
+            def _reparse_action():
+                reply = QMessageBox.question(
+                    dialog,
+                    "Re-parse Job",
+                    f"Are you sure you want to fully re-parse job '{job_folder_name}'?\n\n"
+                    "This will remove all generated metadata, GLBs, and dark mode PDFs, then re-process them.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    import threading
+                    threading.Thread(
+                        target=self.app_instance.reparse_job,
+                        args=(job_folder_name,),
+                        daemon=True,
+                    ).start()
+                    QMessageBox.information(
+                        dialog,
+                        "Re-parse Job",
+                        f"Re-parsing for job '{job_folder_name}' has been started in the background.",
+                    )
+                    self.refresh_jobs_dashboard()
+                    dialog.accept()
 
-        action_row.addWidget(retry_btn)
-        action_row.addWidget(remind_btn)
-        action_row.addWidget(hide_btn)
-        action_row.addWidget(visible_btn)
-        action_row.addStretch()
-        action_row.addWidget(cancel_btn)
-        action_row.addWidget(deploy_btn)
+            reparse_btn.clicked.connect(_reparse_action)
+            cancel_btn.clicked.connect(dialog.reject)
+
+            action_row.addWidget(reparse_btn)
+            action_row.addStretch()
+            action_row.addWidget(cancel_btn)
+
         layout.addLayout(action_row)
-
         dialog.exec()
 
     def _show_auto_release_dialog(self, job_folder_name: str):
