@@ -168,15 +168,21 @@ def _extract_section_name(line: str) -> Optional[str]:
 
 
 def _is_part_description(s: str) -> bool:
-    """A valid part description must contain at least one letter (filters diagram data)."""
-    return bool(re.search(r"[A-Za-z]", s))
+    """A valid part description must have at least 2 chars and contain a letter."""
+    return len(s) >= 2 and bool(re.search(r"[A-Za-z]", s))
+
+
+_QTY_WIDTH_PATTERN = re.compile(r"^(\d+)\s+(\d+\.?\d*)$")
+_NUMERIC_PATTERN = re.compile(r"^\d+\.?\d*$")
 
 
 def _parse_assembly_parts_for_page(text: str) -> List[dict]:
     """Extract the bill-of-materials from one assembly sheet page.
 
-    Each part is 5 consecutive non-empty lines: qty, width, length, description, material.
-    Stops within a section when lines no longer match that pattern (e.g. diagram data).
+    Supports two Cabinet Vision BOM line formats:
+      4-line: "qty width" on one line, then length, description, material
+      5-line: qty, width, length, description, material on separate lines
+    The 4-line format is tried first since it's more specific.
     """
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     parts: List[dict] = []
@@ -188,7 +194,34 @@ def _parse_assembly_parts_for_page(text: str) -> List[dict]:
             current_section = section
             i += 1
             continue
-        if current_section is None or i + 4 >= len(lines):
+        if current_section is None:
+            i += 1
+            continue
+
+        # 4-line format: "qty width" combined on one line
+        qty_width_m = _QTY_WIDTH_PATTERN.match(lines[i])
+        if qty_width_m and i + 3 < len(lines):
+            l_raw, desc_raw, mat_raw = lines[i + 1], lines[i + 2], lines[i + 3]
+            if (
+                _NUMERIC_PATTERN.match(l_raw)
+                and _is_part_description(desc_raw)
+                and _is_part_description(mat_raw)
+                and "|" not in mat_raw  # exclude section headers captured as material
+            ):
+                parts.append({
+                    "qty": int(qty_width_m.group(1)),
+                    "width": float(qty_width_m.group(2)),
+                    "length": float(l_raw),
+                    "description": desc_raw,
+                    "material": mat_raw,
+                    "sectionType": current_section,
+                    "isPurchased": False,
+                })
+                i += 4
+                continue
+
+        # 5-line format: qty, width, length, description, material on separate lines
+        if i + 4 >= len(lines):
             i += 1
             continue
         qty_raw, w_raw, l_raw, desc_raw, mat_raw = (
@@ -197,8 +230,8 @@ def _parse_assembly_parts_for_page(text: str) -> List[dict]:
         qty_m = re.match(r"^(\d+)(\s*P)?$", qty_raw)
         if (
             not qty_m
-            or not re.match(r"^\d+\.?\d*$", w_raw)
-            or not re.match(r"^\d+\.?\d*$", l_raw)
+            or not _NUMERIC_PATTERN.match(w_raw)
+            or not _NUMERIC_PATTERN.match(l_raw)
             or not _is_part_description(desc_raw)
             or not _is_part_description(mat_raw)
         ):
