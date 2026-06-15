@@ -111,21 +111,33 @@ Visual reference: approved mockup (`approach_c_mockup`).
   green `ACTIVE`) and the row is tinted to match.
 - Toolbar trimmed to a single **Refresh** button. Removed: Deploy Selected,
   Re-parse Selected, Retry, Remind, Hide Selected, Unhide Selected, both
-  Selected/Detected mode comboboxes and their Set buttons.
+  Selected/Detected mode comboboxes and their Set buttons. (Re-parse is not
+  deleted — it moves into the state-aware row dialog; see below.)
 - **Double-clicking a row** opens the job action dialog (the same dialog used for
   the auto-popup). All per-job actions live there.
 
 ### Job Action Dialog (`_show_pending_job_prompt_dialog`, reused for double-click)
 
-- Header: orange eyebrow ("New job pending" / context label) + bold job folder
-  name.
+The dialog is **state-aware**: its action row depends on the derived state of
+the job it was opened for.
+
+Common header/body for all states:
+- Header: orange eyebrow (state label, e.g. "New job pending" / "Released job") +
+  bold job folder name.
 - Info grid: Detected mode, Detection source.
 - Deploy-mode selector (FACE-FRAME / FRAMELESS / BOTH / UNKNOWN), defaulting to
   selected-or-detected mode as today.
-- Action row, left to right: **Remind in [N] min** spinbox + **Snooze** button |
-  spacer | **Cancel** | **Release** (orange primary).
-- Removed from the dialog: Retry, Hide, Visible buttons.
-- "DEPLOY" relabeled "Release".
+
+Action row by state:
+- **PENDING** (`deployed == False`): **Remind in [N] min** spinbox + **Snooze** |
+  spacer | **Cancel** | **Release** (orange primary). "DEPLOY" relabeled
+  "Release".
+- **PARSING / ACTIVE** (`deployed == True`): **Re-parse** (with the existing
+  confirmation prompt) | spacer | **Cancel**. No Release/Snooze — the job is
+  already released. The mode selector is shown read-only/informational here (a
+  released job's mode is already committed).
+
+Removed from the dialog entirely: Retry, Hide, Visible buttons.
 
 ### Styling (QSS)
 
