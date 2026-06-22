@@ -20,6 +20,10 @@ def test_bad_parts_tab_has_splitter_and_tables():
     assert hasattr(window, 'unack_table_widget')
     assert hasattr(window, 'ack_table_widget')
     assert hasattr(window, 'bad_part_preview_label')
+    
+    # Verify column count is 6 (Job, Material, Cabinet, Page, Part #, Part Name)
+    assert window.unack_table_widget.columnCount() == 6
+    assert window.ack_table_widget.columnCount() == 6
 
 def test_refresh_populates_records():
     app = QApplication.instance() or QApplication([])
@@ -76,6 +80,9 @@ def test_select_row_displays_details_without_crashing():
     
     window.alert_coordinator = DummyAlertCoord()
     window.refresh_bad_parts()
+    
+    # Check that row is populated with cabinet number (column index 2)
+    assert window.unack_table_widget.item(0, 2).text() == "10"
     
     # Select the first row
     window.unack_table_widget.selectRow(0)

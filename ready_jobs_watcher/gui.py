@@ -21,6 +21,87 @@ from PyQt6.QtCore import QTimer
 from .alert_coordinator import AlertBatch
 from .tracker_bad_parts import BadPartDetailRecord, TrackerBadPartKey
 
+def render_pdf_page_to_pixmap(pdf_full_path: str, page_num: int, thumbnail_path: Optional[str], highlight_rect: Optional[tuple], zoom: float = 2.5) -> Optional[QPixmap]:
+    """
+    Renders a page of a PDF file to a QPixmap at a high resolution.
+    If the PDF file is unavailable, falls back to loading the thumbnail image.
+    Scales the highlight rectangle to match the rendered image's resolution.
+    """
+    import os
+    from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
+    
+    # 1. Try to load thumbnail size for coordinate scaling
+    thumb_width = None
+    thumb_height = None
+    if thumbnail_path and os.path.exists(thumbnail_path):
+        thumb_pixmap = QPixmap(thumbnail_path)
+        if not thumb_pixmap.isNull():
+            thumb_width = thumb_pixmap.width()
+            thumb_height = thumb_pixmap.height()
+
+    pixmap = None
+    pdf_loaded = False
+    
+    # 2. Try to render from PDF
+    if pdf_full_path and os.path.exists(pdf_full_path):
+        try:
+            import fitz
+            doc = fitz.open(pdf_full_path)
+            page_idx = page_num - 1
+            if 0 <= page_idx < len(doc):
+                page = doc.load_page(page_idx)
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                qimg = QImage(
+                    pix.samples,
+                    pix.width,
+                    pix.height,
+                    pix.stride,
+                    QImage.Format.Format_RGB888
+                )
+                pixmap = QPixmap.fromImage(qimg)
+                pdf_loaded = True
+                
+                # Scale highlight box if needed
+                if highlight_rect and thumb_width and thumb_height:
+                    pdf_w = page.rect.width
+                    pdf_h = page.rect.height
+                    factor_x = (pdf_w * zoom) / thumb_width
+                    factor_y = (pdf_h * zoom) / thumb_height
+                    
+                    left, top, right, bottom = highlight_rect
+                    highlight_rect = (
+                        int(left * factor_x),
+                        int(top * factor_y),
+                        int(right * factor_x),
+                        int(bottom * factor_y)
+                    )
+        except Exception as e:
+            import logging
+            logging.error(f"Error rendering PDF page: {e}")
+
+    # 3. Fallback to thumbnail
+    if not pdf_loaded:
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            pixmap = QPixmap(thumbnail_path)
+
+    # 4. Draw highlight box
+    if pixmap and not pixmap.isNull():
+        if highlight_rect:
+            left, top, right, bottom = highlight_rect
+            painter = QPainter(pixmap)
+            # Use slightly thicker line for high-resolution images
+            pen_width = 8 if pdf_loaded else 6
+            pen = QPen(QColor(255, 60, 60))
+            pen.setWidth(pen_width)
+            painter.setPen(pen)
+            painter.drawRect(left, top, max(1, right - left), max(1, bottom - top))
+            painter.end()
+        return pixmap
+        
+    return None
+
+
 class LogSignal(QObject):
     new_log = pyqtSignal(str)
 
@@ -104,22 +185,15 @@ class BadPartPreviewDialog(QDialog):
         return f"Size: {size}   Cabinet: {cab}   Room: {room}"
 
     def _load_preview(self):
-        if not self.record.thumbnail_path:
-            self.image_label.setText("Preview unavailable: no thumbnail metadata for this page.")
+        pixmap = render_pdf_page_to_pixmap(
+            self.record.pdf_full_path,
+            self.record.page,
+            self.record.thumbnail_path,
+            self.record.highlight_rect
+        )
+        if pixmap is None or pixmap.isNull():
+            self.image_label.setText("Preview unavailable: could not load PDF page or thumbnail.")
             return
-        pixmap = QPixmap(self.record.thumbnail_path)
-        if pixmap.isNull():
-            self.image_label.setText("Preview unavailable: thumbnail image could not be loaded.")
-            return
-
-        if self.record.highlight_rect:
-            left, top, right, bottom = self.record.highlight_rect
-            painter = QPainter(pixmap)
-            pen = QPen(QColor(255, 60, 60))
-            pen.setWidth(6)
-            painter.setPen(pen)
-            painter.drawRect(left, top, max(1, right - left), max(1, bottom - top))
-            painter.end()
 
         self.image_label.setPixmap(pixmap)
         self.image_label.adjustSize()
@@ -852,14 +926,14 @@ class SettingsWindow(QWidget):
         # Left Widget: QTabWidget for Unacknowledged/Acknowledged tables
         self.bad_parts_left_tabs = QTabWidget()
         
-        # Headers: ["Job", "Material", "Page", "Part #", "Part Name"]
-        headers = ["Job", "Material", "Page", "Part #", "Part Name"]
+        # Headers: ["Job", "Material", "Cabinet", "Page", "Part #", "Part Name"]
+        headers = ["Job", "Material", "Cabinet", "Page", "Part #", "Part Name"]
 
-        self.unack_table_widget = QTableWidget(0, 5)
+        self.unack_table_widget = QTableWidget(0, 6)
         self.unack_table_widget.setHorizontalHeaderLabels(headers)
         self._configure_parts_table(self.unack_table_widget)
 
-        self.ack_table_widget = QTableWidget(0, 5)
+        self.ack_table_widget = QTableWidget(0, 6)
         self.ack_table_widget.setHorizontalHeaderLabels(headers)
         self._configure_parts_table(self.ack_table_widget)
 
@@ -965,9 +1039,11 @@ class SettingsWindow(QWidget):
         for row_index, record in enumerate(records):
             table.setItem(row_index, 0, QTableWidgetItem(record.key.job_folder_name))
             table.setItem(row_index, 1, QTableWidgetItem(record.material))
-            table.setItem(row_index, 2, QTableWidgetItem(str(record.page)))
-            table.setItem(row_index, 3, QTableWidgetItem(str(record.part_number)))
-            table.setItem(row_index, 4, QTableWidgetItem(record.part_name))
+            cab_val = str(record.cabinet_number) if record.cabinet_number is not None else "-"
+            table.setItem(row_index, 2, QTableWidgetItem(cab_val))
+            table.setItem(row_index, 3, QTableWidgetItem(str(record.page)))
+            table.setItem(row_index, 4, QTableWidgetItem(str(record.part_number)))
+            table.setItem(row_index, 5, QTableWidgetItem(record.part_name))
         table.blockSignals(False)
 
     def _on_bad_part_selection_changed(self):
@@ -1054,22 +1130,15 @@ class SettingsWindow(QWidget):
         self.ack_part_btn.setEnabled(current_tab_index == 0)
         self.unack_part_btn.setEnabled(current_tab_index == 1)
 
-        if not record.thumbnail_path:
-            self.bad_part_preview_label.setText("Preview unavailable: no thumbnail metadata for this page.")
+        pixmap = render_pdf_page_to_pixmap(
+            record.pdf_full_path,
+            record.page,
+            record.thumbnail_path,
+            record.highlight_rect
+        )
+        if pixmap is None or pixmap.isNull():
+            self.bad_part_preview_label.setText("Preview unavailable: could not load PDF page or thumbnail.")
             return
-        pixmap = QPixmap(record.thumbnail_path)
-        if pixmap.isNull():
-            self.bad_part_preview_label.setText("Preview unavailable: thumbnail image could not be loaded.")
-            return
-
-        if record.highlight_rect:
-            left, top, right, bottom = record.highlight_rect
-            painter = QPainter(pixmap)
-            pen = QPen(QColor(255, 60, 60))
-            pen.setWidth(6)
-            painter.setPen(pen)
-            painter.drawRect(left, top, max(1, right - left), max(1, bottom - top))
-            painter.end()
 
         self.bad_part_preview_label.setPixmap(pixmap)
 
