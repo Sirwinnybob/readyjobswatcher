@@ -726,7 +726,7 @@ class Application:
 
     def _is_process_running(self, pid):
         """
-        Check if a process with given PID is running.
+        Check if a process with given PID is running and is a python process.
 
         Args:
             pid (int): The process ID to check.
@@ -735,14 +735,20 @@ class Application:
             bool: True if running, False otherwise.
         """
         try:
-            # On Windows, try to open the process
+            # On Windows, try to open the process and check its image name
             import ctypes
+            from ctypes import wintypes
             kernel32 = ctypes.windll.kernel32
-            PROCESS_QUERY_INFORMATION = 0x0400
-            handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if handle:
+                size = wintypes.DWORD(1024)
+                buf = ctypes.create_unicode_buffer(1024)
+                res = kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
                 kernel32.CloseHandle(handle)
-                return True
+                if res:
+                    exe_name = buf.value.lower()
+                    return 'python' in exe_name
             return False
         except Exception:
             # If we can't check, assume it's not running
