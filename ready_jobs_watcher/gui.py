@@ -659,12 +659,14 @@ class SettingsWindow(QWidget):
             QMessageBox.warning(self, "Bad Parts", "Alert coordinator is not initialized.")
             return
 
-        if self.bad_parts_center_dialog is None:
-            self.bad_parts_center_dialog = BadPartsCenterDialog(self, parent=self)
-        self.bad_parts_center_dialog.refresh_data()
-        self.bad_parts_center_dialog.show()
-        self.bad_parts_center_dialog.raise_()
-        self.bad_parts_center_dialog.activateWindow()
+        self.show_window()
+        self.refresh_bad_parts()
+        
+        # Locate the tab index of "Bad Parts"
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "Bad Parts":
+                self.tabs.setCurrentIndex(i)
+                break
 
     def emit_bad_parts_alert(self, batch: AlertBatch):
         self.alert_signal.new_batch.emit(batch)
@@ -928,94 +930,20 @@ class SettingsWindow(QWidget):
         if not records:
             return
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"BAD PART ALERT ({len(records)})")
-        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        dialog.resize(1480, 650)
-
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(
-            QLabel(
-                "New bad parts were detected from tracker data.\n"
-                "Review and acknowledge all or selected rows."
-            )
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("BAD PART ALERT")
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setText(
+            f"New bad parts were detected from tracker data ({len(records)} parts).\n"
+            "Would you like to view them in the Bad Parts Center?"
         )
-
-        headers = ["Job", "Material", "PDF", "Page", "Part #", "Part Name", "Size", "Cabinet", "Room", "Detected", "View"]
-        table = QTableWidget(len(records), len(headers), dialog)
-        table.setHorizontalHeaderLabels(headers)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
-        table.setSortingEnabled(False)
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-
-        def _size_text(record: BadPartDetailRecord) -> str:
-            if record.width is None or record.length is None:
-                return "-"
-            return f'{record.width:.3f}" x {record.length:.3f}"'
-
-        for row_index, record in enumerate(records):
-            table.setItem(row_index, 0, QTableWidgetItem(record.key.job_folder_name))
-            table.setItem(row_index, 1, QTableWidgetItem(record.material))
-            table.setItem(row_index, 2, QTableWidgetItem(record.pdf_filename))
-            table.setItem(row_index, 3, QTableWidgetItem(str(record.page)))
-            table.setItem(row_index, 4, QTableWidgetItem(str(record.part_number)))
-            table.setItem(row_index, 5, QTableWidgetItem(record.part_name))
-            table.setItem(row_index, 6, QTableWidgetItem(_size_text(record)))
-            table.setItem(row_index, 7, QTableWidgetItem(str(record.cabinet_number) if record.cabinet_number is not None else "-"))
-            table.setItem(row_index, 8, QTableWidgetItem(record.room or "-"))
-            table.setItem(row_index, 9, QTableWidgetItem(record.detected_at or "-"))
-            view_btn = QPushButton("View Page")
-            view_btn.clicked.connect(lambda _, rec=record: self.show_part_preview(rec))
-            table.setCellWidget(row_index, 10, view_btn)
-
-        layout.addWidget(table)
-
-        actions = QHBoxLayout()
-        actions.addStretch()
-
-        acknowledge_btn = QPushButton("Acknowledge All")
-        acknowledge_selected_btn = QPushButton("Acknowledge Selected")
-        dismiss_btn = QPushButton("Dismiss")
-
-        def _acknowledge_and_close():
-            if self.alert_coordinator:
-                self.alert_coordinator.acknowledge_batch(batch)
-            dialog.accept()
-
-        def _acknowledge_selected_and_close():
-            selection = table.selectionModel()
-            if selection is None:
-                QMessageBox.information(dialog, "Bad Parts", "Select at least one row.")
-                return
-            row_indexes = sorted({index.row() for index in selection.selectedRows()})
-            if not row_indexes:
-                QMessageBox.information(dialog, "Bad Parts", "Select at least one row.")
-                return
-            keys: List[TrackerBadPartKey] = []
-            for row in row_indexes:
-                if 0 <= row < len(records):
-                    keys.append(records[row].key)
-            if not keys:
-                QMessageBox.information(dialog, "Bad Parts", "No selectable records found.")
-                return
-            self.alert_coordinator.acknowledge_keys(keys)
-            dialog.accept()
-
-        acknowledge_btn.clicked.connect(_acknowledge_and_close)
-        acknowledge_selected_btn.clicked.connect(_acknowledge_selected_and_close)
-        dismiss_btn.clicked.connect(dialog.reject)
-
-        actions.addWidget(dismiss_btn)
-        actions.addWidget(acknowledge_selected_btn)
-        actions.addWidget(acknowledge_btn)
-        layout.addLayout(actions)
-        dialog.exec()
+        view_btn = msg_box.addButton("View in Bad Parts Center", QMessageBox.ButtonRole.AcceptRole)
+        dismiss_btn = msg_box.addButton("Dismiss", QMessageBox.ButtonRole.RejectRole)
+        
+        msg_box.exec()
+        
+        if msg_box.clickedButton() == view_btn:
+            self.show_bad_parts_center()
 
     def trigger_test_bad_parts_alert(self):
         if self.alert_coordinator:

@@ -28,3 +28,18 @@ def test_refresh_populates_records():
     # Assert refresh method exists and runs without crashing
     assert hasattr(window, 'refresh_bad_parts')
     window.refresh_bad_parts()
+
+def test_show_bad_parts_center_switches_tab():
+    app = QApplication.instance() or QApplication([])
+    config = Config()
+    window = SettingsWindow(config)
+    
+    # Mock alert_coordinator
+    class DummyAlertCoord:
+        def get_bad_parts_snapshot(self, include_resolved):
+            return {"unacknowledged": [], "acknowledged": []}
+    window.alert_coordinator = DummyAlertCoord()
+    
+    window.show_bad_parts_center()
+    active_tab_text = window.tabs.tabText(window.tabs.currentIndex())
+    assert active_tab_text == "Bad Parts"
