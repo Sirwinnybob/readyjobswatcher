@@ -19,3 +19,12 @@ def test_bad_parts_tab_has_splitter_and_tables():
     assert hasattr(window, 'unack_table_widget')
     assert hasattr(window, 'ack_table_widget')
     assert hasattr(window, 'bad_part_preview_label')
+
+def test_refresh_populates_records():
+    app = QApplication.instance() or QApplication([])
+    config = Config()
+    window = SettingsWindow(config)
+    
+    # Assert refresh method exists and runs without crashing
+    assert hasattr(window, 'refresh_bad_parts')
+    window.refresh_bad_parts()

@@ -47,8 +47,14 @@ class QtLogHandler(logging.Handler):
         self.log_signal = log_signal
 
     def emit(self, record):
-        log_entry = self.format(record)
-        self.log_signal.new_log.emit(log_entry)
+        try:
+            log_entry = self.format(record)
+            self.log_signal.new_log.emit(log_entry)
+        except RuntimeError:
+            try:
+                logging.getLogger().removeHandler(self)
+            except Exception:
+                pass
 
 
 class BadPartPreviewDialog(QDialog):
@@ -266,6 +272,8 @@ class SettingsWindow(QWidget):
         self.alert_coordinator = None
         self.bad_parts_center_dialog = None
         self.jobs_table = None
+        self.unack_records: List[BadPartDetailRecord] = []
+        self.ack_records: List[BadPartDetailRecord] = []
 
         self.qt_handler = QtLogHandler(self.log_signal)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -633,6 +641,7 @@ class SettingsWindow(QWidget):
 
     def set_alert_coordinator(self, alert_coordinator):
         self.alert_coordinator = alert_coordinator
+        self.refresh_bad_parts()
 
     def show_part_preview(self, record: BadPartDetailRecord):
         dialog = BadPartPreviewDialog(record, parent=self)
@@ -1034,7 +1043,7 @@ class SettingsWindow(QWidget):
         tab_layout.addWidget(splitter)
 
         # Left Widget: QTabWidget for Unacknowledged/Acknowledged tables
-        left_tabs = QTabWidget()
+        self.bad_parts_left_tabs = QTabWidget()
         
         # Headers: ["Job", "Material", "Page", "Part #", "Part Name"]
         headers = ["Job", "Material", "Page", "Part #", "Part Name"]
@@ -1047,9 +1056,9 @@ class SettingsWindow(QWidget):
         self.ack_table_widget.setHorizontalHeaderLabels(headers)
         self._configure_parts_table(self.ack_table_widget)
 
-        left_tabs.addTab(self.unack_table_widget, "Unacknowledged")
-        left_tabs.addTab(self.ack_table_widget, "Acknowledged")
-        splitter.addWidget(left_tabs)
+        self.bad_parts_left_tabs.addTab(self.unack_table_widget, "Unacknowledged")
+        self.bad_parts_left_tabs.addTab(self.ack_table_widget, "Acknowledged")
+        splitter.addWidget(self.bad_parts_left_tabs)
 
         # Right Widget: Preview & Details
         right_widget = QWidget()
@@ -1096,6 +1105,10 @@ class SettingsWindow(QWidget):
         # Let's connect Scan CNC to existing method:
         self.scan_cnc_btn.clicked.connect(self.trigger_scan_cnc)
 
+        self.ack_part_btn.clicked.connect(self.acknowledge_selected_part)
+        self.unack_part_btn.clicked.connect(self.unacknowledge_selected_part)
+        self.refresh_parts_btn.clicked.connect(self.refresh_bad_parts)
+
         actions_layout.addWidget(self.ack_part_btn)
         actions_layout.addWidget(self.unack_part_btn)
         actions_layout.addWidget(self.refresh_parts_btn)
@@ -1110,6 +1123,13 @@ class SettingsWindow(QWidget):
 
         self.tabs.addTab(tab, "Bad Parts")
 
+        # Hook signals
+        self.unack_table_widget.itemSelectionChanged.connect(self._on_bad_part_selection_changed)
+        self.ack_table_widget.itemSelectionChanged.connect(self._on_bad_part_selection_changed)
+        self.bad_parts_left_tabs.currentChanged.connect(self._on_bad_parts_tab_changed)
+
+        self._clear_bad_part_details()
+
     def _configure_parts_table(self, table: QTableWidget):
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1119,6 +1139,150 @@ class SettingsWindow(QWidget):
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setStretchLastSection(True)
+
+    def refresh_bad_parts(self):
+        if self.alert_coordinator is None:
+            return
+        snapshot = self.alert_coordinator.get_bad_parts_snapshot(include_resolved=False)
+        self.unack_records = list(snapshot.get("unacknowledged", []))
+        self.ack_records = list(snapshot.get("acknowledged", []))
+        self._populate_parts_table(self.unack_table_widget, self.unack_records)
+        self._populate_parts_table(self.ack_table_widget, self.ack_records)
+        self.bad_parts_left_tabs.setTabText(0, f"Unacknowledged ({len(self.unack_records)})")
+        self.bad_parts_left_tabs.setTabText(1, f"Acknowledged ({len(self.ack_records)})")
+
+    def _populate_parts_table(self, table: QTableWidget, records: List[BadPartDetailRecord]):
+        # Temporarily block signals to avoid triggering selection change while populating
+        table.blockSignals(True)
+        table.setRowCount(len(records))
+        for row_index, record in enumerate(records):
+            table.setItem(row_index, 0, QTableWidgetItem(record.key.job_folder_name))
+            table.setItem(row_index, 1, QTableWidgetItem(record.material))
+            table.setItem(row_index, 2, QTableWidgetItem(str(record.page)))
+            table.setItem(row_index, 3, QTableWidgetItem(str(record.part_number)))
+            table.setItem(row_index, 4, QTableWidgetItem(record.part_name))
+        table.blockSignals(False)
+
+    def _on_bad_part_selection_changed(self):
+        # Determine which table is active based on the current tab
+        current_tab_index = self.bad_parts_left_tabs.currentIndex()
+        if current_tab_index == 0:
+            active_table = self.unack_table_widget
+            records = self.unack_records
+        else:
+            active_table = self.ack_table_widget
+            records = self.ack_records
+
+        selected_rows = active_table.selectionModel().selectedRows()
+        if not selected_rows:
+            self._clear_bad_part_details()
+            return
+        
+        row = selected_rows[0].row()
+        if row < 0 or row >= len(records):
+            self._clear_bad_part_details()
+            return
+
+        record = records[row]
+        self._display_bad_part_detail(record)
+
+    def _on_bad_parts_tab_changed(self, index):
+        # Clear selection on both tables first, then select first row if available
+        self.unack_table_widget.blockSignals(True)
+        self.ack_table_widget.blockSignals(True)
+        self.unack_table_widget.clearSelection()
+        self.ack_table_widget.clearSelection()
+        self.unack_table_widget.blockSignals(False)
+        self.ack_table_widget.blockSignals(False)
+
+        if index == 0:
+            if self.unack_table_widget.rowCount() > 0:
+                self.unack_table_widget.selectRow(0)
+            else:
+                self._clear_bad_part_details()
+        else:
+            if self.ack_table_widget.rowCount() > 0:
+                self.ack_table_widget.selectRow(0)
+            else:
+                self._clear_bad_part_details()
+
+    def _clear_bad_part_details(self):
+        self.bad_part_preview_label.setText("No part selected.")
+        self.bad_part_preview_label.setPixmap(QPixmap())
+        self.bad_part_job_lbl.setText("-")
+        self.bad_part_material_lbl.setText("-")
+        self.bad_part_pdf_lbl.setText("-")
+        self.bad_part_page_part_lbl.setText("-")
+        self.bad_part_size_lbl.setText("-")
+        self.bad_part_location_lbl.setText("-")
+        self.bad_part_detected_lbl.setText("-")
+        self.ack_part_btn.setEnabled(False)
+        self.unack_part_btn.setEnabled(False)
+
+    def _display_bad_part_detail(self, record: BadPartDetailRecord):
+        self.bad_part_job_lbl.setText(record.key.job_folder_name)
+        self.bad_part_material_lbl.setText(record.material)
+        self.bad_part_pdf_lbl.setText(record.pdf_filename)
+        
+        page_part_str = f"Page {record.page} / Part {record.part_number}"
+        if record.part_name:
+            page_part_str += f" ({record.part_name})"
+        self.bad_part_page_part_lbl.setText(page_part_str)
+        
+        self.bad_part_size_lbl.setText(self._size_text(record))
+        
+        cab_str = str(record.cabinet_number) if record.cabinet_number is not None else "-"
+        room_str = record.room or "-"
+        self.bad_part_location_lbl.setText(f"Cabinet: {cab_str}  Room: {room_str}")
+        
+        self.bad_part_detected_lbl.setText(record.detected_at or "-")
+
+        current_tab_index = self.bad_parts_left_tabs.currentIndex()
+        self.ack_part_btn.setEnabled(current_tab_index == 0)
+        self.unack_part_btn.setEnabled(current_tab_index == 1)
+
+        if not record.thumbnail_path:
+            self.bad_part_preview_label.setText("Preview unavailable: no thumbnail metadata for this page.")
+            return
+        pixmap = QPixmap(record.thumbnail_path)
+        if pixmap.isNull():
+            self.bad_part_preview_label.setText("Preview unavailable: thumbnail image could not be loaded.")
+            return
+
+        if record.highlight_rect:
+            left, top, right, bottom = record.highlight_rect
+            painter = QPainter(pixmap)
+            pen = QPen(QColor(255, 60, 60))
+            pen.setWidth(6)
+            painter.setPen(pen)
+            painter.drawRect(left, top, max(1, right - left), max(1, bottom - top))
+            painter.end()
+
+        self.bad_part_preview_label.setPixmap(pixmap)
+
+    def acknowledge_selected_part(self):
+        selected_rows = self.unack_table_widget.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+        row = selected_rows[0].row()
+        if row < 0 or row >= len(self.unack_records):
+            return
+        record = self.unack_records[row]
+        if self.alert_coordinator:
+            self.alert_coordinator.acknowledge_keys([record.key])
+            self.refresh_bad_parts()
+
+    def unacknowledge_selected_part(self):
+        selected_rows = self.ack_table_widget.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+        row = selected_rows[0].row()
+        if row < 0 or row >= len(self.ack_records):
+            return
+        record = self.ack_records[row]
+        if self.alert_coordinator:
+            self.alert_coordinator.unacknowledge_keys([record.key])
+            self.refresh_bad_parts()
 
     def append_log(self, text):
         self.log_output.moveCursor(QTextCursor.MoveOperation.End)
