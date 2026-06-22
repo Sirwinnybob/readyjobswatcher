@@ -1026,6 +1026,12 @@ class SettingsWindow(QWidget):
         self.ack_part_btn.setEnabled(False)
         self.unack_part_btn.setEnabled(False)
 
+    @staticmethod
+    def _size_text(record: BadPartDetailRecord) -> str:
+        if record.width is None or record.length is None:
+            return "-"
+        return f'{record.width:.3f}" x {record.length:.3f}"'
+
     def _display_bad_part_detail(self, record: BadPartDetailRecord):
         self.bad_part_job_lbl.setText(record.key.job_folder_name)
         self.bad_part_material_lbl.setText(record.material)
