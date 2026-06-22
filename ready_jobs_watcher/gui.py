@@ -12,15 +12,14 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTabWidget, QListWidget, QTimeEdit, QSpinBox, QTextEdit, QMessageBox,
     QFormLayout, QGroupBox, QInputDialog, QCheckBox, QComboBox, QDialog,
-    QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QScrollArea
+    QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QScrollArea,
+    QSplitter, QGridLayout
 )
 from PyQt6.QtCore import QTime, QObject, pyqtSignal, Qt
 from PyQt6.QtGui import QTextCursor, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtCore import QTimer
 from .alert_coordinator import AlertBatch
 from .tracker_bad_parts import BadPartDetailRecord, TrackerBadPartKey
-
-main_logger = logging.getLogger('main')
 
 class LogSignal(QObject):
     new_log = pyqtSignal(str)
@@ -294,6 +293,7 @@ class SettingsWindow(QWidget):
         self.setup_actions_tab()
         self.setup_jobs_tab()
         self.setup_log_tab()
+        self.setup_bad_parts_tab()
 
         # Bottom Buttons
         button_layout = QHBoxLayout()
@@ -531,6 +531,9 @@ class SettingsWindow(QWidget):
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_jobs_dashboard)
         actions.addWidget(refresh_btn)
+        rename_btn = QPushButton("Rename Job")
+        rename_btn.clicked.connect(self.trigger_rename_job)
+        actions.addWidget(rename_btn)
         actions.addStretch()
         layout.addLayout(actions)
 
@@ -568,6 +571,65 @@ class SettingsWindow(QWidget):
             from ready_jobs_watcher.pdf_dark_mode import process_directory
             threading.Thread(target=process_directory, args=(self.config.ROOT_DIR, True), daemon=True).start()
             QMessageBox.information(self, "Convert", "Forced PDF conversion started.")
+
+    def trigger_rename_job(self):
+        job_folder_name = self._selected_job_folder_name()
+        if not job_folder_name:
+            QMessageBox.warning(self, "Rename Job", "Please select a job to rename from the list.")
+            return
+
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename Job",
+            f"Enter new name for folder '{job_folder_name}':",
+            QLineEdit.EchoMode.Normal,
+            job_folder_name
+        )
+        if not ok or not new_name.strip():
+            return
+
+        new_name = new_name.strip()
+        if new_name == job_folder_name:
+            return
+
+        # Check for invalid characters in folder name
+        invalid_chars = '<>:"/\\|?*'
+        if any(c in new_name for c in invalid_chars):
+            QMessageBox.critical(
+                self,
+                "Rename Job",
+                f"Invalid folder name. It cannot contain any of the following characters: {invalid_chars}"
+            )
+            return
+
+        import os
+        old_path = os.path.join(self.config.ROOT_DIR, job_folder_name)
+        new_path = os.path.join(self.config.ROOT_DIR, new_name)
+
+        if os.path.exists(new_path):
+            QMessageBox.critical(
+                self,
+                "Rename Job",
+                f"A folder or file named '{new_name}' already exists."
+            )
+            return
+
+        try:
+            os.rename(old_path, new_path)
+            # The folder renaming on disk will trigger the watchdog.
+            # But let's also force a dashboard refresh immediately.
+            self.refresh_jobs_dashboard()
+            QMessageBox.information(
+                self,
+                "Rename Job",
+                f"Job successfully renamed to '{new_name}'."
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Rename Job",
+                f"Failed to rename job folder on disk:\n{exc}"
+            )
 
     def set_alert_coordinator(self, alert_coordinator):
         self.alert_coordinator = alert_coordinator
@@ -963,6 +1025,10 @@ class SettingsWindow(QWidget):
 
         self.tabs.addTab(tab, "Running Log")
 
+    def setup_bad_parts_tab(self):
+        tab = QWidget()
+        self.tabs.addTab(tab, "Bad Parts")
+
     def append_log(self, text):
         self.log_output.moveCursor(QTextCursor.MoveOperation.End)
         self.log_output.insertPlainText(text + "\n")
@@ -1044,17 +1110,8 @@ class SettingsWindow(QWidget):
             pass
 
     def show_window(self):
-        if self.app_instance:
-            self.app_instance.PAUSE_PROCESSING = True
-            main_logger.info("Paused background processing while settings are open.")
         self.update_status()
         self.show()
         self.raise_()
         self.activateWindow()
-
-    def closeEvent(self, event):
-        if self.app_instance:
-            self.app_instance.PAUSE_PROCESSING = False
-            main_logger.info("Resumed background processing.")
-        super().closeEvent(event)
 
