@@ -1027,7 +1027,98 @@ class SettingsWindow(QWidget):
 
     def setup_bad_parts_tab(self):
         tab = QWidget()
+        tab_layout = QHBoxLayout(tab)
+
+        # Create horizontal splitter
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        tab_layout.addWidget(splitter)
+
+        # Left Widget: QTabWidget for Unacknowledged/Acknowledged tables
+        left_tabs = QTabWidget()
+        
+        # Headers: ["Job", "Material", "Page", "Part #", "Part Name"]
+        headers = ["Job", "Material", "Page", "Part #", "Part Name"]
+
+        self.unack_table_widget = QTableWidget(0, 5)
+        self.unack_table_widget.setHorizontalHeaderLabels(headers)
+        self._configure_parts_table(self.unack_table_widget)
+
+        self.ack_table_widget = QTableWidget(0, 5)
+        self.ack_table_widget.setHorizontalHeaderLabels(headers)
+        self._configure_parts_table(self.ack_table_widget)
+
+        left_tabs.addTab(self.unack_table_widget, "Unacknowledged")
+        left_tabs.addTab(self.ack_table_widget, "Acknowledged")
+        splitter.addWidget(left_tabs)
+
+        # Right Widget: Preview & Details
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+
+        # QScrollArea wrapping bad_part_preview_label
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.bad_part_preview_label = QLabel("No part selected.")
+        self.bad_part_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.bad_part_preview_label.setStyleSheet("background: #1e1e1e; color: #f0f0f0; padding: 12px;")
+        scroll.setWidget(self.bad_part_preview_label)
+        right_layout.addWidget(scroll, 1)
+
+        # Metadata GroupBox
+        meta_group = QGroupBox("Part Details")
+        form_layout = QFormLayout(meta_group)
+
+        self.bad_part_job_lbl = QLabel("-")
+        self.bad_part_material_lbl = QLabel("-")
+        self.bad_part_pdf_lbl = QLabel("-")
+        self.bad_part_page_part_lbl = QLabel("-")
+        self.bad_part_size_lbl = QLabel("-")
+        self.bad_part_location_lbl = QLabel("-")
+        self.bad_part_detected_lbl = QLabel("-")
+
+        form_layout.addRow("Job:", self.bad_part_job_lbl)
+        form_layout.addRow("Material:", self.bad_part_material_lbl)
+        form_layout.addRow("PDF Filename:", self.bad_part_pdf_lbl)
+        form_layout.addRow("Page / Part:", self.bad_part_page_part_lbl)
+        form_layout.addRow("Dimensions:", self.bad_part_size_lbl)
+        form_layout.addRow("Location:", self.bad_part_location_lbl)
+        form_layout.addRow("Detected At:", self.bad_part_detected_lbl)
+
+        right_layout.addWidget(meta_group)
+
+        # Actions row
+        actions_layout = QHBoxLayout()
+        self.ack_part_btn = QPushButton("Acknowledge")
+        self.unack_part_btn = QPushButton("Unacknowledge")
+        self.refresh_parts_btn = QPushButton("Refresh")
+        self.scan_cnc_btn = QPushButton("Scan CNC")
+
+        # Let's connect Scan CNC to existing method:
+        self.scan_cnc_btn.clicked.connect(self.trigger_scan_cnc)
+
+        actions_layout.addWidget(self.ack_part_btn)
+        actions_layout.addWidget(self.unack_part_btn)
+        actions_layout.addWidget(self.refresh_parts_btn)
+        actions_layout.addWidget(self.scan_cnc_btn)
+
+        right_layout.addLayout(actions_layout)
+        splitter.addWidget(right_widget)
+
+        # Set stretch factor so splitter is balanced
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+
         self.tabs.addTab(tab, "Bad Parts")
+
+    def _configure_parts_table(self, table: QTableWidget):
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
 
     def append_log(self, text):
         self.log_output.moveCursor(QTextCursor.MoveOperation.End)

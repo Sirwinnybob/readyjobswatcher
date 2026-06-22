@@ -9,3 +9,13 @@ def test_settings_window_bad_parts_tab():
     
     tab_texts = [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert "Bad Parts" in tab_texts
+
+def test_bad_parts_tab_has_splitter_and_tables():
+    app = QApplication.instance() or QApplication([])
+    config = Config()
+    window = SettingsWindow(config)
+    
+    # Verify presence of left-side tables and right-side preview/labels
+    assert hasattr(window, 'unack_table_widget')
+    assert hasattr(window, 'ack_table_widget')
+    assert hasattr(window, 'bad_part_preview_label')
