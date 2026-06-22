@@ -125,127 +125,6 @@ class BadPartPreviewDialog(QDialog):
         self.image_label.adjustSize()
 
 
-class BadPartsCenterDialog(QDialog):
-    HEADERS = ["Job", "Material", "PDF", "Page", "Part #", "Part Name", "Size", "Cabinet", "Room", "Detected", "View"]
-
-    def __init__(self, settings_window, parent=None):
-        super().__init__(parent)
-        self.settings_window = settings_window
-        self.alert_coordinator = settings_window.alert_coordinator
-        self.unack_records: List[BadPartDetailRecord] = []
-        self.ack_records: List[BadPartDetailRecord] = []
-        self.setWindowTitle("Bad Parts Center")
-        self.resize(1500, 760)
-        self.setWindowModality(Qt.WindowModality.NonModal)
-        self._init_ui()
-        self.refresh_data()
-
-    @staticmethod
-    def _size_text(record: BadPartDetailRecord) -> str:
-        if record.width is None or record.length is None:
-            return "-"
-        return f'{record.width:.3f}" x {record.length:.3f}"'
-
-    def _init_ui(self):
-        layout = QVBoxLayout(self)
-        self.tabs = QTabWidget(self)
-
-        self.unack_table = self._create_table()
-        self.ack_table = self._create_table()
-        self.tabs.addTab(self.unack_table, "Unacknowledged")
-        self.tabs.addTab(self.ack_table, "Acknowledged")
-        layout.addWidget(self.tabs)
-
-        action_row = QHBoxLayout()
-        self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.clicked.connect(self.refresh_data)
-        self.ack_selected_btn = QPushButton("Acknowledge Selected")
-        self.ack_selected_btn.clicked.connect(self.acknowledge_selected)
-        self.unack_selected_btn = QPushButton("Unacknowledge Selected")
-        self.unack_selected_btn.clicked.connect(self.unacknowledge_selected)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.close)
-
-        action_row.addWidget(self.refresh_btn)
-        action_row.addStretch()
-        action_row.addWidget(self.ack_selected_btn)
-        action_row.addWidget(self.unack_selected_btn)
-        action_row.addWidget(close_btn)
-        layout.addLayout(action_row)
-
-    def _create_table(self) -> QTableWidget:
-        table = QTableWidget(0, len(self.HEADERS), self)
-        table.setHorizontalHeaderLabels(self.HEADERS)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
-        table.setSortingEnabled(False)
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setStretchLastSection(False)
-        return table
-
-    def _populate_table(self, table: QTableWidget, records: List[BadPartDetailRecord]):
-        table.setRowCount(len(records))
-        for row_index, record in enumerate(records):
-            table.setItem(row_index, 0, QTableWidgetItem(record.key.job_folder_name))
-            table.setItem(row_index, 1, QTableWidgetItem(record.material))
-            table.setItem(row_index, 2, QTableWidgetItem(record.pdf_filename))
-            table.setItem(row_index, 3, QTableWidgetItem(str(record.page)))
-            table.setItem(row_index, 4, QTableWidgetItem(str(record.part_number)))
-            table.setItem(row_index, 5, QTableWidgetItem(record.part_name))
-            table.setItem(row_index, 6, QTableWidgetItem(self._size_text(record)))
-            table.setItem(row_index, 7, QTableWidgetItem(str(record.cabinet_number) if record.cabinet_number is not None else "-"))
-            table.setItem(row_index, 8, QTableWidgetItem(record.room or "-"))
-            table.setItem(row_index, 9, QTableWidgetItem(record.detected_at or "-"))
-
-            view_btn = QPushButton("View Page")
-            view_btn.clicked.connect(lambda _, rec=record: self.settings_window.show_part_preview(rec))
-            table.setCellWidget(row_index, 10, view_btn)
-
-    def refresh_data(self):
-        if self.alert_coordinator is None:
-            QMessageBox.warning(self, "Bad Parts", "Alert coordinator is not initialized.")
-            return
-        snapshot = self.alert_coordinator.get_bad_parts_snapshot(include_resolved=False)
-        self.unack_records = list(snapshot.get("unacknowledged", []))
-        self.ack_records = list(snapshot.get("acknowledged", []))
-        self._populate_table(self.unack_table, self.unack_records)
-        self._populate_table(self.ack_table, self.ack_records)
-        self.tabs.setTabText(0, f"Unacknowledged ({len(self.unack_records)})")
-        self.tabs.setTabText(1, f"Acknowledged ({len(self.ack_records)})")
-
-    @staticmethod
-    def _selected_rows(table: QTableWidget) -> List[int]:
-        selection = table.selectionModel()
-        if selection is None:
-            return []
-        return sorted({index.row() for index in selection.selectedRows()})
-
-    def acknowledge_selected(self):
-        rows = self._selected_rows(self.unack_table)
-        if not rows:
-            QMessageBox.information(self, "Bad Parts", "Select at least one unacknowledged row.")
-            return
-        keys: List[TrackerBadPartKey] = [self.unack_records[row].key for row in rows if row < len(self.unack_records)]
-        if not keys:
-            return
-        self.alert_coordinator.acknowledge_keys(keys)
-        self.refresh_data()
-
-    def unacknowledge_selected(self):
-        rows = self._selected_rows(self.ack_table)
-        if not rows:
-            QMessageBox.information(self, "Bad Parts", "Select at least one acknowledged row.")
-            return
-        keys: List[TrackerBadPartKey] = [self.ack_records[row].key for row in rows if row < len(self.ack_records)]
-        if not keys:
-            return
-        self.alert_coordinator.unacknowledge_keys(keys)
-        self.refresh_data()
-
 class SettingsWindow(QWidget):
     """
     Main configuration interface for Ready Jobs Watcher using PyQt6.
@@ -256,7 +135,7 @@ class SettingsWindow(QWidget):
         self.app_instance = app_instance
 
         self.setWindowTitle("Ready Jobs Watcher Settings")
-        self.resize(600, 500)
+        self.resize(1000, 700)
 
         # Setup Logger Signal for UI updates
         self.log_signal = LogSignal()
