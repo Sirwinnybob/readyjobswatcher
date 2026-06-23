@@ -73,6 +73,40 @@ def _std_row(y, qty, desc, width, length, cab_text):
     return words
 
 
+def _closet_rod_header(y=160.0):
+    return [
+        _w(80, y, "Qty"),
+        _w(108, y, "|"),
+        _w(114, y, "Description"),
+        _w(196, y, "|"),
+        _w(278, y, "|"),
+        _w(336, y, "Length"),
+        _w(369, y, "|"),
+        _w(468, y, "|"),
+        _w(474, y, "Cabinet"),
+        _w(510, y, "(Qty)"),
+        _w(534, y, "|"),
+    ]
+
+
+def _closet_rod_row(y, qty, length, cab_text):
+    words = [
+        _w(86, y, str(qty)),
+        _w(108, y, "|"),
+        _w(114, y, "Closet"),
+        _w(150, y, "Rod"),
+        _w(196, y, "|"),
+        _w(278, y, "|"),
+        _w(336, y, str(length)),
+        _w(369, y, "|"),
+        _w(468, y, "|"),
+    ]
+    for i, tok in enumerate(cab_text.split()):
+        words.append(_w(500 + i * 12, y, tok))
+    words.append(_w(534, y, "|"))
+    return words
+
+
 def _door_header(y=200.0):
     return [
         _w(75, y, "Qty"),
@@ -221,6 +255,150 @@ def test_section_marker_extracts_material_and_units_v2():
     assert markers[0]["material"] == "3/4 Maple"
     assert markers[0]["unitType"] == "BD_FT"
     assert markers[0]["unitRaw"] == "BD FT"
+
+
+def test_closet_rod_doc_type_and_per_ft_units_are_detected():
+    assert indexer._doc_type_from_filename("597 - Closet Rod Cut List.pdf") == indexer.DOC_TYPE_CLOSET_ROD
+    assert indexer._doc_type_from_text("Closet Rod Cut List\n597 - WIECHERT") == indexer.DOC_TYPE_CLOSET_ROD
+    assert indexer._unit_type_from_raw("Per FT") == "PER_FT"
+
+
+def test_closet_rod_cut_list_parses_length_only_rows_and_totals(tmp_path, monkeypatch):
+    job_dir = tmp_path / "597 - TEST"
+    job_dir.mkdir()
+    closet_rod = job_dir / "597 - Closet Rod Cut List.pdf"
+    closet_rod.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [_w(74, 94, "Closet"), _w(124, 94, "Rod"), _w(160, 94, "Cut"), _w(194, 94, "List")]
+    page_words += [
+        _w(74, 130, "Material:"),
+        _w(124, 130, "'OVAL"),
+        _w(168, 130, "CLOSET"),
+        _w(228, 130, "ROD'"),
+        _w(266, 130, "|"),
+        _w(276, 130, "Units:Per"),
+        _w(340, 130, "FT"),
+        _w(358, 130, "|"),
+    ]
+    page_words += _closet_rod_header(160)
+    page_words += _closet_rod_row(184, 3, "46.635", "56 (2), 58")
+    page_words += _closet_rod_row(204, 2, "46.26", "49 (2)")
+    page_words += _closet_rod_row(224, 4, "31.01", "50 (2), 51 (2)")
+    page_words += [_w(75, 260, "Totals"), _w(320, 260, "Length"), _w(390, 260, "Rips")]
+    page_words += [_w(320, 280, "34.712")]
+
+    doc_map = {str(closet_rod): _FakeDoc([_FakePage(words=page_words, text="Closet Rod Cut List")])}
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    closet = docs[indexer.DOC_TYPE_CLOSET_ROD]
+
+    assert "boardStockRows" not in closet
+    assert len(closet["rows"]) == 3
+    assert closet["rows"][0]["qty"] == 3
+    assert closet["rows"][0]["description"] == "Closet Rod"
+    assert closet["rows"][0]["width"] == ""
+    assert closet["rows"][0]["length"] == "46.635"
+    assert closet["rows"][0]["cabinets"] == ["56", "58"]
+    assert closet["rows"][0]["rawCabinetText"] == "56 (2), 58"
+    assert closet["rows"][0]["material"] == "OVAL CLOSET ROD"
+    assert closet["rows"][0]["unitType"] == "PER_FT"
+
+    assert len(closet["totals"]) == 1
+    assert closet["totals"][0]["widthValues"] == []
+    assert closet["totals"][0]["lengthValues"] == ["34.712"]
+    assert closet["totals"][0]["ripsValues"] == []
+    assert closet["totals"][0]["sourcePages"] == [1]
+    assert closet["totals"][0]["material"] == "OVAL CLOSET ROD"
+    assert closet["totals"][0]["unitType"] == "PER_FT"
+
+
+def test_pdf_event_rebuilds_for_text_matched_closet_rod_with_generic_filename(tmp_path, monkeypatch):
+    job_dir = tmp_path / "597 - TEST"
+    job_dir.mkdir()
+    closet_rod = job_dir / "597 - Rods.pdf"
+    closet_rod.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [_w(74, 94, "Closet"), _w(124, 94, "Rod"), _w(160, 94, "Cut"), _w(194, 94, "List")]
+    page_words += [
+        _w(74, 130, "Material:"),
+        _w(124, 130, "'OVAL"),
+        _w(168, 130, "CLOSET"),
+        _w(228, 130, "ROD'"),
+        _w(266, 130, "|"),
+        _w(276, 130, "Units:Per"),
+        _w(340, 130, "FT"),
+        _w(358, 130, "|"),
+    ]
+    page_words += _closet_rod_header(160)
+    page_words += _closet_rod_row(184, 1, "30.024", "3")
+
+    doc_map = {str(closet_rod): _FakeDoc([_FakePage(words=page_words, text="Closet Rod Cut List")])}
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    assert indexer.build_hardwoods_cutlist_index_for_pdf_event(str(closet_rod)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    assert docs[indexer.DOC_TYPE_CLOSET_ROD]["pdfFilename"] == "597 - Rods.pdf"
+
+
+def test_generic_door_list_text_pdf_does_not_steal_named_door_list_slot(tmp_path, monkeypatch):
+    job_dir = tmp_path / "597 - TEST"
+    job_dir.mkdir()
+    generic = job_dir / "000 - Generic.pdf"
+    generic.write_text("placeholder", encoding="utf-8")
+    door_list = job_dir / "597 - Door List.pdf"
+    door_list.write_text("placeholder", encoding="utf-8")
+
+    generic_words = [_w(74, 94, "Door"), _w(124, 94, "List")]
+    door_words = []
+    door_words += [_w(74, 142, "Door"), _w(111, 142, "Type:"), _w(151, 142, "'Shaker'")]
+    door_words += _door_header(202)
+    door_words += _door_row(242, 1, "23.875", "13.5625", "31")
+
+    doc_map = {
+        str(generic): _FakeDoc([_FakePage(words=generic_words, text="Door List")]),
+        str(door_list): _FakeDoc([_FakePage(words=door_words, text="Door List")]),
+    }
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    assert docs[indexer.DOC_TYPE_DOOR_LIST]["pdfFilename"] == "597 - Door List.pdf"
+    assert docs[indexer.DOC_TYPE_DOOR_LIST]["rows"][0]["material"] == "Shaker"
+
+
+def test_deleted_generic_closet_rod_pdf_event_removes_stale_index(tmp_path):
+    job_dir = tmp_path / "597 - TEST"
+    job_dir.mkdir()
+    metadata_dir = job_dir / ".metadata" / "hardwoods"
+    metadata_dir.mkdir(parents=True)
+    stale_index = metadata_dir / "cutlist_index.json"
+    stale_index.write_text(
+        json.dumps(
+            {
+                "generatedAt": "2026-06-22T00:00:00+00:00",
+                "documents": [
+                    {
+                        "docType": indexer.DOC_TYPE_CLOSET_ROD,
+                        "pdfFilename": "597 - Rods.pdf",
+                        "pageCount": 1,
+                        "rows": [],
+                        "totals": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert indexer.build_hardwoods_cutlist_index_for_pdf_event(str(job_dir / "597 - Rods.pdf")) is True
+    assert not stale_index.exists()
 
 
 def test_rows_and_totals_emit_unit_type_with_material_sections(tmp_path, monkeypatch):

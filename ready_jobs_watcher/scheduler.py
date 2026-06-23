@@ -217,7 +217,7 @@ def cnc_scan_scheduler(
                 scan_cnc_pdfs_for_bad_parts(config, tracker_monitor, alert_coordinator, deployment_gate)
             except Exception as e:
                 cnc_logger.error(f"Error in tracker reconcile scan: {e}", exc_info=True)
-            interval = max(30, int(getattr(config, "tracker_reconcile_interval_seconds", 300)))
+            interval = max(10, int(getattr(config, "tracker_reconcile_interval_seconds", 300)))
             cnc_logger.info(f"Next tracker reconcile scan in {interval} seconds")
             if stop_event.wait(interval):
                 break

@@ -231,9 +231,6 @@ class JobProcessor:
             dir_path (str): The directory containing the file.
         """
         logging.debug(f"Processing file {file_path}")
-        if self.app_state.PAUSE_PROCESSING:
-            logging.debug(f"Processing paused (GUI open): Skipping file {file_path}")
-            return
         if not os.path.isfile(file_path):
             logging.warning(f"Not a file: {file_path}")
             return
@@ -294,9 +291,6 @@ class JobProcessor:
             include_cnc (bool): Whether to recursively process the CNC subdirectory.
         """
         logging.debug(f"Processing job folder {job_folder}, include_cnc={include_cnc}")
-        if self.app_state.PAUSE_PROCESSING:
-            logging.debug(f"Processing paused (GUI open): Skipping folder {job_folder}")
-            return True
 
         # Skip hidden folders
         if is_hidden(job_folder):

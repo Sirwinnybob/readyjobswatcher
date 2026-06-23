@@ -126,9 +126,9 @@ class Config:
                 return False
         if "tracker_reconcile_interval_seconds" in config:
             value = config["tracker_reconcile_interval_seconds"]
-            if not isinstance(value, (int, float)) or value < 30:
+            if not isinstance(value, (int, float)) or value < 10:
                 main_logger.error(
-                    "Config validation failed: tracker_reconcile_interval_seconds must be a number >= 30"
+                    "Config validation failed: tracker_reconcile_interval_seconds must be a number >= 10"
                 )
                 return False
         if "metadata_cache_debounce_seconds" in config:

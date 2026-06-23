@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import fitz  # PyMuPDF
 from .tracker_action_stream import load_hardwoods_tracker_actions
 from .refresh_signals import touch_hardwoods_refresh_signal
+from .utils import open_pdf_with_retry
 
 main_logger = logging.getLogger("main")
 
@@ -29,12 +30,14 @@ DOC_TYPE_FACE_FRAME = "FACE_FRAME_CUT_LIST"
 DOC_TYPE_NAILER = "NAILER_CUT_LIST"
 DOC_TYPE_DOOR_CUT = "DOOR_CUT_LIST"
 DOC_TYPE_DOOR_LIST = "DOOR_LIST"
+DOC_TYPE_CLOSET_ROD = "CLOSET_ROD_CUT_LIST"
 
 _DOC_DEFINITIONS = [
     (DOC_TYPE_FACE_FRAME, re.compile(r"FACE\s*FRAME\s*CUT\s*LIST", re.IGNORECASE)),
     (DOC_TYPE_NAILER, re.compile(r"NAILER\s*CUT\s*LIST", re.IGNORECASE)),
     (DOC_TYPE_DOOR_CUT, re.compile(r"DOOR\s*CUT\s*LIST", re.IGNORECASE)),
     (DOC_TYPE_DOOR_LIST, re.compile(r"DOOR\s*LIST", re.IGNORECASE)),
+    (DOC_TYPE_CLOSET_ROD, re.compile(r"CLOSET\s*ROD\s*CUT\s*LIST", re.IGNORECASE)),
 ]
 
 _NUMERIC_VALUE_PATTERN = re.compile(r"^\d+(?:\.\d+)?$")
@@ -49,6 +52,7 @@ _TRACKER_SET_DONE_COUNT = "set_done_count"
 _TRACKER_SET_BAD_COUNT = "set_bad_count"
 _UNIT_TYPE_SHEETS = "SHEETS"
 _UNIT_TYPE_BD_FT = "BD_FT"
+_UNIT_TYPE_PER_FT = "PER_FT"
 _UNIT_TYPE_UNKNOWN = "UNKNOWN"
 
 
@@ -76,6 +80,12 @@ def _doc_type_from_filename(filename: str) -> Optional[str]:
     for doc_type, pattern in _DOC_DEFINITIONS:
         if pattern.search(filename):
             return doc_type
+    return None
+
+
+def _doc_type_from_text(text: str) -> Optional[str]:
+    if re.search(r"CLOSET\s*ROD\s*CUT\s*LIST", text or "", re.IGNORECASE):
+        return DOC_TYPE_CLOSET_ROD
     return None
 
 
@@ -119,6 +129,8 @@ def _unit_type_from_raw(unit_raw: str) -> str:
         return _UNIT_TYPE_SHEETS
     if ("BD" in tokens and "FT" in tokens) or ("BOARD" in tokens and ("FT" in tokens or "FOOT" in tokens or "FEET" in tokens)):
         return _UNIT_TYPE_BD_FT
+    if "PER" in tokens and ("FT" in tokens or "FOOT" in tokens or "FEET" in tokens):
+        return _UNIT_TYPE_PER_FT
     return _UNIT_TYPE_UNKNOWN
 
 
@@ -197,6 +209,10 @@ def _is_legacy_cabinet_vision_cutlist(rows_by_y: List[Tuple[float, List[Dict]]],
     return _rows_contain_phrase(rows_by_y[:5], "Created by CABINET VISION")
 
 
+def _is_length_only_doc(doc_type: str) -> bool:
+    return doc_type == DOC_TYPE_CLOSET_ROD
+
+
 def _extract_section_markers(doc_type: str, rows_by_y: List[Tuple[float, List[Dict]]]) -> List[Dict]:
     markers: List[Dict] = []
     for y, row_words in rows_by_y:
@@ -255,7 +271,10 @@ def _find_header_rows(doc_type: str, rows_by_y: List[Tuple[float, List[Dict]]]) 
                 continue
         else:
             has_description = "DESCRIPTION" in uppers
-            if not (has_qty and has_description and has_width and has_lengthish and has_cab):
+            if _is_length_only_doc(doc_type):
+                if not (has_qty and has_description and has_lengthish and has_cab):
+                    continue
+            elif not (has_qty and has_description and has_width and has_lengthish and has_cab):
                 continue
 
         centers: Dict[str, float] = {}
@@ -277,7 +296,9 @@ def _find_header_rows(doc_type: str, rows_by_y: List[Tuple[float, List[Dict]]]) 
             elif u == "HINGE":
                 centers["hinge"] = cx
 
-        required = ["qty", "width", "length", "cabinet"]
+        required = ["qty", "length", "cabinet"]
+        if not _is_length_only_doc(doc_type):
+            required.append("width")
         if doc_type != DOC_TYPE_DOOR_LIST:
             required.append("description")
         if any(k not in centers for k in required):
@@ -333,7 +354,9 @@ def _parse_row_values(
 
     width_tokens = [t for t in columns.get("width", []) if _NUMERIC_VALUE_PATTERN.match(t)]
     length_tokens = [t for t in columns.get("length", []) if _NUMERIC_VALUE_PATTERN.match(t)]
-    if not width_tokens or not length_tokens:
+    if not length_tokens:
+        return None
+    if not _is_length_only_doc(doc_type) and not width_tokens:
         return None
 
     raw_cabinet_text = " ".join(columns.get("cabinet", [])).strip(" |")
@@ -347,7 +370,7 @@ def _parse_row_values(
         if not description:
             return None
 
-    width_value = width_tokens[0]
+    width_value = "" if _is_length_only_doc(doc_type) else width_tokens[0]
     length_value = length_tokens[0]
     cabinets = _extract_numeric_cabinets(raw_cabinet_text)
 
@@ -455,19 +478,20 @@ def _parse_rows_from_page(
     return out, row_ordinal
 
 
-def _is_row_like_line(_doc_type: str, row_words: List[Dict]) -> bool:
+def _is_row_like_line(doc_type: str, row_words: List[Dict]) -> bool:
     uppers = [w["upper"] for w in row_words]
     if "TOTALS" in uppers:
         return False
     pipe_count = sum(1 for w in row_words if w["text"] == "|")
     if pipe_count < 4:
         return False
-    if not any(w["text"] == "*" for w in row_words):
+    if not _is_length_only_doc(doc_type) and not any(w["text"] == "*" for w in row_words):
         return False
     if not any(_ROW_QTY_PATTERN.match(w["text"]) for w in row_words):
         return False
     numeric_count = sum(1 for w in row_words if _NUMERIC_VALUE_PATTERN.match(w["text"]))
-    if numeric_count < 2:
+    minimum_numeric_count = 1 if _is_length_only_doc(doc_type) else 2
+    if numeric_count < minimum_numeric_count:
         return False
     return True
 
@@ -502,7 +526,9 @@ def _is_totals_terminator_text(text: str) -> bool:
     )
 
 
-def _parse_totals_blocks_from_words(rows_by_y: List[Tuple[float, List[Dict]]], page_number: int) -> List[Dict]:
+def _parse_totals_blocks_from_words(
+    doc_type: str, rows_by_y: List[Tuple[float, List[Dict]]], page_number: int
+) -> List[Dict]:
     blocks: List[Dict] = []
     idx = 0
     while idx < len(rows_by_y):
@@ -520,10 +546,12 @@ def _parse_totals_blocks_from_words(rows_by_y: List[Tuple[float, List[Dict]]], p
                 if u in {"WIDTH", "LENGTH", "HEIGHT", "RIPS"}:
                     key = "length" if u == "HEIGHT" else u.lower()
                     label_centers[key] = (word["x0"] + word["x1"]) / 2.0
-            if {"width", "length"}.issubset(label_centers.keys()):
+            required_labels = {"length"} if _is_length_only_doc(doc_type) else {"width", "length"}
+            if required_labels.issubset(label_centers.keys()):
                 break
 
-        if "width" not in label_centers or "length" not in label_centers:
+        required_labels = {"length"} if _is_length_only_doc(doc_type) else {"width", "length"}
+        if not required_labels.issubset(label_centers.keys()):
             idx += 1
             continue
 
@@ -554,7 +582,8 @@ def _parse_totals_blocks_from_words(rows_by_y: List[Tuple[float, List[Dict]]], p
                     break
                 j += 1
                 continue
-            if len(numeric_words) < 2:
+            minimum_numeric_count = 1 if _is_length_only_doc(doc_type) else 2
+            if len(numeric_words) < minimum_numeric_count:
                 if started:
                     break
                 j += 1
@@ -590,7 +619,9 @@ def _parse_totals_blocks_from_words(rows_by_y: List[Tuple[float, List[Dict]]], p
     return blocks
 
 
-def _parse_totals_continuation(rows_by_y: List[Tuple[float, List[Dict]]], label_centers: Dict[str, float]) -> Optional[Dict]:
+def _parse_totals_continuation(
+    doc_type: str, rows_by_y: List[Tuple[float, List[Dict]]], label_centers: Dict[str, float]
+) -> Optional[Dict]:
     width_values: List[str] = []
     length_values: List[str] = []
     rips_values: List[str] = []
@@ -613,7 +644,8 @@ def _parse_totals_continuation(rows_by_y: List[Tuple[float, List[Dict]]], label_
                 break
             continue
 
-        if len(numeric_words) < 2:
+        minimum_numeric_count = 1 if _is_length_only_doc(doc_type) else 2
+        if len(numeric_words) < minimum_numeric_count:
             if started:
                 break
             continue
@@ -707,7 +739,7 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
     open_totals_block: Optional[Dict] = None
     last_header_info: Optional[Dict] = None
 
-    doc = fitz.open(pdf_path)
+    doc = open_pdf_with_retry(pdf_path)
     try:
         if doc.page_count <= 0:
             raise SkippableDocumentError("document has no pages")
@@ -831,7 +863,7 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
                 active_material = str(markers[-1].get("material") or active_material or "")
                 active_unit_type = str(markers[-1].get("unitType") or active_unit_type or _UNIT_TYPE_UNKNOWN)
 
-            page_totals = _parse_totals_blocks_from_words(rows_by_y, page_number)
+            page_totals = _parse_totals_blocks_from_words(doc_type, rows_by_y, page_number)
             if page_totals:
                 page_totals, active_material, active_unit_type = _assign_material_to_totals(
                     page_totals,
@@ -843,7 +875,7 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
                 open_totals_block = page_totals[-1]
             else:
                 if open_totals_block and isinstance(open_totals_block.get("labelCenters"), dict):
-                    continuation = _parse_totals_continuation(rows_by_y, open_totals_block["labelCenters"])
+                    continuation = _parse_totals_continuation(doc_type, rows_by_y, open_totals_block["labelCenters"])
                     if continuation:
                         open_totals_block["widthValues"].extend(continuation["widthValues"])
                         open_totals_block["lengthValues"].extend(continuation["lengthValues"])
@@ -886,6 +918,26 @@ def _collect_pdf_candidates(folder_path: str) -> List[str]:
     return sorted(candidates)
 
 
+def _doc_type_from_pdf_text(path: str) -> Optional[str]:
+    doc = None
+    try:
+        doc = open_pdf_with_retry(path)
+        page_limit = min(int(getattr(doc, "page_count", 0) or 0), 2)
+        for page_index in range(page_limit):
+            doc_type = _doc_type_from_text(doc[page_index].get_text("text") or "")
+            if doc_type:
+                return doc_type
+    except Exception:
+        return None
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
+    return None
+
+
 def _find_hardwoods_docs(job_folder_path: str) -> Dict[str, Tuple[str, str]]:
     docs: Dict[str, Tuple[str, str]] = {}
     light_candidates = _collect_pdf_candidates(job_folder_path)
@@ -896,12 +948,16 @@ def _find_hardwoods_docs(job_folder_path: str) -> Dict[str, Tuple[str, str]]:
     for path in light_candidates:
         filename = os.path.basename(path)
         doc_type = _doc_type_from_filename(filename)
+        if not doc_type:
+            doc_type = _doc_type_from_pdf_text(path)
         if doc_type and doc_type not in docs:
             docs[doc_type] = (filename, path)
 
     for path in dark_candidates:
         filename = os.path.basename(path)
         doc_type = _doc_type_from_filename(filename)
+        if not doc_type:
+            doc_type = _doc_type_from_pdf_text(path)
         if doc_type and doc_type not in docs:
             docs[doc_type] = (filename, path)
 
@@ -949,6 +1005,18 @@ def _load_existing_index(job_folder_path: str) -> Optional[Dict]:
         return payload
     except Exception:
         return None
+
+
+def _existing_index_references_closet_rod_pdf(job_folder_path: str, filename: str) -> bool:
+    payload = _load_existing_index(job_folder_path)
+    if not isinstance(payload, dict):
+        return False
+    for doc in payload.get("documents", []):
+        if not isinstance(doc, dict):
+            continue
+        if doc.get("docType") == DOC_TYPE_CLOSET_ROD and doc.get("pdfFilename") == filename:
+            return True
+    return False
 
 
 def _load_existing_revision_state(job_folder_path: str) -> Optional[Dict]:
@@ -1463,8 +1531,6 @@ def build_hardwoods_cutlist_index_for_pdf_event(pdf_path: str, deployment_gate=N
     """
     normalized = _normalize_slashes(pdf_path)
     filename = os.path.basename(normalized)
-    if not _is_hardwoods_doc_name(filename):
-        return False
 
     folder = os.path.dirname(normalized)
     if os.path.basename(folder).upper() == "DARK MODE":
@@ -1473,6 +1539,13 @@ def build_hardwoods_cutlist_index_for_pdf_event(pdf_path: str, deployment_gate=N
         job_folder = folder
 
     if os.path.basename(job_folder).upper() == "CNC":
+        return False
+
+    if (
+        not _is_hardwoods_doc_name(filename)
+        and _doc_type_from_pdf_text(normalized) != DOC_TYPE_CLOSET_ROD
+        and not _existing_index_references_closet_rod_pdf(job_folder, filename)
+    ):
         return False
 
     return build_hardwoods_cutlist_index_for_job(job_folder, deployment_gate=deployment_gate)

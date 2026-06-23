@@ -7,6 +7,8 @@ such as bad part detection or backup completion.
 from winotify import Notification
 import logging
 import os
+import ctypes
+import winsound
 
 def send_notification(title: str = "Notification", message: str = "", duration: str = "short") -> None:
     """
@@ -40,3 +42,33 @@ def send_notification(title: str = "Notification", message: str = "", duration: 
         # This can fail if the environment doesn't support notifications,
         # e.g., on a server without a GUI.
         logging.error(f"Failed to send notification: {e}")
+
+
+def send_critical_alert(title: str, message: str) -> None:
+    """
+    Sends a major notification:
+    - Long-duration Windows Toast notification
+    - Windows Critical Stop error chime
+    - Blocking, system-modal always-on-top MessageBox dialog
+    """
+    logging.critical(f"CRITICAL ALERT: {title} - {message}")
+
+    # 1. Toast Notification
+    send_notification(title, message, duration="long")
+
+    # 2. Critical Stop Sound
+    try:
+        winsound.MessageBeep(winsound.MB_ICONHAND)
+    except Exception as e:
+        logging.error(f"Failed to play critical beep: {e}")
+
+    # 3. Always-on-top blocking MessageBoxW dialog
+    # MB_ICONERROR = 0x00000010
+    # MB_SYSTEMMODAL = 0x00001000
+    # MB_TOPMOST = 0x00040000
+    # MB_SETFOREGROUND = 0x00010000
+    try:
+        flags = 0x00000010 | 0x00001000 | 0x00040000 | 0x00010000
+        ctypes.windll.user32.MessageBoxW(0, message, title, flags)
+    except Exception as e:
+        logging.error(f"Failed to show critical message box: {e}")

@@ -310,3 +310,56 @@ def test_detail_record_metadata_resolution_with_thumbnail_and_ocr(tmp_path):
     assert detail.room == "KITCHEN"
     assert detail.thumbnail_path is not None
     assert detail.highlight_rect == (10, 20, 110, 220)
+
+
+def test_rename_job_folder_state(tmp_path):
+    monitor = _make_monitor(tmp_path)
+
+    key1 = TrackerBadPartKey(
+        job_folder_name="123 - TEST",
+        pdf_filename="123 - Maple.pdf",
+        page=2,
+        file_fingerprint="fp-a",
+        part_number=77,
+    )
+    key2 = TrackerBadPartKey(
+        job_folder_name="456 - OTHER",
+        pdf_filename="456 - Oak.pdf",
+        page=1,
+        file_fingerprint="fp-b",
+        part_number=12,
+    )
+
+    monitor.state.active_keys = {key1.to_token(), key2.to_token()}
+    monitor.state.seen_keys = {key1.to_token(), key2.to_token()}
+    monitor.state.acknowledged_keys = {key1.to_token()}
+    monitor._save_state()
+
+    # Rename "123 - TEST" to "999 - NEW"
+    monitor.rename_job_folder("123 - TEST", "999 - NEW", "123", "999")
+
+    # Reload and check
+    monitor2 = _make_monitor(tmp_path)
+
+    # key1 should be updated:
+    # job_folder_name="999 - NEW"
+    # pdf_filename="999 - Maple.pdf"
+    new_key1 = TrackerBadPartKey(
+        job_folder_name="999 - NEW",
+        pdf_filename="999 - Maple.pdf",
+        page=2,
+        file_fingerprint="fp-a",
+        part_number=77,
+    )
+
+    assert new_key1.to_token() in monitor2.state.active_keys
+    assert key2.to_token() in monitor2.state.active_keys
+    assert key1.to_token() not in monitor2.state.active_keys
+
+    assert new_key1.to_token() in monitor2.state.seen_keys
+    assert key2.to_token() in monitor2.state.seen_keys
+    assert key1.to_token() not in monitor2.state.seen_keys
+
+    assert new_key1.to_token() in monitor2.state.acknowledged_keys
+    assert key1.to_token() not in monitor2.state.acknowledged_keys
+

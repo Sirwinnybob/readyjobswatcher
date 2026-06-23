@@ -50,32 +50,59 @@ def render_pdf_page_to_pixmap(pdf_full_path: str, page_num: int, thumbnail_path:
             page_idx = page_num - 1
             if 0 <= page_idx < len(doc):
                 page = doc.load_page(page_idx)
-                mat = fitz.Matrix(zoom, zoom)
-                pix = page.get_pixmap(matrix=mat, alpha=False)
-                qimg = QImage(
-                    pix.samples,
-                    pix.width,
-                    pix.height,
-                    pix.stride,
-                    QImage.Format.Format_RGB888
-                )
-                pixmap = QPixmap.fromImage(qimg)
-                pdf_loaded = True
                 
-                # Scale highlight box if needed
-                if highlight_rect and thumb_width and thumb_height:
-                    pdf_w = page.rect.width
-                    pdf_h = page.rect.height
-                    factor_x = (pdf_w * zoom) / thumb_width
-                    factor_y = (pdf_h * zoom) / thumb_height
+                # Try to extract the largest embedded image first
+                images = page.get_images(full=True)
+                if images:
+                    largest_img = None
+                    max_area = 0
+                    for img in images:
+                        xref = img[0]
+                        w = img[2]
+                        h = img[3]
+                        area = w * h
+                        if area > max_area:
+                            max_area = area
+                            largest_img = img
                     
-                    left, top, right, bottom = highlight_rect
-                    highlight_rect = (
-                        int(left * factor_x),
-                        int(top * factor_y),
-                        int(right * factor_x),
-                        int(bottom * factor_y)
+                    if largest_img:
+                        xref = largest_img[0]
+                        base_image = doc.extract_image(xref)
+                        if base_image:
+                            qpixmap = QPixmap()
+                            if qpixmap.loadFromData(base_image["image"]):
+                                pixmap = qpixmap
+                                pdf_loaded = True
+                                # Coordinates are already relative to the embedded image, no scaling needed!
+                                
+                if not pdf_loaded:
+                    # Fallback to rendering the entire PDF page
+                    mat = fitz.Matrix(zoom, zoom)
+                    pix = page.get_pixmap(matrix=mat, alpha=False)
+                    qimg = QImage(
+                        pix.samples,
+                        pix.width,
+                        pix.height,
+                        pix.stride,
+                        QImage.Format.Format_RGB888
                     )
+                    pixmap = QPixmap.fromImage(qimg)
+                    pdf_loaded = True
+                    
+                    # Scale highlight box if needed (only for full page render)
+                    if highlight_rect and thumb_width and thumb_height:
+                        pdf_w = page.rect.width
+                        pdf_h = page.rect.height
+                        factor_x = (pdf_w * zoom) / thumb_width
+                        factor_y = (pdf_h * zoom) / thumb_height
+                        
+                        left, top, right, bottom = highlight_rect
+                        highlight_rect = (
+                            int(left * factor_x),
+                            int(top * factor_y),
+                            int(right * factor_x),
+                            int(bottom * factor_y)
+                        )
         except Exception as e:
             import logging
             logging.error(f"Error rendering PDF page: {e}")
@@ -84,6 +111,46 @@ def render_pdf_page_to_pixmap(pdf_full_path: str, page_num: int, thumbnail_path:
     if not pdf_loaded:
         if thumbnail_path and os.path.exists(thumbnail_path):
             pixmap = QPixmap(thumbnail_path)
+            
+            # Scale highlight box to the thumbnail size
+            if highlight_rect and thumb_width and thumb_height:
+                max_x = 0
+                max_y = 0
+                json_path = None
+                if pdf_full_path:
+                    dir_name = os.path.dirname(pdf_full_path)
+                    file_name = os.path.basename(pdf_full_path)
+                    base_name, _ = os.path.splitext(file_name)
+                    json_path = os.path.join(dir_name, ".metadata", f"{base_name}.json")
+                
+                if json_path and os.path.exists(json_path):
+                    try:
+                        import json
+                        with open(json_path, "r", encoding="utf-8") as f:
+                            meta_data = json.load(f)
+                        for p in meta_data.get("pages", []):
+                            if p.get("pageNumber") == page_num:
+                                ocr_boxes = p.get("ocrBoxes", {})
+                                for part_num, boxes in ocr_boxes.items():
+                                    for box in boxes:
+                                        max_x = max(max_x, box.get("right", 0))
+                                        max_y = max(max_y, box.get("bottom", 0))
+                    except Exception:
+                        pass
+                
+                full_w = max_x if max_x > 0 else 4000
+                full_h = max_y if max_y > 0 else 2000
+                
+                factor_x = thumb_width / full_w
+                factor_y = thumb_height / full_h
+                
+                left, top, right, bottom = highlight_rect
+                highlight_rect = (
+                    int(left * factor_x),
+                    int(top * factor_y),
+                    int(right * factor_x),
+                    int(bottom * factor_y)
+                )
 
     # 4. Draw highlight box
     if pixmap and not pixmap.isNull():
@@ -91,7 +158,7 @@ def render_pdf_page_to_pixmap(pdf_full_path: str, page_num: int, thumbnail_path:
             left, top, right, bottom = highlight_rect
             painter = QPainter(pixmap)
             # Use slightly thicker line for high-resolution images
-            pen_width = 8 if pdf_loaded else 6
+            pen_width = 8 if pdf_loaded else 4
             pen = QPen(QColor(255, 60, 60))
             pen.setWidth(pen_width)
             painter.setPen(pen)
@@ -142,6 +209,7 @@ class BadPartPreviewDialog(QDialog):
     def __init__(self, record: BadPartDetailRecord, parent=None):
         super().__init__(parent)
         self.record = record
+        self.current_pixmap = None
         self.setWindowTitle(f"Page Preview - {record.pdf_filename} (Pg {record.page}, Part {record.part_number})")
         self.resize(1280, 860)
         self._init_ui()
@@ -159,10 +227,10 @@ class BadPartPreviewDialog(QDialog):
         self.image_label.setText("Preview unavailable.")
         self.image_label.setStyleSheet("background: #1e1e1e; color: #f0f0f0; padding: 12px;")
 
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.image_label)
-        layout.addWidget(scroll, 1)
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setWidget(self.image_label)
+        layout.addWidget(self.scroll, 1)
 
         caption = QLabel(self._build_caption())
         layout.addWidget(caption)
@@ -193,10 +261,27 @@ class BadPartPreviewDialog(QDialog):
         )
         if pixmap is None or pixmap.isNull():
             self.image_label.setText("Preview unavailable: could not load PDF page or thumbnail.")
+            self.current_pixmap = None
             return
 
-        self.image_label.setPixmap(pixmap)
-        self.image_label.adjustSize()
+        self.current_pixmap = pixmap
+        self._update_scaled_preview()
+
+    def _update_scaled_preview(self):
+        if self.current_pixmap and not self.current_pixmap.isNull():
+            w = self.scroll.viewport().width()
+            h = self.scroll.viewport().height()
+            if w > 10 and h > 10:
+                scaled = self.current_pixmap.scaled(
+                    w, h,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.image_label.setPixmap(scaled)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_scaled_preview()
 
 
 class SettingsWindow(QWidget):
@@ -946,7 +1031,9 @@ class SettingsWindow(QWidget):
         right_layout = QVBoxLayout(right_widget)
 
         # QScrollArea wrapping bad_part_preview_label
-        scroll = QScrollArea()
+        self.bad_part_preview_scroll = QScrollArea()
+        self.current_bad_part_pixmap = None
+        scroll = self.bad_part_preview_scroll
         scroll.setWidgetResizable(True)
         self.bad_part_preview_label = QLabel("No part selected.")
         self.bad_part_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1092,6 +1179,7 @@ class SettingsWindow(QWidget):
     def _clear_bad_part_details(self):
         self.bad_part_preview_label.setText("No part selected.")
         self.bad_part_preview_label.setPixmap(QPixmap())
+        self.current_bad_part_pixmap = None
         self.bad_part_job_lbl.setText("-")
         self.bad_part_material_lbl.setText("-")
         self.bad_part_pdf_lbl.setText("-")
@@ -1138,9 +1226,27 @@ class SettingsWindow(QWidget):
         )
         if pixmap is None or pixmap.isNull():
             self.bad_part_preview_label.setText("Preview unavailable: could not load PDF page or thumbnail.")
+            self.current_bad_part_pixmap = None
             return
 
-        self.bad_part_preview_label.setPixmap(pixmap)
+        self.current_bad_part_pixmap = pixmap
+        self._update_scaled_bad_part_preview()
+
+    def _update_scaled_bad_part_preview(self):
+        if self.current_bad_part_pixmap and not self.current_bad_part_pixmap.isNull():
+            w = self.bad_part_preview_scroll.viewport().width()
+            h = self.bad_part_preview_scroll.viewport().height()
+            if w > 10 and h > 10:
+                scaled = self.current_bad_part_pixmap.scaled(
+                    w, h,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.bad_part_preview_label.setPixmap(scaled)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_scaled_bad_part_preview()
 
     def acknowledge_selected_part(self):
         selected_rows = self.unack_table_widget.selectionModel().selectedRows()

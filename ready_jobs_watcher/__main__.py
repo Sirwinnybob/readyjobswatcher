@@ -31,6 +31,19 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         # Allow graceful exit via keyboard interrupt
         pass
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        try:
+            from ready_jobs_watcher.notifications import send_critical_alert
+            send_critical_alert(
+                "Ready Jobs Watcher Crash",
+                f"The application has crashed due to an unhandled exception:\n\n{e}\n\nTraceback:\n{tb}"
+            )
+        except Exception as alert_err:
+            print(f"Failed to send critical alert for crash: {alert_err}", file=sys.stderr)
+        raise
     finally:
         # Ensure all components and threads are properly terminated
         app.stop()
+

@@ -10,11 +10,36 @@ import os
 import shutil
 import datetime
 import re
+import time
+
+import fitz  # PyMuPDF
 
 from .config import BASE_DATA_DIR
 
 # Allowed PDF sheets for dark mode conversion
 ALLOWED_SHEETS_PATTERN = re.compile(r'DELIVERY SHEET|ASSEMBLY SHEET|PLANS & ELEVATIONS', re.IGNORECASE)
+
+_PDF_OPEN_RETRY_ATTEMPTS = 3
+_PDF_OPEN_RETRY_DELAY_SECONDS = 0.3
+
+
+def open_pdf_with_retry(pdf_path, attempts: int = _PDF_OPEN_RETRY_ATTEMPTS,
+                         delay_seconds: float = _PDF_OPEN_RETRY_DELAY_SECONDS):
+    """
+    Open a PDF with fitz, retrying briefly on failure.
+
+    Job-folder PDFs live on a network share and are sometimes still being
+    written (briefly 0 bytes) or held open by another process when a
+    filesystem event fires; a short retry rides out that window instead of
+    treating a normal save as a parse failure.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return fitz.open(pdf_path)
+        except Exception:
+            if attempt == attempts:
+                raise
+            time.sleep(delay_seconds)
 
 def is_hidden(folder_path):
     """

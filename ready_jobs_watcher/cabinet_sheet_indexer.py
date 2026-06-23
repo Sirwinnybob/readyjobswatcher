@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import fitz  # PyMuPDF
 from .refresh_signals import touch_cnc_refresh_signal
+from .utils import open_pdf_with_retry
 
 main_logger = logging.getLogger("main")
 
@@ -312,7 +313,7 @@ def _try_parse_with_markers(doc: fitz.Document) -> Optional[_DocumentParseResult
 
 
 def _parse_assembly_pdf(pdf_path: str) -> _DocumentParseResult:
-    doc = fitz.open(pdf_path)
+    doc = open_pdf_with_retry(pdf_path)
     try:
         marker_result = _try_parse_with_markers(doc)
         if marker_result is not None:
@@ -437,7 +438,7 @@ def _parse_plans_table(lines: List[str]) -> Dict[str, str]:
 
 
 def _parse_plans_pdf(pdf_path: str) -> _DocumentParseResult:
-    doc = fitz.open(pdf_path)
+    doc = open_pdf_with_retry(pdf_path)
     try:
         marker_result = _try_parse_with_markers(doc)
         if marker_result is not None:
@@ -573,7 +574,7 @@ def _extract_known_delivery_fields(lines: List[str]) -> Dict[str, Optional[str]]
 
 
 def _parse_delivery_pdf_metadata(pdf_path: str) -> Dict:
-    doc = fitz.open(pdf_path)
+    doc = open_pdf_with_retry(pdf_path)
     try:
         page_payloads: List[Dict] = []
         mode_candidate: Optional[str] = None

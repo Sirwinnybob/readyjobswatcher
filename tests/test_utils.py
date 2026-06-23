@@ -2,7 +2,7 @@ import pytest
 import sys
 import ctypes
 from unittest.mock import patch, MagicMock
-from ready_jobs_watcher.utils import is_hidden, set_hidden_attribute
+from ready_jobs_watcher.utils import is_hidden, set_hidden_attribute, open_pdf_with_retry
 
 @pytest.fixture(autouse=True)
 def mock_ctypes():
@@ -76,3 +76,32 @@ def test_set_hidden_attribute_exception(mock_set_attributes, mock_logging):
     mock_set_attributes.side_effect = Exception("Unexpected")
     set_hidden_attribute("dummy_path")
     mock_logging.error.assert_called_with("Unexpected error setting hidden attribute on dummy_path: Unexpected", exc_info=True)
+
+
+@patch('ready_jobs_watcher.utils.time.sleep')
+@patch('ready_jobs_watcher.utils.fitz.open')
+def test_open_pdf_with_retry_succeeds_first_try(mock_fitz_open, mock_sleep):
+    mock_fitz_open.return_value = "doc"
+    result = open_pdf_with_retry("dummy.pdf")
+    assert result == "doc"
+    mock_fitz_open.assert_called_once_with("dummy.pdf")
+    mock_sleep.assert_not_called()
+
+
+@patch('ready_jobs_watcher.utils.time.sleep')
+@patch('ready_jobs_watcher.utils.fitz.open')
+def test_open_pdf_with_retry_recovers_after_transient_failure(mock_fitz_open, mock_sleep):
+    mock_fitz_open.side_effect = [RuntimeError("cannot open empty file"), "doc"]
+    result = open_pdf_with_retry("dummy.pdf")
+    assert result == "doc"
+    assert mock_fitz_open.call_count == 2
+    mock_sleep.assert_called_once()
+
+
+@patch('ready_jobs_watcher.utils.time.sleep')
+@patch('ready_jobs_watcher.utils.fitz.open')
+def test_open_pdf_with_retry_raises_after_exhausting_attempts(mock_fitz_open, mock_sleep):
+    mock_fitz_open.side_effect = RuntimeError("cannot open empty file")
+    with pytest.raises(RuntimeError):
+        open_pdf_with_retry("dummy.pdf", attempts=3, delay_seconds=0)
+    assert mock_fitz_open.call_count == 3

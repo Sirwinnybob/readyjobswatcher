@@ -561,6 +561,48 @@ class TrackerBadPartsMonitor:
                 )
             return len(removed)
 
+    def rename_job_folder(self, old_name: str, new_name: str, old_num: str, new_num: str) -> None:
+        """
+        Propagates metadata updates when a top-level job folder is renamed.
+        Updates active_keys, seen_keys, and acknowledged_keys in the monitor's state.
+        """
+        with self._lock:
+            self.state = self._load_state()
+            for set_name in ("active_keys", "seen_keys", "acknowledged_keys"):
+                current_set = getattr(self.state, set_name)
+                updated_set = set()
+                for token in current_set:
+                    try:
+                        key = TrackerBadPartKey.from_token(token)
+                    except Exception:
+                        updated_set.add(token)
+                        continue
+
+                    if key.job_folder_name == old_name:
+                        pdf_filename = key.pdf_filename
+                        if new_num:
+                            if old_num and pdf_filename.startswith(old_num + " - "):
+                                pdf_filename = new_num + " - " + pdf_filename[len(old_num + " - "):]
+                            elif " - " in pdf_filename:
+                                prefix, rest = pdf_filename.split(" - ", 1)
+                                if prefix != new_num:
+                                    pdf_filename = new_num + " - " + rest
+                            else:
+                                pdf_filename = new_num + " - " + pdf_filename
+
+                        new_key = TrackerBadPartKey(
+                            job_folder_name=new_name,
+                            pdf_filename=pdf_filename,
+                            page=key.page,
+                            file_fingerprint=key.file_fingerprint,
+                            part_number=key.part_number,
+                        )
+                        updated_set.add(new_key.to_token())
+                    else:
+                        updated_set.add(token)
+                setattr(self.state, set_name, updated_set)
+            self._save_state()
+
     def get_bad_parts_snapshot(self, include_resolved: bool = False) -> Dict[str, List[BadPartDetailRecord]]:
         with self._lock:
             active_events = self._collect_active_events()

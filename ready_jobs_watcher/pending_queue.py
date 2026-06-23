@@ -250,6 +250,54 @@ class PendingQueue:
                 self.save()
                 pending_queue_logger.debug(f"Removed pending folder: {folder_path}")
 
+    def rename_job_folder(self, old_name: str, new_name: str, old_num: str, new_num: str) -> None:
+        """
+        Updates paths in pending_folders and pending_pdfs when a job folder is renamed.
+        """
+        from pathlib import Path
+
+        with self.lock:
+            # Update pending_folders
+            new_pending_folders = {}
+            for folder_path, info in self.pending_folders.items():
+                parts = list(Path(folder_path).parts)
+                if len(parts) > 0 and old_name in parts:
+                    for i in range(len(parts)):
+                        if parts[i] == old_name:
+                            parts[i] = new_name
+                    new_path = os.path.normpath(str(Path(*parts)))
+                    new_pending_folders[new_path] = info
+                else:
+                    new_pending_folders[folder_path] = info
+            self.pending_folders = new_pending_folders
+
+            # Update pending_pdfs
+            new_pending_pdfs = {}
+            for pdf_path, info in self.pending_pdfs.items():
+                parts = list(Path(pdf_path).parts)
+                if len(parts) > 1 and old_name in parts[:-1]:
+                    for i in range(len(parts) - 1):
+                        if parts[i] == old_name:
+                            parts[i] = new_name
+                    if new_num:
+                        filename = parts[-1]
+                        if old_num and filename.startswith(old_num + " - "):
+                            filename = new_num + " - " + filename[len(old_num + " - "):]
+                        elif " - " in filename:
+                            prefix, rest = filename.split(" - ", 1)
+                            if prefix != new_num:
+                                filename = new_num + " - " + rest
+                        else:
+                            filename = new_num + " - " + filename
+                        parts[-1] = filename
+                    new_path = os.path.normpath(str(Path(*parts)))
+                    new_pending_pdfs[new_path] = info
+                else:
+                    new_pending_pdfs[pdf_path] = info
+            self.pending_pdfs = new_pending_pdfs
+
+            self.save()
+
     def get_pending_pdf(self, file_path: str) -> Optional[Dict]:
         """
         Get pending PDF info if it exists.

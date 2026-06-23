@@ -127,3 +127,39 @@ def test_load_blacklist_generic_error(reset_blacklist):
             assert len(bad_parts_checker.BLACKLISTED_FILES) == 0
             mock_log_error.assert_called_once()
             assert "error loading blacklist file" in mock_log_error.call_args[0][0].lower()
+
+
+def test_rename_blacklist_job(reset_blacklist):
+    """Verify that rename_blacklist_job updates both blacklists correctly."""
+    import os
+    from unittest.mock import patch
+
+    pdf1 = os.path.normpath("C:/Root/123 - old_job/CNC/123 - file.pdf")
+    pdf2 = os.path.normpath("C:/Root/456 - other/CNC/456 - file.pdf")
+
+    bad_parts_checker.BLACKLISTED_FILES = {
+        (pdf1, 0),
+        (pdf2, 1)
+    }
+
+    bad_parts_checker.PERMANENTLY_IGNORED_FILES = {
+        (pdf1, 2)
+    }
+
+    with patch("ready_jobs_watcher.bad_parts_checker.save_to_blacklist_internal") as mock_save_bl, \
+         patch("ready_jobs_watcher.bad_parts_checker.save_permanently_ignored_blacklist_internal") as mock_save_ign:
+
+        bad_parts_checker.rename_blacklist_job("123 - old_job", "999 - new_job", "123", "999")
+
+        mock_save_bl.assert_called_once()
+        mock_save_ign.assert_called_once()
+
+        new_pdf1 = os.path.normpath("C:/Root/999 - new_job/CNC/999 - file.pdf")
+
+        assert (new_pdf1, 0) in bad_parts_checker.BLACKLISTED_FILES
+        assert (pdf2, 1) in bad_parts_checker.BLACKLISTED_FILES
+        assert (pdf1, 0) not in bad_parts_checker.BLACKLISTED_FILES
+
+        assert (new_pdf1, 2) in bad_parts_checker.PERMANENTLY_IGNORED_FILES
+        assert (pdf1, 2) not in bad_parts_checker.PERMANENTLY_IGNORED_FILES
+

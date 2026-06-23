@@ -26,6 +26,7 @@ from .remake_candidates_indexer import (
     refresh_unresolved_bad_parts_all,
     derive_job_from_tracker_path,
 )
+from .sync_conflict_resolver import is_sync_conflict_path, resolve_sync_conflict_file
 
 
 main_logger = logging.getLogger('main')
@@ -149,8 +150,9 @@ class RenameHandler(FileSystemEventHandler):
         """
         try:
             main_logger.debug(f"on_created triggered for {event.src_path}")
-            if self.app_state.PAUSE_PROCESSING:
-                main_logger.debug(f"Processing paused (GUI open): Ignoring created event for {event.src_path}")
+
+            if not event.is_directory and is_sync_conflict_path(event.src_path):
+                resolve_sync_conflict_file(event.src_path, self.config.ROOT_DIR)
                 return
 
             # Skip hidden files/folders
@@ -219,9 +221,6 @@ class RenameHandler(FileSystemEventHandler):
         """
         try:
             main_logger.debug(f"on_modified triggered for {event.src_path}")
-            if self.app_state.PAUSE_PROCESSING:
-                main_logger.debug(f"Processing paused (GUI open): Ignoring modified event for {event.src_path}")
-                return
         except Exception as e:
             main_logger.error(f"Error in RenameHandler.on_modified for {event.src_path}: {e}")
 
@@ -234,8 +233,9 @@ class RenameHandler(FileSystemEventHandler):
         """
         try:
             main_logger.debug(f"on_moved triggered for {event.src_path} -> {event.dest_path}")
-            if self.app_state.PAUSE_PROCESSING:
-                main_logger.debug(f"Processing paused (GUI open): Ignoring moved event for {event.src_path} -> {event.dest_path}")
+
+            if not event.is_directory and is_sync_conflict_path(event.dest_path):
+                resolve_sync_conflict_file(event.dest_path, self.config.ROOT_DIR)
                 return
 
             # Skip hidden destinations
@@ -245,11 +245,52 @@ class RenameHandler(FileSystemEventHandler):
 
             main_logger.info(f"Moved/renamed event detected: {event.src_path} -> {event.dest_path} (is_directory={event.is_directory})")
             if event.is_directory:
+                old_folder_name = os.path.basename(event.src_path)
                 folder_name = os.path.basename(event.dest_path)
 
                 # Skip template folders
                 if should_ignore_folder(folder_name):
                     main_logger.debug(f"Skipping template folder: {event.dest_path}")
+                    return
+
+                # Check if it is a top-level directory rename
+                root_norm = os.path.normcase(os.path.normpath(self.config.ROOT_DIR))
+                src_parent = os.path.normcase(os.path.normpath(os.path.dirname(event.src_path)))
+                dest_parent = os.path.normcase(os.path.normpath(os.path.dirname(event.dest_path)))
+
+                is_top_level_rename = (
+                    src_parent == root_norm
+                    and dest_parent == root_norm
+                    and old_folder_name != folder_name
+                    and not old_folder_name.startswith(".")
+                    and not folder_name.startswith(".")
+                )
+
+                if is_top_level_rename:
+                    main_logger.info(f"Top-level job folder renamed: {event.src_path} -> {event.dest_path}")
+                    if hasattr(self.app_state, "rename_job"):
+                        self.app_state.rename_job(old_folder_name, folder_name)
+
+                    if self.deployment_gate is not None:
+                        state = self.deployment_gate.load_state(folder_name)
+                        is_deployed = bool(state.get("deployed", False))
+                    else:
+                        is_deployed = False
+
+                    if not is_deployed:
+                        if hasattr(self.app_state, "on_new_job_folder_detected"):
+                            self.app_state.on_new_job_folder_detected(event.dest_path)
+
+                    # Run an immediate pass so files in the renamed folder are prefixed right away.
+                    try:
+                        self.job_processor.process_job_folder(event.dest_path)
+                    except Exception as exc:
+                        main_logger.warning(
+                            "Immediate folder processing after rename failed; delayed retry will handle it: %s (%s)",
+                            event.dest_path,
+                            exc,
+                        )
+                    self._schedule_folder_processing(event.dest_path)
                     return
 
                 if self._is_top_level_job_folder(event.dest_path):
@@ -722,6 +763,10 @@ class PdfChangeHandler(FileSystemEventHandler):
             event (FileSystemEvent): The watchdog event instance.
         """
         try:
+            if not event.is_directory and is_sync_conflict_path(event.src_path):
+                resolve_sync_conflict_file(event.src_path, self.config.ROOT_DIR)
+                return
+
             if not event.is_directory:
                 self._schedule_metadata_refresh(event.src_path, "created")
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):

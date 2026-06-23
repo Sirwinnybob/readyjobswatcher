@@ -66,3 +66,31 @@ def test_resume_pending_operations_prunes_missing_paths(tmp_path):
     assert rename_handler.calls == []
     assert q.get_pending_pdf(str(missing_pdf)) is None
     assert q.get_pending_folder(str(missing_folder)) is None
+
+
+def test_rename_job_folder_in_pending_queue(tmp_path):
+    import os
+    queue_file = tmp_path / "pending_queue.json"
+    q = PendingQueue(str(queue_file))
+
+    pdf_path = os.path.normpath(str(tmp_path / "123 - TEST/CNC/123 - file.pdf"))
+    folder_path = os.path.normpath(str(tmp_path / "123 - TEST/CNC"))
+    other_pdf = os.path.normpath(str(tmp_path / "456 - OTHER/CNC/456 - file.pdf"))
+
+    q.add_pending_pdf(pdf_path, time.time() + 10, invert_images=True)
+    q.add_pending_pdf(other_pdf, time.time() + 10, invert_images=False)
+    q.add_pending_folder(folder_path, time.time() + 10)
+
+    q.rename_job_folder("123 - TEST", "999 - NEW", "123", "999")
+
+    new_pdf = os.path.normpath(str(tmp_path / "999 - NEW/CNC/999 - file.pdf"))
+    new_folder = os.path.normpath(str(tmp_path / "999 - NEW/CNC"))
+
+    assert q.get_pending_pdf(pdf_path) is None
+    assert q.get_pending_pdf(new_pdf) is not None
+    assert q.get_pending_pdf(new_pdf)["invert_images"] is True
+    assert q.get_pending_pdf(other_pdf) is not None
+
+    assert q.get_pending_folder(folder_path) is None
+    assert q.get_pending_folder(new_folder) is not None
+

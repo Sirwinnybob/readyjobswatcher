@@ -10,6 +10,7 @@
         "16:25",
         "12:00"
     ],
+    "backup_retention_days": 7,
     "pdf_conversion_delay_seconds": 30,
     "new_folder_delay_seconds": 120,
     "daily_restart_time": "03:00",
@@ -18,5 +19,9 @@
     "bad_parts_toast_enabled": true,
     "bad_parts_sound_profile": "triple_beep",
     "tracker_reconcile_interval_seconds": 300,
+    "metadata_cache_debounce_seconds": 8.0,
+    "metadata_end_of_day_time": "20:00",
+    "metadata_snapshot_enabled": true,
+    "metadata_snapshot_archive_dir": "C:\\Scripts\\Ready Jobs Watcher\\metadata_snapshots",
     "assimp_path": "C:\\Scripts\\Assimp\\assimp-v6.0.5-isolated\\install\\bin\\assimp.exe"
 }

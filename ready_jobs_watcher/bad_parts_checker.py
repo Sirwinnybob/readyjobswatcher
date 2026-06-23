@@ -291,3 +291,64 @@ def save_permanently_ignored_blacklist_internal() -> None:
                 os.remove(temp_file)
             except OSError:
                 pass
+
+def rename_blacklist_job(old_name: str, new_name: str, old_num: str, new_num: str) -> None:
+    """
+    Updates the blacklist and permanently ignored blacklist when a job folder is renamed.
+    """
+    from pathlib import Path
+    global BLACKLISTED_FILES, PERMANENTLY_IGNORED_FILES
+
+    with BLACKLIST_LOCK:
+        updated_blacklist = set()
+        for pdf_path, page_num in BLACKLISTED_FILES:
+            parts = list(Path(pdf_path).parts)
+            if len(parts) > 1 and old_name in parts[:-1]:
+                for i in range(len(parts) - 1):
+                    if parts[i] == old_name:
+                        parts[i] = new_name
+                if new_num:
+                    filename = parts[-1]
+                    if old_num and filename.startswith(old_num + " - "):
+                        filename = new_num + " - " + filename[len(old_num + " - "):]
+                    elif " - " in filename:
+                        prefix, rest = filename.split(" - ", 1)
+                        if prefix != new_num:
+                            filename = new_num + " - " + rest
+                    else:
+                        filename = new_num + " - " + filename
+                    parts[-1] = filename
+                new_path = os.path.normpath(str(Path(*parts)))
+                updated_blacklist.add((new_path, page_num))
+            else:
+                updated_blacklist.add((pdf_path, page_num))
+
+        BLACKLISTED_FILES = updated_blacklist
+        save_to_blacklist_internal()
+
+    with PERMANENTLY_IGNORED_LOCK:
+        updated_ignored = set()
+        for pdf_path, page_num in PERMANENTLY_IGNORED_FILES:
+            parts = list(Path(pdf_path).parts)
+            if len(parts) > 1 and old_name in parts[:-1]:
+                for i in range(len(parts) - 1):
+                    if parts[i] == old_name:
+                        parts[i] = new_name
+                if new_num:
+                    filename = parts[-1]
+                    if old_num and filename.startswith(old_num + " - "):
+                        filename = new_num + " - " + filename[len(old_num + " - "):]
+                    elif " - " in filename:
+                        prefix, rest = filename.split(" - ", 1)
+                        if prefix != new_num:
+                            filename = new_num + " - " + rest
+                    else:
+                        filename = new_num + " - " + filename
+                    parts[-1] = filename
+                new_path = os.path.normpath(str(Path(*parts)))
+                updated_ignored.add((new_path, page_num))
+            else:
+                updated_ignored.add((pdf_path, page_num))
+
+        PERMANENTLY_IGNORED_FILES = updated_ignored
+        save_permanently_ignored_blacklist_internal()

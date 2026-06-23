@@ -95,7 +95,7 @@ class DeploymentGateManager:
         if not isinstance(raw, dict):
             return state
         state["schemaVersion"] = int(raw.get("schemaVersion", 1) or 1)
-        state["jobFolderName"] = str(raw.get("jobFolderName", job_folder_name) or job_folder_name)
+        state["jobFolderName"] = job_folder_name
         state["deployed"] = bool(raw.get("deployed", True))
         state["parseReady"] = bool(raw.get("parseReady", state["deployed"]))
         state["hiddenFromProduction"] = bool(raw.get("hiddenFromProduction", False))
@@ -220,6 +220,7 @@ class DeploymentGateManager:
         updates = {
             "deployed": True,
             "parseReady": False,
+            "hiddenFromProduction": False,
         }
         if selected_mode is not None:
             updates["selectedMode"] = self.normalize_mode(selected_mode)
@@ -363,7 +364,7 @@ def ensure_hidden_gate_for_folder(root_dir: str, folder_name: str) -> bool:
         "jobFolderName": folder_name,
         "deployed": False,
         "parseReady": False,
-        "hiddenFromProduction": True,
+        "hiddenFromProduction": False,
         "selectedMode": MODE_UNKNOWN,
         "modeDetection": {
             "candidate": MODE_UNKNOWN,

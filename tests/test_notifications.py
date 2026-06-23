@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from ready_jobs_watcher.notifications import send_notification
+from ready_jobs_watcher.notifications import send_notification, send_critical_alert
 
 @patch("ready_jobs_watcher.notifications.Notification")
 @patch("ready_jobs_watcher.notifications.os.path.exists")
@@ -63,3 +63,21 @@ def test_send_notification_exception(mock_logging, mock_notification):
 
     # Verify
     mock_logging.error.assert_called_once_with("Failed to send notification: Test Error")
+
+
+@patch("ready_jobs_watcher.notifications.ctypes.windll.user32.MessageBoxW")
+@patch("ready_jobs_watcher.notifications.winsound.MessageBeep")
+@patch("ready_jobs_watcher.notifications.send_notification")
+@patch("ready_jobs_watcher.notifications.logging")
+def test_send_critical_alert(mock_logging, mock_send_notification, mock_message_beep, mock_message_box):
+    # Execute
+    send_critical_alert("Critical Title", "Critical Message")
+
+    # Verify
+    mock_logging.critical.assert_called_once_with("CRITICAL ALERT: Critical Title - Critical Message")
+    mock_send_notification.assert_called_once_with("Critical Title", "Critical Message", duration="long")
+    mock_message_beep.assert_called_once()
+    mock_message_box.assert_called_once_with(
+        0, "Critical Message", "Critical Title", 0x00000010 | 0x00001000 | 0x00040000 | 0x00010000
+    )
+
