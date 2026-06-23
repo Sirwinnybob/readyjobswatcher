@@ -42,6 +42,7 @@ config.json
 # Runtime data files
 pending_queue.json
 pending_queue.json.backup
+tracker_bad_parts_state.json
 metadata_snapshots/
 
 # Backup directories
