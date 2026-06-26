@@ -93,6 +93,43 @@ class TestWatcherDeploymentGateBehavior(unittest.TestCase):
             [(event.dest_path, "520r", r"Y:\Ready Jobs\520r - BRUCE ALFOR REMAKE")],
         )
 
+    def test_rename_handler_ignores_generated_metadata_events(self):
+        config = _DummyConfig()
+        job_processor = _DummyJobProcessor()
+        app_state = _DummyAppState()
+        handler = RenameHandler(config, job_processor, app_state)
+
+        handler.on_created(
+            types.SimpleNamespace(
+                src_path=r"Y:\Ready Jobs\Face Frame\.metadata",
+                is_directory=True,
+            )
+        )
+        handler.on_moved(
+            types.SimpleNamespace(
+                src_path=r"Y:\Ready Jobs\123 - TEST\.metadata\cache_static.json.tmp",
+                dest_path=r"Y:\Ready Jobs\123 - TEST\.metadata\cache_static.json",
+                is_directory=False,
+            )
+        )
+        handler.on_moved(
+            types.SimpleNamespace(
+                src_path="",
+                dest_path=r"Y:\Ready Jobs\123 - TEST\.metadata\cache_static.json",
+                is_directory=False,
+            )
+        )
+        handler.on_modified(
+            types.SimpleNamespace(
+                src_path=r"Y:\Ready Jobs\123 - TEST\CNC\.tracker\watcher_refresh_watcher.json",
+                is_directory=False,
+            )
+        )
+
+        self.assertEqual(job_processor.processed, [])
+        self.assertEqual(job_processor.processed_files, [])
+        self.assertEqual(app_state.detected, [])
+
     def test_top_level_directory_rename_flow(self):
         class _DummyAppStateWithRename:
             def __init__(self):

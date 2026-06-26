@@ -916,11 +916,7 @@ class Application:
             if is_available:
                 started = self.start_observers()
                 if was_available is False and started:
-                    logging.info("Ready Jobs root is back online. Running catch-up scan.")
-                    try:
-                        self.initial_scan()
-                    except Exception as exc:
-                        logging.error("Catch-up scan failed after reconnect: %s", exc, exc_info=True)
+                    self._run_root_catchup_scans("after reconnect")
             else:
                 if was_available is not False:
                     logging.warning(
@@ -1039,53 +1035,91 @@ class Application:
 
         # Dedicated startup check: convert any DAE files that have no GLB yet.
         # Runs in its own thread so it doesn't delay the initial scan or UI.
-        def _glb_startup_check():
-            try:
-                scan_root_for_missing_glbs(self.config.ROOT_DIR)
-            except Exception as e:
-                logging.error(f"Startup GLB check failed: {e}", exc_info=True)
-
-        glb_thread = threading.Thread(target=_glb_startup_check, daemon=True, name="StartupGlbCheck")
+        glb_thread = threading.Thread(target=self._run_startup_glb_check, daemon=True, name="StartupGlbCheck")
         glb_thread.start()
 
         # Startup check: rebuild cabinet_sheet_index.json for any deployed job that is missing one.
-        def _cabinet_index_startup_check():
-            try:
-                import os as _os
-                from .cabinet_sheet_indexer import build_reference_index_for_job, REFERENCE_INDEX_FILENAME
-                root = self.config.ROOT_DIR
-                for entry in _os.scandir(root):
-                    if not entry.is_dir():
-                        continue
-                    index_path = _os.path.join(entry.path, ".metadata", REFERENCE_INDEX_FILENAME)
-                    if not _os.path.exists(index_path):
-                        continue  # never indexed — watcher will catch it when PDFs appear
-                    # Rebuild if the index is stale (older than any PDF in the job folder)
-                    index_mtime = _os.path.getmtime(index_path)
-                    needs_rebuild = False
-                    for dirpath, _dirs, files in _os.walk(entry.path):
-                        for fname in files:
-                            if fname.lower().endswith(".pdf"):
-                                pdf_mtime = _os.path.getmtime(_os.path.join(dirpath, fname))
-                                if pdf_mtime > index_mtime:
-                                    needs_rebuild = True
-                                    break
-                        if needs_rebuild:
-                            break
-                    if needs_rebuild:
-                        logging.info("Startup: rebuilding stale cabinet index for %s", entry.name)
-                        try:
-                            build_reference_index_for_job(entry.path)
-                        except Exception as exc:
-                            logging.error("Startup cabinet index rebuild failed for %s: %s", entry.name, exc, exc_info=True)
-            except Exception as e:
-                logging.error("Startup cabinet index check failed: %s", e, exc_info=True)
-
-        index_thread = threading.Thread(target=_cabinet_index_startup_check, daemon=True, name="StartupCabinetIndexCheck")
+        index_thread = threading.Thread(
+            target=self._run_cabinet_index_startup_check,
+            daemon=True,
+            name="StartupCabinetIndexCheck",
+        )
         index_thread.start()
 
         # Start the event loop
         sys.exit(self.qapp.exec())
+
+    def _run_root_catchup_scans(self, reason: str):
+        """Run all root-scoped catch-up work when the Ready Jobs share is available."""
+        logging.info("Ready Jobs root is online. Running catch-up scans (%s).", reason)
+        for label, scan_func in (
+            ("initial scan", self.initial_scan),
+            ("GLB startup check", self._run_startup_glb_check),
+            ("cabinet index startup check", self._run_cabinet_index_startup_check),
+        ):
+            if self.stop_event.is_set():
+                break
+            try:
+                scan_func()
+            except Exception as exc:
+                logging.error("Catch-up %s failed %s: %s", label, reason, exc, exc_info=True)
+
+    def _run_startup_glb_check(self):
+        """Convert any DAE files under the root that are still missing GLBs."""
+        if not self._is_root_available():
+            logging.warning(
+                "Startup GLB check deferred; Ready Jobs root is unavailable: %s",
+                self.config.ROOT_DIR,
+            )
+            return False
+        try:
+            scan_root_for_missing_glbs(self.config.ROOT_DIR)
+            return True
+        except Exception as e:
+            logging.error(f"Startup GLB check failed: {e}", exc_info=True)
+            return False
+
+    def _run_cabinet_index_startup_check(self):
+        """Rebuild stale cabinet indexes for jobs that were already indexed once."""
+        if not self._is_root_available():
+            logging.warning(
+                "Startup cabinet index check deferred; Ready Jobs root is unavailable: %s",
+                self.config.ROOT_DIR,
+            )
+            return False
+        try:
+            import os as _os
+            from .cabinet_sheet_indexer import REFERENCE_INDEX_FILENAME
+
+            root = self.config.ROOT_DIR
+            for entry in _os.scandir(root):
+                if not entry.is_dir():
+                    continue
+                index_path = _os.path.join(entry.path, ".metadata", REFERENCE_INDEX_FILENAME)
+                if not _os.path.exists(index_path):
+                    continue  # never indexed; watcher will catch it when PDFs appear
+                # Rebuild if the index is stale (older than any PDF in the job folder)
+                index_mtime = _os.path.getmtime(index_path)
+                needs_rebuild = False
+                for dirpath, _dirs, files in _os.walk(entry.path):
+                    for fname in files:
+                        if fname.lower().endswith(".pdf"):
+                            pdf_mtime = _os.path.getmtime(_os.path.join(dirpath, fname))
+                            if pdf_mtime > index_mtime:
+                                needs_rebuild = True
+                                break
+                    if needs_rebuild:
+                        break
+                if needs_rebuild:
+                    logging.info("Startup: rebuilding stale cabinet index for %s", entry.name)
+                    try:
+                        build_reference_index_for_job(entry.path)
+                    except Exception as exc:
+                        logging.error("Startup cabinet index rebuild failed for %s: %s", entry.name, exc, exc_info=True)
+            return True
+        except Exception as e:
+            logging.error("Startup cabinet index check failed: %s", e, exc_info=True)
+            return False
 
     def perform_backup(self):
         """Execute an immediate manual backup based on configured paths."""
@@ -1105,16 +1139,36 @@ class Application:
         except Exception as exc:
             logging.error("Immediate CNC scan failed (will retry on schedule): %s", exc, exc_info=True)
 
+    def _bootstrap_new_job_folders(self):
+        """
+        Stamp a hidden gate on any folder that doesn't have one yet — this ensures
+        new/unknown folders are invisible to tablets until explicitly deployed.
+
+        Folders that turn out to be real job folders are routed through
+        on_new_job_folder_detected, the same path live watcher events use, so they
+        get mode detection, an auto-release timer, and the pending-job alert popup
+        instead of being silently gated.
+        """
+        from .deployment_gate import ensure_hidden_gates_for_all_folders
+        newly_gated = ensure_hidden_gates_for_all_folders(self.config.ROOT_DIR)
+        for folder_name in newly_gated:
+            folder_path = os.path.join(self.config.ROOT_DIR, folder_name)
+            if JobProcessor.is_job_folder(folder_path):
+                self.on_new_job_folder_detected(folder_path)
+
     def initial_scan(self):
         """Performs an initial scan of the root directory to handle any backlog."""
         if self.PAUSE_PROCESSING:
             logging.info("Initial scan skipped (GUI open).")
-            return
+            return False
+        if not self._is_root_available():
+            logging.warning(
+                "Initial scan deferred; Ready Jobs root is unavailable: %s. Auto-retry is active.",
+                self.config.ROOT_DIR,
+            )
+            return False
         logging.info("Starting initial scan...")
-        # Stamp a hidden gate on any folder that doesn't have one yet — this ensures
-        # new/unknown folders are invisible to tablets until explicitly deployed.
-        from .deployment_gate import ensure_hidden_gates_for_all_folders
-        ensure_hidden_gates_for_all_folders(self.config.ROOT_DIR)
+        self._bootstrap_new_job_folders()
         try:
             with os.scandir(self.config.ROOT_DIR) as it:
                 for entry in it:
@@ -1142,7 +1196,9 @@ class Application:
                         time.sleep(0.05)
         except OSError as e:
             logging.error(f"Error during initial scan: {e}")
+            return False
         logging.info("Initial scan complete.")
+        return True
 
     def retry_pending(self):
         """Periodically retries failed file rename operations using a background thread."""

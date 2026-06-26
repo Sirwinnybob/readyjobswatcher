@@ -547,7 +547,7 @@ class SettingsWindow(QWidget):
 
         info_label = QLabel(
             "Job state from each job's .metadata/deployment_gate.json. "
-            "Double-click a row to release, snooze, or re-parse."
+            "Double-click a row to release, snooze, change construction mode, or re-parse."
         )
         layout.addWidget(info_label)
 
@@ -846,8 +846,6 @@ class SettingsWindow(QWidget):
         mode_combo.setEditable(True)
         mode_combo.addItems(["FACE-FRAME", "FRAMELESS", "BOTH", "UNKNOWN"])
         mode_combo.setCurrentText(default_mode)
-        if derived != "PENDING":
-            mode_combo.setEnabled(False)
         form.addRow("Deploy Mode:", mode_combo)
         layout.addLayout(form)
 
@@ -865,6 +863,9 @@ class SettingsWindow(QWidget):
             release_btn.setObjectName("primaryButton")
 
             def _snooze_action():
+                selected = mode_combo.currentText().strip() or "UNKNOWN"
+                if selected != selected_mode:
+                    self.app_instance.set_job_selected_mode(job_folder_name, selected)
                 self.app_instance.remind_pending_job(job_folder_name, minutes=remind_spin.value())
                 self.refresh_jobs_dashboard()
                 dialog.accept()
@@ -891,8 +892,15 @@ class SettingsWindow(QWidget):
             action_row.addWidget(cancel_btn)
             action_row.addWidget(release_btn)
         else:
+            save_mode_btn = QPushButton("Save Mode")
             reparse_btn = QPushButton("Re-parse")
             cancel_btn = QPushButton("Cancel")
+
+            def _save_mode_action():
+                selected = mode_combo.currentText().strip() or "UNKNOWN"
+                self.app_instance.set_job_selected_mode(job_folder_name, selected)
+                self.refresh_jobs_dashboard()
+                dialog.accept()
 
             def _reparse_action():
                 reply = QMessageBox.question(
@@ -918,9 +926,11 @@ class SettingsWindow(QWidget):
                     self.refresh_jobs_dashboard()
                     dialog.accept()
 
+            save_mode_btn.clicked.connect(_save_mode_action)
             reparse_btn.clicked.connect(_reparse_action)
             cancel_btn.clicked.connect(dialog.reject)
 
+            action_row.addWidget(save_mode_btn)
             action_row.addWidget(reparse_btn)
             action_row.addStretch()
             action_row.addWidget(cancel_btn)

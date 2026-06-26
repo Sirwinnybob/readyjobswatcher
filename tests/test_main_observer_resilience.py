@@ -1,8 +1,11 @@
+import os
+import tempfile
 import threading
 import types
 import unittest
 from unittest.mock import patch
 
+from ready_jobs_watcher.deployment_gate import DeploymentGateManager
 from ready_jobs_watcher.main import Application
 
 
@@ -42,6 +45,7 @@ def _build_minimal_app() -> Application:
     app._observer_lock = threading.RLock()
     app._pending_operations_restored = False
     app._root_unavailable_logged = False
+    app.stop_event = threading.Event()
     app.observer = _FakeObserver()
     app.pdf_observer = _FakeObserver()
     app.restore_calls = []
@@ -102,6 +106,63 @@ class TestMainObserverResilience(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual(app.restore_calls, [])
+
+    def test_root_catchup_runs_all_startup_scans_after_reconnect(self):
+        app = _build_minimal_app()
+        calls = []
+        app.initial_scan = lambda: calls.append("initial")  # type: ignore[method-assign]
+        app._run_startup_glb_check = lambda: calls.append("glb")  # type: ignore[method-assign]
+        app._run_cabinet_index_startup_check = lambda: calls.append("index")  # type: ignore[method-assign]
+
+        app._run_root_catchup_scans("after reconnect")
+
+        self.assertEqual(calls, ["initial", "glb", "index"])
+
+    def test_startup_glb_check_defers_when_root_unavailable(self):
+        app = _build_minimal_app()
+        app._is_root_available = lambda: False  # type: ignore[method-assign]
+
+        with patch("ready_jobs_watcher.main.scan_root_for_missing_glbs") as scan:
+            ok = app._run_startup_glb_check()
+
+        self.assertFalse(ok)
+        scan.assert_not_called()
+
+    def test_initial_scan_defers_when_root_unavailable(self):
+        app = _build_minimal_app()
+        app.PAUSE_PROCESSING = False
+        app._is_root_available = lambda: False  # type: ignore[method-assign]
+
+        with patch("ready_jobs_watcher.main.os.scandir") as scandir:
+            ok = app.initial_scan()
+
+        self.assertFalse(ok)
+        scandir.assert_not_called()
+
+    def test_cabinet_index_check_defers_when_root_unavailable(self):
+        app = _build_minimal_app()
+        app._is_root_available = lambda: False  # type: ignore[method-assign]
+
+        ok = app._run_cabinet_index_startup_check()
+
+        self.assertFalse(ok)
+
+    def test_bootstrap_new_job_folders_alerts_only_for_real_new_job_folders(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "100 - NEW JOB"), exist_ok=True)
+            os.makedirs(os.path.join(root, "Face Frame"), exist_ok=True)
+            os.makedirs(os.path.join(root, "200 - ALREADY KNOWN"), exist_ok=True)
+
+            app = _build_minimal_app()
+            app.config = types.SimpleNamespace(ROOT_DIR=root)
+            app.deployment_gate = DeploymentGateManager(root)
+            app.deployment_gate.ensure_pending_for_new_job("200 - ALREADY KNOWN")
+            detected = []
+            app.on_new_job_folder_detected = lambda path: detected.append(os.path.basename(path))  # type: ignore[method-assign]
+
+            app._bootstrap_new_job_folders()
+
+            self.assertEqual(detected, ["100 - NEW JOB"])
 
 
 if __name__ == "__main__":

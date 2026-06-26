@@ -389,24 +389,25 @@ def ensure_hidden_gate_for_folder(root_dir: str, folder_name: str) -> bool:
         return False
 
 
-def ensure_hidden_gates_for_all_folders(root_dir: str) -> int:
+def ensure_hidden_gates_for_all_folders(root_dir: str) -> List[str]:
     """
     Scan root_dir and stamp a hidden deployment_gate.json on every subfolder
     that does not already have one. Skips dot-hidden OS folders.
-    Returns the count of gates created.
+    Returns the names of folders that were newly gated (i.e. had no gate before),
+    so callers can distinguish genuinely new folders from already-known ones.
     """
     if not os.path.isdir(root_dir):
-        return 0
-    created = 0
+        return []
+    created: List[str] = []
     try:
         with os.scandir(root_dir) as entries:
             for entry in entries:
                 if not entry.is_dir():
                     continue
                 if ensure_hidden_gate_for_folder(root_dir, entry.name):
-                    created += 1
+                    created.append(entry.name)
     except OSError as exc:
         main_logger.error("Failed scanning root dir for gate bootstrap: %s", exc)
     if created:
-        main_logger.info("Bootstrapped hidden gates for %d ungated folders.", created)
+        main_logger.info("Bootstrapped hidden gates for %d ungated folders.", len(created))
     return created

@@ -28,6 +28,26 @@ def test_pdf_change_handler_schedules_metadata_refresh_for_json_changes(tmp_path
     assert refresh.calls == [(str(path), "created")]
 
 
+def test_pdf_change_handler_ignores_watcher_refresh_signal(tmp_path):
+    refresh = FakeMetadataRefresh()
+    config = SimpleNamespace(
+        ROOT_DIR=str(tmp_path),
+        bad_parts_mode="tracker",
+        pdf_conversion_delay_seconds=30,
+    )
+    handler = PdfChangeHandler(config, metadata_refresh_service=refresh)
+    tracker_scans = []
+    handler._trigger_tracker_scan = lambda reason, src_path: tracker_scans.append((reason, src_path))  # type: ignore[method-assign]
+    path = tmp_path / "123 - Test Job" / "CNC" / ".tracker" / "watcher_refresh_watcher.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{}", encoding="utf-8")
+
+    handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(path)))
+
+    assert refresh.calls == []
+    assert tracker_scans == []
+
+
 def test_index_refresh_completion_schedules_metadata_refresh(monkeypatch, tmp_path):
     refresh = FakeMetadataRefresh()
     config = SimpleNamespace(

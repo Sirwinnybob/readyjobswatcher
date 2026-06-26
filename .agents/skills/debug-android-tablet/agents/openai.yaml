@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Android Tablet"
+  short_description: "Debug Android app issues with an ADB-connected tablet."
+  default_prompt: "Debug the connected Android tablet issue systematically."

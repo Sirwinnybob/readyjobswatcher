@@ -101,10 +101,13 @@ def test_default_new_folder_delay_is_120_seconds(monkeypatch):
 def test_metadata_cache_defaults(monkeypatch):
     monkeypatch.setattr(Config, "load", lambda self: None)
     cfg = Config()
-    assert cfg.metadata_cache_debounce_seconds == 8
+    assert cfg.metadata_cache_debounce_seconds == 600
     assert cfg.metadata_end_of_day_time == "20:00"
     assert cfg.metadata_snapshot_enabled is True
     assert cfg.metadata_snapshot_archive_dir.endswith("metadata_snapshots")
+    assert cfg.metadata_snapshot_retention_days == 30
+    assert cfg.metadata_snapshot_max_per_job == 3
+    assert cfg.metadata_snapshot_daypart_limit is True
 
 
 def test_validate_metadata_cache_config(config_instance):
@@ -115,3 +118,11 @@ def test_validate_metadata_cache_config(config_instance):
     assert config_instance._validate_config({"metadata_end_of_day_time": "25:00"}) is False
     assert config_instance._validate_config({"metadata_snapshot_enabled": True}) is True
     assert config_instance._validate_config({"metadata_snapshot_enabled": "yes"}) is False
+    assert config_instance._validate_config({"metadata_snapshot_retention_days": 30}) is True
+    assert config_instance._validate_config({"metadata_snapshot_retention_days": 0}) is True
+    assert config_instance._validate_config({"metadata_snapshot_retention_days": -1}) is False
+    assert config_instance._validate_config({"metadata_snapshot_max_per_job": 3}) is True
+    assert config_instance._validate_config({"metadata_snapshot_max_per_job": 1}) is True
+    assert config_instance._validate_config({"metadata_snapshot_max_per_job": 0}) is False
+    assert config_instance._validate_config({"metadata_snapshot_daypart_limit": True}) is True
+    assert config_instance._validate_config({"metadata_snapshot_daypart_limit": "yes"}) is False

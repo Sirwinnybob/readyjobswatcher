@@ -32,11 +32,14 @@ class Config:
     """
     def __init__(self):
         """Initializes default configuration settings and loads user overrides."""
-        self.ROOT_DIR = r'Y:\Ready Jobs'
+        self.ROOT_DIR = r'\\192.168.1.15\KKC Jobs\Ready Jobs'
         self.CNC_SUBDIR = 'CNC'
         self.RETRY_INTERVAL_MINUTES = 15
         self.BACKUP_DIR = r'C:\Syncthing Backup'
-        self.BACKUP_FOLDERS = [r'Y:\Ready Jobs', r'Y:\Upcoming Jobs']
+        self.BACKUP_FOLDERS = [
+            r'\\192.168.1.15\KKC Jobs\Ready Jobs',
+            r'\\192.168.1.15\KKC Jobs\Upcoming Jobs',
+        ]
         self.CONFIG_FILE = os.path.join(BASE_DATA_DIR, 'config.json')
         self.BACKUP_TIMES = ['00:00', '12:00']
         self.backup_retention_days = 7
@@ -60,9 +63,12 @@ class Config:
         self.bad_parts_toast_enabled = True
         self.bad_parts_sound_profile = "triple_beep"  # triple_beep | none
         self.tracker_reconcile_interval_seconds = 300
-        self.metadata_cache_debounce_seconds = 8
+        self.metadata_cache_debounce_seconds = 600
         self.metadata_end_of_day_time = "20:00"
         self.metadata_snapshot_enabled = True
+        self.metadata_snapshot_retention_days = 30
+        self.metadata_snapshot_max_per_job = 3
+        self.metadata_snapshot_daypart_limit = True
         self.metadata_snapshot_archive_dir = os.path.join(BASE_DATA_DIR, "metadata_snapshots")
         self.assimp_path: Optional[str] = None
         self.load()
@@ -151,6 +157,19 @@ class Config:
         if "metadata_snapshot_enabled" in config and not isinstance(config["metadata_snapshot_enabled"], bool):
             main_logger.error("Config validation failed: metadata_snapshot_enabled must be a bool")
             return False
+        if "metadata_snapshot_retention_days" in config:
+            value = config["metadata_snapshot_retention_days"]
+            if not isinstance(value, (int, float)) or value < 0:
+                main_logger.error("Config validation failed: metadata_snapshot_retention_days must be a number >= 0")
+                return False
+        if "metadata_snapshot_max_per_job" in config:
+            value = config["metadata_snapshot_max_per_job"]
+            if not isinstance(value, int) or value < 1:
+                main_logger.error("Config validation failed: metadata_snapshot_max_per_job must be an integer >= 1")
+                return False
+        if "metadata_snapshot_daypart_limit" in config and not isinstance(config["metadata_snapshot_daypart_limit"], bool):
+            main_logger.error("Config validation failed: metadata_snapshot_daypart_limit must be a bool")
+            return False
         if "metadata_snapshot_archive_dir" in config:
             if not isinstance(config["metadata_snapshot_archive_dir"], str):
                 main_logger.error("Config validation failed: metadata_snapshot_archive_dir must be a string")
@@ -217,6 +236,16 @@ class Config:
                 )
                 self.metadata_end_of_day_time = config.get("metadata_end_of_day_time", self.metadata_end_of_day_time)
                 self.metadata_snapshot_enabled = config.get("metadata_snapshot_enabled", self.metadata_snapshot_enabled)
+                self.metadata_snapshot_retention_days = int(
+                    config.get("metadata_snapshot_retention_days", self.metadata_snapshot_retention_days)
+                )
+                self.metadata_snapshot_max_per_job = int(
+                    config.get("metadata_snapshot_max_per_job", self.metadata_snapshot_max_per_job)
+                )
+                self.metadata_snapshot_daypart_limit = config.get(
+                    "metadata_snapshot_daypart_limit",
+                    self.metadata_snapshot_daypart_limit,
+                )
                 self.metadata_snapshot_archive_dir = config.get(
                     "metadata_snapshot_archive_dir",
                     self.metadata_snapshot_archive_dir,
@@ -255,6 +284,16 @@ class Config:
                         )
                         self.metadata_end_of_day_time = config.get("metadata_end_of_day_time", self.metadata_end_of_day_time)
                         self.metadata_snapshot_enabled = config.get("metadata_snapshot_enabled", self.metadata_snapshot_enabled)
+                        self.metadata_snapshot_retention_days = int(
+                            config.get("metadata_snapshot_retention_days", self.metadata_snapshot_retention_days)
+                        )
+                        self.metadata_snapshot_max_per_job = int(
+                            config.get("metadata_snapshot_max_per_job", self.metadata_snapshot_max_per_job)
+                        )
+                        self.metadata_snapshot_daypart_limit = config.get(
+                            "metadata_snapshot_daypart_limit",
+                            self.metadata_snapshot_daypart_limit,
+                        )
                         self.metadata_snapshot_archive_dir = config.get(
                             "metadata_snapshot_archive_dir",
                             self.metadata_snapshot_archive_dir,
@@ -302,6 +341,9 @@ class Config:
                 'metadata_cache_debounce_seconds': self.metadata_cache_debounce_seconds,
                 'metadata_end_of_day_time': self.metadata_end_of_day_time,
                 'metadata_snapshot_enabled': self.metadata_snapshot_enabled,
+                'metadata_snapshot_retention_days': self.metadata_snapshot_retention_days,
+                'metadata_snapshot_max_per_job': self.metadata_snapshot_max_per_job,
+                'metadata_snapshot_daypart_limit': self.metadata_snapshot_daypart_limit,
                 'metadata_snapshot_archive_dir': self.metadata_snapshot_archive_dir,
                 'assimp_path': self.assimp_path
             }

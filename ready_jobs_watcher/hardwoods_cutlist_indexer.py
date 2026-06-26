@@ -53,6 +53,14 @@ _TRACKER_SET_BAD_COUNT = "set_bad_count"
 _UNIT_TYPE_SHEETS = "SHEETS"
 _UNIT_TYPE_BD_FT = "BD_FT"
 _UNIT_TYPE_PER_FT = "PER_FT"
+_UNIT_TYPE_SQ_FT = "SQ_FT"
+_UNIT_TYPE_EACH = "EACH"
+_UNIT_TYPE_PER_M = "PER_M"
+_UNIT_TYPE_SQ_M = "SQ_M"
+_UNIT_TYPE_BD_M = "BD_M"
+_UNIT_TYPE_CUBIC_M = "CUBIC_M"
+_UNIT_TYPE_CUBIC_FT = "CUBIC_FT"
+_UNIT_TYPE_PAIR = "PAIR"
 _UNIT_TYPE_UNKNOWN = "UNKNOWN"
 
 
@@ -125,12 +133,28 @@ def _unit_type_from_raw(unit_raw: str) -> str:
     if not text:
         return _UNIT_TYPE_UNKNOWN
     tokens = set(text.split())
+    if "EACH" in tokens:
+        return _UNIT_TYPE_EACH
+    if "PAIR" in tokens:
+        return _UNIT_TYPE_PAIR
     if "SHE" in tokens or "SHEET" in tokens or "SHEETS" in tokens:
         return _UNIT_TYPE_SHEETS
+    if ("SQ" in tokens or "SQUARE" in tokens) and ("FT" in tokens or "FOOT" in tokens or "FEET" in tokens):
+        return _UNIT_TYPE_SQ_FT
+    if ("SQ" in tokens or "SQUARE" in tokens) and ("M" in tokens or "METER" in tokens or "METERS" in tokens or "METRE" in tokens or "METRES" in tokens):
+        return _UNIT_TYPE_SQ_M
+    if "CUBIC" in tokens and ("FT" in tokens or "FOOT" in tokens or "FEET" in tokens):
+        return _UNIT_TYPE_CUBIC_FT
+    if "CUBIC" in tokens and ("M" in tokens or "METER" in tokens or "METERS" in tokens or "METRE" in tokens or "METRES" in tokens):
+        return _UNIT_TYPE_CUBIC_M
     if ("BD" in tokens and "FT" in tokens) or ("BOARD" in tokens and ("FT" in tokens or "FOOT" in tokens or "FEET" in tokens)):
         return _UNIT_TYPE_BD_FT
+    if ("BD" in tokens and "M" in tokens) or ("BOARD" in tokens and ("M" in tokens or "METER" in tokens or "METERS" in tokens or "METRE" in tokens or "METRES" in tokens)):
+        return _UNIT_TYPE_BD_M
     if "PER" in tokens and ("FT" in tokens or "FOOT" in tokens or "FEET" in tokens):
         return _UNIT_TYPE_PER_FT
+    if "PER" in tokens and ("M" in tokens or "METER" in tokens or "METERS" in tokens or "METRE" in tokens or "METRES" in tokens):
+        return _UNIT_TYPE_PER_M
     return _UNIT_TYPE_UNKNOWN
 
 

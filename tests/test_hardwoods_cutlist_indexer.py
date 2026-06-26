@@ -263,6 +263,56 @@ def test_closet_rod_doc_type_and_per_ft_units_are_detected():
     assert indexer._unit_type_from_raw("Per FT") == "PER_FT"
 
 
+def test_all_cabinet_vision_unit_names_are_detected():
+    assert indexer._unit_type_from_raw("Each") == "EACH"
+    assert indexer._unit_type_from_raw("Per FT") == "PER_FT"
+    assert indexer._unit_type_from_raw("SQ FT") == "SQ_FT"
+    assert indexer._unit_type_from_raw("BD FT") == "BD_FT"
+    assert indexer._unit_type_from_raw("Sheet") == "SHEETS"
+    assert indexer._unit_type_from_raw("Per M") == "PER_M"
+    assert indexer._unit_type_from_raw("SQ M") == "SQ_M"
+    assert indexer._unit_type_from_raw("BD M") == "BD_M"
+    assert indexer._unit_type_from_raw("Cubic M") == "CUBIC_M"
+    assert indexer._unit_type_from_raw("Cubic FT") == "CUBIC_FT"
+    assert indexer._unit_type_from_raw("Pair") == "PAIR"
+
+
+def test_square_foot_units_are_detected_without_unknown_warning(tmp_path, monkeypatch):
+    job_dir = tmp_path / "314 - TEST"
+    job_dir.mkdir()
+    door_cut = job_dir / "314 - Door Cut List.pdf"
+    door_cut.write_text("placeholder", encoding="utf-8")
+
+    page_words = []
+    page_words += [
+        _w(74, 130, "Material:"),
+        _w(124, 130, "'1/8"),
+        _w(160, 130, "Glass'"),
+        _w(206, 130, "|"),
+        _w(216, 130, "Units:"),
+        _w(254, 130, "SQ"),
+        _w(276, 130, "FT"),
+        _w(292, 130, "|"),
+    ]
+    page_words += _std_header(160)
+    page_words += _std_row(184, 1, "Glass Panel", "12", "24", "7")
+    page_words += [_w(75, 210, "Totals"), _w(250, 210, "Width"), _w(320, 210, "Length"), _w(390, 210, "Rips")]
+    page_words += [_w(250, 230, "12"), _w(320, 230, "24"), _w(390, 230, "1")]
+
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=page_words)]))
+    warnings = []
+    monkeypatch.setattr(indexer.main_logger, "warning", lambda msg, *args, **kwargs: warnings.append(msg % args))
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    docs = {doc["docType"]: doc for doc in payload["documents"]}
+    door = docs[indexer.DOC_TYPE_DOOR_CUT]
+
+    assert door["rows"][0]["unitType"] == "SQ_FT"
+    assert door["totals"][0]["unitType"] == "SQ_FT"
+    assert not any("HARDWOODS_UNIT_UNKNOWN" in line for line in warnings)
+
+
 def test_closet_rod_cut_list_parses_length_only_rows_and_totals(tmp_path, monkeypatch):
     job_dir = tmp_path / "597 - TEST"
     job_dir.mkdir()

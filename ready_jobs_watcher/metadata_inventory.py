@@ -53,6 +53,8 @@ def classify_metadata_path(path: os.PathLike | str, root_dir: os.PathLike | str)
 
     if name.endswith(".tmp") or name.endswith(".ocr.tmp") or ".tmp." in name:
         return MetadataClassification(OwnershipMode.IGNORED_GENERATED, rel, "temporary_file")
+    if name == "watcher_refresh_watcher.json":
+        return MetadataClassification(OwnershipMode.IGNORED_GENERATED, rel, "watcher_refresh_signal")
     if ".thumbs" in parts or ".fullimages" in parts:
         return MetadataClassification(OwnershipMode.IGNORED_GENERATED, rel, "generated_media_cache")
     if name.startswith("."):

@@ -34,6 +34,27 @@ main_logger = logging.getLogger('main')
 # Thread-safe lock for log file processing
 IS_PROCESSING_LOG_FILE_LOCK = threading.Lock()
 
+
+def _path_parts_lower(path: str) -> list[str]:
+    normalized = str(path or "").replace("/", "\\")
+    return [part.lower() for part in normalized.split("\\") if part]
+
+
+def _is_internal_watcher_path(path: str) -> bool:
+    """
+    Return True for watcher-owned bookkeeping paths that should not drive rename logic.
+
+    The PDF/tracker handler still sees tracker signal files; this only keeps the
+    rename handler from logging and processing its own generated metadata writes.
+    """
+    if not path:
+        return True
+    parts = _path_parts_lower(path)
+    if ".metadata" in parts or ".tracker" in parts:
+        return True
+    return should_ignore_file(os.path.basename(path))
+
+
 class RenameHandler(FileSystemEventHandler):
     """
     Event handler for file and directory creation or movement events.
@@ -149,11 +170,14 @@ class RenameHandler(FileSystemEventHandler):
             event (FileSystemEvent): The watchdog event instance.
         """
         try:
-            main_logger.debug(f"on_created triggered for {event.src_path}")
-
             if not event.is_directory and is_sync_conflict_path(event.src_path):
                 resolve_sync_conflict_file(event.src_path, self.config.ROOT_DIR)
                 return
+
+            if _is_internal_watcher_path(event.src_path):
+                return
+
+            main_logger.debug(f"on_created triggered for {event.src_path}")
 
             # Skip hidden files/folders
             if is_hidden(event.src_path):
@@ -220,6 +244,8 @@ class RenameHandler(FileSystemEventHandler):
             event (FileSystemEvent): The watchdog event instance.
         """
         try:
+            if _is_internal_watcher_path(event.src_path):
+                return
             main_logger.debug(f"on_modified triggered for {event.src_path}")
         except Exception as e:
             main_logger.error(f"Error in RenameHandler.on_modified for {event.src_path}: {e}")
@@ -232,11 +258,14 @@ class RenameHandler(FileSystemEventHandler):
             event (FileSystemEvent): The watchdog event instance.
         """
         try:
-            main_logger.debug(f"on_moved triggered for {event.src_path} -> {event.dest_path}")
-
             if not event.is_directory and is_sync_conflict_path(event.dest_path):
                 resolve_sync_conflict_file(event.dest_path, self.config.ROOT_DIR)
                 return
+
+            if _is_internal_watcher_path(event.src_path) or _is_internal_watcher_path(event.dest_path):
+                return
+
+            main_logger.debug(f"on_moved triggered for {event.src_path} -> {event.dest_path}")
 
             # Skip hidden destinations
             if is_hidden(event.dest_path):
@@ -406,8 +435,14 @@ class PdfChangeHandler(FileSystemEventHandler):
         return folder
 
     @staticmethod
+    def _is_watcher_refresh_signal(file_path: str) -> bool:
+        return os.path.basename(str(file_path or "").replace("/", "\\")).lower() == "watcher_refresh_watcher.json"
+
+    @staticmethod
     def _is_tracker_stream_file(file_path: str) -> bool:
         normalized = file_path.replace('/', '\\').lower()
+        if PdfChangeHandler._is_watcher_refresh_signal(normalized):
+            return False
         if "\\cnc\\.tracker\\events\\" in normalized and normalized.endswith(".ndjson"):
             return True
         return normalized.endswith(".json") and "\\cnc\\.tracker\\" in normalized
@@ -710,6 +745,8 @@ class PdfChangeHandler(FileSystemEventHandler):
             event (FileSystemEvent): The watchdog event instance.
         """
         try:
+            if not event.is_directory and self._is_watcher_refresh_signal(event.src_path):
+                return
             if not event.is_directory:
                 self._schedule_metadata_refresh(event.src_path, "modified")
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
@@ -767,6 +804,9 @@ class PdfChangeHandler(FileSystemEventHandler):
                 resolve_sync_conflict_file(event.src_path, self.config.ROOT_DIR)
                 return
 
+            if not event.is_directory and self._is_watcher_refresh_signal(event.src_path):
+                return
+
             if not event.is_directory:
                 self._schedule_metadata_refresh(event.src_path, "created")
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
@@ -820,6 +860,8 @@ class PdfChangeHandler(FileSystemEventHandler):
             event (FileSystemEvent): The watchdog event instance.
         """
         try:
+            if not event.is_directory and self._is_watcher_refresh_signal(event.src_path):
+                return
             if not event.is_directory:
                 self._schedule_metadata_refresh(event.src_path, "deleted")
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):

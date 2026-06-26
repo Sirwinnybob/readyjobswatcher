@@ -8,6 +8,7 @@ from ready_jobs_watcher.deployment_gate import (
     MODE_UNKNOWN,
     DeploymentGateManager,
     derive_state,
+    ensure_hidden_gates_for_all_folders,
 )
 
 
@@ -128,6 +129,19 @@ class TestDeploymentGateManager(unittest.TestCase):
 
             state = gate.ensure_pending_for_new_job(job, detected_mode="bad-mode", detection_source="manual")
             self.assertEqual(state["modeDetection"]["candidate"], MODE_UNKNOWN)
+
+
+class TestEnsureHiddenGatesForAllFolders(unittest.TestCase):
+    def test_returns_names_of_newly_gated_folders_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "100 - NEW JOB"), exist_ok=True)
+            os.makedirs(os.path.join(root, "200 - ALREADY GATED"), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            gate.ensure_pending_for_new_job("200 - ALREADY GATED")
+
+            created = ensure_hidden_gates_for_all_folders(root)
+
+            self.assertEqual(created, ["100 - NEW JOB"])
 
 
 class TestDeriveState(unittest.TestCase):

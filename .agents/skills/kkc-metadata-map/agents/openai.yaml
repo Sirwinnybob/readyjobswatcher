@@ -1,0 +1,4 @@
+interface:
+  display_name: "KKC Metadata Map"
+  short_description: "Find who owns KKC Ready Jobs and tablet metadata."
+  default_prompt: "Use kkc-metadata-map to identify the owner, source path, and first debug checks for KKC metadata."

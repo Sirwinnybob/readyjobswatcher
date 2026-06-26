@@ -23,7 +23,7 @@ class FakeTimer:
             self.callback()
 
 
-def test_debounced_refresh_waits_eight_seconds_and_resets_timer(tmp_path):
+def test_refresh_timer_batches_changes_without_resetting_window(tmp_path):
     FakeTimer.instances = []
     calls = []
     scheduler = DebouncedMetadataRefreshScheduler(
@@ -37,13 +37,9 @@ def test_debounced_refresh_waits_eight_seconds_and_resets_timer(tmp_path):
     scheduler.schedule(job, "sidecar_created")
     scheduler.schedule(job, "ocr_complete")
 
-    assert len(FakeTimer.instances) == 2
+    assert len(FakeTimer.instances) == 1
     assert FakeTimer.instances[0].delay == 8
-    assert FakeTimer.instances[0].cancelled is True
     FakeTimer.instances[0].fire()
-    assert calls == []
-
-    FakeTimer.instances[1].fire()
     assert calls == [("123 - Test Job", "ocr_complete")]
 
 

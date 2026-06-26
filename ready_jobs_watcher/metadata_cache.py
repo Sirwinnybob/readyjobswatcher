@@ -631,6 +631,9 @@ def update_all_jobs_cache(
     consolidate_trackers: bool = True,
     archive: bool = True,
     archive_root: Optional[Path] = None,
+    archive_retention_days: Optional[int] = None,
+    archive_max_snapshots_per_job: Optional[int] = None,
+    archive_daypart_limit: bool = False,
     force_rebuild: bool = False,
 ) -> Dict[str, int]:
     scanned = scan_jobs(base_path)
@@ -666,7 +669,15 @@ def update_all_jobs_cache(
                 summary["rebuilt"] += 1
 
             if archive and archive_root is not None:
-                result = archive_job_metadata(base_path, job_folder, archive_root, reason="scheduled_cache_update")
+                result = archive_job_metadata(
+                    base_path,
+                    job_folder,
+                    archive_root,
+                    reason="scheduled_cache_update",
+                    retention_days=archive_retention_days,
+                    max_snapshots_per_job=archive_max_snapshots_per_job,
+                    daypart_limit=archive_daypart_limit,
+                )
                 if result.success:
                     summary["archived"] += 1
                 else:
@@ -682,6 +693,9 @@ def refresh_single_job(
     *,
     reason: str,
     archive_root: Optional[Path],
+    archive_retention_days: Optional[int] = None,
+    archive_max_snapshots_per_job: Optional[int] = None,
+    archive_daypart_limit: bool = False,
     consolidate_trackers: bool = False,
 ) -> Dict[str, Any]:
     if not job_folder.is_dir():
@@ -695,5 +709,13 @@ def refresh_single_job(
     data = generate_static_cache(job_folder, job_folder.name, lineup_positions.get(job_folder.name))
     archive_result = None
     if archive_root is not None:
-        archive_result = archive_job_metadata(base_path, job_folder, archive_root, reason=reason)
+        archive_result = archive_job_metadata(
+            base_path,
+            job_folder,
+            archive_root,
+            reason=reason,
+            retention_days=archive_retention_days,
+            max_snapshots_per_job=archive_max_snapshots_per_job,
+            daypart_limit=archive_daypart_limit,
+        )
     return {"cache": data, "archive": archive_result}

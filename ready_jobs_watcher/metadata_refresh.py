@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .metadata_cache import refresh_single_job, update_all_jobs_cache
+from .metadata_snapshot import prune_orphan_job_archives
 from .metadata_inventory import find_job_folder_for_path, is_rebuild_trigger
 
 main_logger = logging.getLogger("main")
@@ -50,7 +51,8 @@ class DebouncedMetadataRefreshScheduler:
         with self._lock:
             existing = self._timers.get(job)
             if existing is not None:
-                existing.cancel()
+                self._reasons[job] = reason
+                return True
             self._reasons[job] = reason
             timer = self.timer_factory(self.delay_seconds, _run)
             timer.daemon = True
@@ -75,7 +77,8 @@ class DebouncedMetadataRefreshScheduler:
 
         with self._lock:
             if self._global_timer is not None:
-                self._global_timer.cancel()
+                self._global_reason = reason
+                return True
             self._global_reason = reason
             timer = self.timer_factory(self.delay_seconds, _run)
             timer.daemon = True
@@ -124,6 +127,9 @@ class MetadataRefreshService:
             if getattr(config, "metadata_snapshot_enabled", True)
             else None
         )
+        self.archive_retention_days = getattr(config, "metadata_snapshot_retention_days", 30)
+        self.archive_max_snapshots_per_job = getattr(config, "metadata_snapshot_max_per_job", 3)
+        self.archive_daypart_limit = getattr(config, "metadata_snapshot_daypart_limit", True)
         self.scheduler = DebouncedMetadataRefreshScheduler(
             root_dir=self.root_dir,
             refresh_callback=self.refresh_job_now,
@@ -143,25 +149,46 @@ class MetadataRefreshService:
             Path(job_folder),
             reason=reason,
             archive_root=self.archive_root,
+            archive_retention_days=self.archive_retention_days,
+            archive_max_snapshots_per_job=self.archive_max_snapshots_per_job,
+            archive_daypart_limit=self.archive_daypart_limit,
             consolidate_trackers=False,
         )
 
     def refresh_all_now(self, reason: str) -> dict:
-        return update_all_jobs_cache(
+        summary = update_all_jobs_cache(
             self.root_dir,
             consolidate_trackers=False,
             archive=True,
             archive_root=self.archive_root,
+            archive_retention_days=self.archive_retention_days,
+            archive_max_snapshots_per_job=self.archive_max_snapshots_per_job,
+            archive_daypart_limit=self.archive_daypart_limit,
             force_rebuild=True,
         )
+        self._prune_orphan_archives()
+        return summary
 
     def run_scheduled_sweep(self, *, consolidate_trackers: bool = True) -> dict:
-        return update_all_jobs_cache(
+        summary = update_all_jobs_cache(
             self.root_dir,
             consolidate_trackers=consolidate_trackers,
             archive=True,
             archive_root=self.archive_root,
+            archive_retention_days=self.archive_retention_days,
+            archive_max_snapshots_per_job=self.archive_max_snapshots_per_job,
+            archive_daypart_limit=self.archive_daypart_limit,
         )
+        self._prune_orphan_archives()
+        return summary
+
+    def _prune_orphan_archives(self) -> None:
+        if self.archive_root is None:
+            return
+        try:
+            prune_orphan_job_archives(self.root_dir, self.archive_root)
+        except Exception as exc:
+            main_logger.error("Failed pruning orphan metadata archives: %s", exc, exc_info=True)
 
     def stop(self) -> None:
         self.scheduler.cancel_all()
