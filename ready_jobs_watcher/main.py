@@ -1169,6 +1169,7 @@ class Application:
         logging.info("Starting initial scan...")
         self._bootstrap_new_job_folders()
         try:
+            eligible_paths = []
             with os.scandir(self.config.ROOT_DIR) as it:
                 for entry in it:
                     if entry.is_dir():
@@ -1180,19 +1181,29 @@ class Application:
                         if not self.deployment_gate.should_process_job_folder(full_path):
                             logging.info(f"Skipping pending job during initial parse: {full_path}")
                             continue
-                        try:
-                            build_reference_index_for_job(full_path)
-                        except Exception as e:
-                            logging.error(f"Reference index build failed for {full_path}: {e}", exc_info=True)
-                        try:
-                            build_hardwoods_cutlist_index_for_job(full_path, deployment_gate=self.deployment_gate)
-                        except Exception as e:
-                            logging.error(f"Hardwoods cutlist index build failed for {full_path}: {e}", exc_info=True)
-                        try:
-                            convert_3d_models_for_job(full_path)
-                        except Exception as e:
-                            logging.error(f"3D model conversion failed for {full_path}: {e}", exc_info=True)
-                        time.sleep(0.05)
+                        eligible_paths.append(full_path)
+
+            def _build_indexes_for_job(job_path):
+                try:
+                    build_reference_index_for_job(job_path)
+                except Exception as e:
+                    logging.error(f"Reference index build failed for {job_path}: {e}", exc_info=True)
+                try:
+                    build_hardwoods_cutlist_index_for_job(job_path, deployment_gate=self.deployment_gate)
+                except Exception as e:
+                    logging.error(f"Hardwoods cutlist index build failed for {job_path}: {e}", exc_info=True)
+                try:
+                    convert_3d_models_for_job(job_path)
+                except Exception as e:
+                    logging.error(f"3D model conversion failed for {job_path}: {e}", exc_info=True)
+
+            from concurrent.futures import as_completed
+            futures = {self.executor.submit(_build_indexes_for_job, p): p for p in eligible_paths}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logging.error(f"Initial scan index build failed for {futures[future]}: {e}", exc_info=True)
         except OSError as e:
             logging.error(f"Error during initial scan: {e}")
             return False
