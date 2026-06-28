@@ -181,6 +181,45 @@ class Config:
 
         return True
 
+    def _apply_config_dict(self, config: Dict) -> None:
+        self.ROOT_DIR = config.get('root_dir', self.ROOT_DIR)
+        self.CNC_SUBDIR = config.get('cnc_subdir', self.CNC_SUBDIR)
+        self.BACKUP_DIR = config.get('backup_dir', self.BACKUP_DIR)
+        self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
+        self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
+        self.backup_retention_days = int(config.get('backup_retention_days', self.backup_retention_days))
+        self.CNC_SCAN_TIMES = config.get('cnc_scan_times', self.CNC_SCAN_TIMES)
+        self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
+        self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
+        self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
+        self.bad_parts_mode = config.get("bad_parts_mode", self.bad_parts_mode)
+        self.bad_parts_popup_enabled = config.get("bad_parts_popup_enabled", self.bad_parts_popup_enabled)
+        self.bad_parts_toast_enabled = config.get("bad_parts_toast_enabled", self.bad_parts_toast_enabled)
+        self.bad_parts_sound_profile = config.get("bad_parts_sound_profile", self.bad_parts_sound_profile)
+        self.tracker_reconcile_interval_seconds = int(
+            config.get("tracker_reconcile_interval_seconds", self.tracker_reconcile_interval_seconds)
+        )
+        self.metadata_cache_debounce_seconds = float(
+            config.get("metadata_cache_debounce_seconds", self.metadata_cache_debounce_seconds)
+        )
+        self.metadata_end_of_day_time = config.get("metadata_end_of_day_time", self.metadata_end_of_day_time)
+        self.metadata_snapshot_enabled = config.get("metadata_snapshot_enabled", self.metadata_snapshot_enabled)
+        self.metadata_snapshot_retention_days = int(
+            config.get("metadata_snapshot_retention_days", self.metadata_snapshot_retention_days)
+        )
+        self.metadata_snapshot_max_per_job = int(
+            config.get("metadata_snapshot_max_per_job", self.metadata_snapshot_max_per_job)
+        )
+        self.metadata_snapshot_daypart_limit = config.get(
+            "metadata_snapshot_daypart_limit",
+            self.metadata_snapshot_daypart_limit,
+        )
+        self.metadata_snapshot_archive_dir = config.get(
+            "metadata_snapshot_archive_dir",
+            self.metadata_snapshot_archive_dir,
+        )
+        self.assimp_path = config.get("assimp_path", self.assimp_path)
+
     def load(self) -> None:
         """
         Loads the configuration from the JSON file.
@@ -215,43 +254,7 @@ class Config:
                         main_logger.warning("No backup config available, using defaults")
                         return
 
-                self.ROOT_DIR = config.get('root_dir', self.ROOT_DIR)
-                self.CNC_SUBDIR = config.get('cnc_subdir', self.CNC_SUBDIR)
-                self.BACKUP_DIR = config.get('backup_dir', self.BACKUP_DIR)
-                self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
-                self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
-                self.backup_retention_days = int(config.get('backup_retention_days', self.backup_retention_days))
-                self.CNC_SCAN_TIMES = config.get('cnc_scan_times', self.CNC_SCAN_TIMES)
-                self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
-                self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
-                self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
-                self.bad_parts_mode = config.get("bad_parts_mode", self.bad_parts_mode)
-                self.bad_parts_popup_enabled = config.get("bad_parts_popup_enabled", self.bad_parts_popup_enabled)
-                self.bad_parts_toast_enabled = config.get("bad_parts_toast_enabled", self.bad_parts_toast_enabled)
-                self.bad_parts_sound_profile = config.get("bad_parts_sound_profile", self.bad_parts_sound_profile)
-                self.tracker_reconcile_interval_seconds = int(
-                    config.get("tracker_reconcile_interval_seconds", self.tracker_reconcile_interval_seconds)
-                )
-                self.metadata_cache_debounce_seconds = float(
-                    config.get("metadata_cache_debounce_seconds", self.metadata_cache_debounce_seconds)
-                )
-                self.metadata_end_of_day_time = config.get("metadata_end_of_day_time", self.metadata_end_of_day_time)
-                self.metadata_snapshot_enabled = config.get("metadata_snapshot_enabled", self.metadata_snapshot_enabled)
-                self.metadata_snapshot_retention_days = int(
-                    config.get("metadata_snapshot_retention_days", self.metadata_snapshot_retention_days)
-                )
-                self.metadata_snapshot_max_per_job = int(
-                    config.get("metadata_snapshot_max_per_job", self.metadata_snapshot_max_per_job)
-                )
-                self.metadata_snapshot_daypart_limit = config.get(
-                    "metadata_snapshot_daypart_limit",
-                    self.metadata_snapshot_daypart_limit,
-                )
-                self.metadata_snapshot_archive_dir = config.get(
-                    "metadata_snapshot_archive_dir",
-                    self.metadata_snapshot_archive_dir,
-                )
-                self.assimp_path = config.get("assimp_path", self.assimp_path)
+                self._apply_config_dict(config)
                 main_logger.info(f"Loaded backup times from config: {self.BACKUP_TIMES}")
             else:
                 main_logger.debug(f"No config file found at {self.CONFIG_FILE}, using default backup times")
@@ -264,43 +267,7 @@ class Config:
                     with open(backup_file, 'r') as f:
                         config = json.load(f)
                     if self._validate_config(config):
-                        self.ROOT_DIR = config.get('root_dir', self.ROOT_DIR)
-                        self.CNC_SUBDIR = config.get('cnc_subdir', self.CNC_SUBDIR)
-                        self.BACKUP_DIR = config.get('backup_dir', self.BACKUP_DIR)
-                        self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
-                        self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
-                        self.backup_retention_days = int(config.get('backup_retention_days', self.backup_retention_days))
-                        self.CNC_SCAN_TIMES = config.get('cnc_scan_times', self.CNC_SCAN_TIMES)
-                        self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
-                        self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
-                        self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
-                        self.bad_parts_mode = config.get("bad_parts_mode", self.bad_parts_mode)
-                        self.bad_parts_popup_enabled = config.get("bad_parts_popup_enabled", self.bad_parts_popup_enabled)
-                        self.bad_parts_toast_enabled = config.get("bad_parts_toast_enabled", self.bad_parts_toast_enabled)
-                        self.bad_parts_sound_profile = config.get("bad_parts_sound_profile", self.bad_parts_sound_profile)
-                        self.tracker_reconcile_interval_seconds = int(
-                            config.get("tracker_reconcile_interval_seconds", self.tracker_reconcile_interval_seconds)
-                        )
-                        self.metadata_cache_debounce_seconds = float(
-                            config.get("metadata_cache_debounce_seconds", self.metadata_cache_debounce_seconds)
-                        )
-                        self.metadata_end_of_day_time = config.get("metadata_end_of_day_time", self.metadata_end_of_day_time)
-                        self.metadata_snapshot_enabled = config.get("metadata_snapshot_enabled", self.metadata_snapshot_enabled)
-                        self.metadata_snapshot_retention_days = int(
-                            config.get("metadata_snapshot_retention_days", self.metadata_snapshot_retention_days)
-                        )
-                        self.metadata_snapshot_max_per_job = int(
-                            config.get("metadata_snapshot_max_per_job", self.metadata_snapshot_max_per_job)
-                        )
-                        self.metadata_snapshot_daypart_limit = config.get(
-                            "metadata_snapshot_daypart_limit",
-                            self.metadata_snapshot_daypart_limit,
-                        )
-                        self.metadata_snapshot_archive_dir = config.get(
-                            "metadata_snapshot_archive_dir",
-                            self.metadata_snapshot_archive_dir,
-                        )
-                        self.assimp_path = config.get("assimp_path", self.assimp_path)
+                        self._apply_config_dict(config)
                         main_logger.info("Successfully restored config from backup")
                         # Save restored config
                         with open(self.CONFIG_FILE, 'w') as f:
