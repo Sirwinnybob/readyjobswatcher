@@ -58,9 +58,7 @@ class DeploymentGateManager:
         temp_path = f"{path}.tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
-        if os.path.exists(path):
-            os.remove(path)
-        os.rename(temp_path, path)
+        os.replace(temp_path, path)
 
     @staticmethod
     def _default_state(job_folder_name: str, deployed: bool = True) -> Dict:
