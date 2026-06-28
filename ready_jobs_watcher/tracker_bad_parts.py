@@ -155,9 +155,7 @@ class TrackerBadPartsMonitor:
         os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(self.state.to_dict(), f, indent=2, ensure_ascii=False)
-        if os.path.exists(self.state_file):
-            os.remove(self.state_file)
-        os.rename(temp_path, self.state_file)
+        os.replace(temp_path, self.state_file)
 
     def _iter_job_folders(self) -> Iterable[Tuple[str, str]]:
         root_dir = self.config.ROOT_DIR
@@ -200,11 +198,12 @@ class TrackerBadPartsMonitor:
         meta_path = self._metadata_path_for_key(key)
         material = key.pdf_filename
         try:
-            if os.path.exists(meta_path):
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                if isinstance(raw, dict):
-                    material = str(raw.get("material") or raw.get("pdfFilename") or material)
+            with open(meta_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                material = str(raw.get("material") or raw.get("pdfFilename") or material)
+        except FileNotFoundError:
+            pass
         except Exception:
             material = key.pdf_filename
 
@@ -229,11 +228,12 @@ class TrackerBadPartsMonitor:
         meta_path = self._metadata_path_for_key(key)
         metadata: Optional[Dict[str, Any]] = None
         try:
-            if os.path.exists(meta_path):
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                if isinstance(raw, dict):
-                    metadata = raw
+            with open(meta_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                metadata = raw
+        except FileNotFoundError:
+            pass
         except Exception:
             metadata = None
 
