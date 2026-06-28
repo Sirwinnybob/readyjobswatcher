@@ -49,7 +49,7 @@
 
 - [x] **PERF: `has_3d_assets()` in metadata_cache.py does two-level glob.** Called during cache generation for every job. Add an early return after finding the first match (currently iterates all). Also consider caching per-session if called multiple times for the same job.
 
-- [SKIPPED: 91 occurrences across 19 files requires per-site audit; blind LBYL→EAFP conversion risks masking real errors] **PERF: Multiple `os.path.exists` / `os.path.isdir` calls on same path.** 91 occurrences across 19 files. Many are guarding the same path multiple times (e.g., check exists, then open, then check again). Audit the hot paths and consolidate where possible — use try/except instead of check-then-act for filesystem operations over the network share (LBYL → EAFP).
+- [x] **PERF: Multiple `os.path.exists` / `os.path.isdir` calls on same path.** Audited all 91 occurrences across 19 files. Converted hot-path check-then-act patterns to EAFP across pending_queue, main, bad_parts_checker, tracker_bad_parts, hardwoods_cutlist_indexer, file_handler, gui, deployment_gate, utils, remake_candidates_indexer, tracker_action_stream, pdf_dark_mode, and watchers. Also fixed 4 additional non-atomic `os.remove + os.rename` races (pending_queue, both bad_parts blacklists, tracker_bad_parts state). Left LBYL guards at decision-branch points and existing test-mock contracts in place. 91 occurrences across 19 files. Many are guarding the same path multiple times (e.g., check exists, then open, then check again). Audit the hot paths and consolidate where possible — use try/except instead of check-then-act for filesystem operations over the network share (LBYL → EAFP).
 
 ---
 
