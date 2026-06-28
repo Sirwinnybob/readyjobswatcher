@@ -1097,18 +1097,30 @@ class Application:
                 index_path = _os.path.join(entry.path, ".metadata", REFERENCE_INDEX_FILENAME)
                 if not _os.path.exists(index_path):
                     continue  # never indexed; watcher will catch it when PDFs appear
-                # Rebuild if the index is stale (older than any PDF in the job folder)
+                # Rebuild if the index is stale (older than any PDF in the job folder).
+                # Check CNC/ first — most common staleness source — then scan other dirs.
                 index_mtime = _os.path.getmtime(index_path)
                 needs_rebuild = False
-                for dirpath, _dirs, files in _os.walk(entry.path):
-                    for fname in files:
-                        if fname.lower().endswith(".pdf"):
-                            pdf_mtime = _os.path.getmtime(_os.path.join(dirpath, fname))
-                            if pdf_mtime > index_mtime:
-                                needs_rebuild = True
-                                break
-                    if needs_rebuild:
-                        break
+
+                def _has_stale_pdf(directory):
+                    try:
+                        with _os.scandir(directory) as sd:
+                            for child in sd:
+                                if child.is_file() and child.name.lower().endswith(".pdf"):
+                                    if child.stat().st_mtime > index_mtime:
+                                        return True
+                                elif child.is_dir() and not child.name.startswith("."):
+                                    if _has_stale_pdf(child.path):
+                                        return True
+                    except OSError:
+                        pass
+                    return False
+
+                cnc_dir = _os.path.join(entry.path, self.config.CNC_SUBDIR)
+                if _os.path.isdir(cnc_dir):
+                    needs_rebuild = _has_stale_pdf(cnc_dir)
+                if not needs_rebuild:
+                    needs_rebuild = _has_stale_pdf(entry.path)
                 if needs_rebuild:
                     logging.info("Startup: rebuilding stale cabinet index for %s", entry.name)
                     try:
