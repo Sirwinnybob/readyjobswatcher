@@ -16,6 +16,16 @@ import fitz  # PyMuPDF
 
 from .config import BASE_DATA_DIR
 
+def is_root_available(config) -> bool:
+    root_dir = getattr(config, "ROOT_DIR", "")
+    if not root_dir:
+        return False
+    try:
+        return os.path.isdir(root_dir)
+    except OSError:
+        return False
+
+
 # Allowed PDF sheets for dark mode conversion
 ALLOWED_SHEETS_PATTERN = re.compile(r'DELIVERY SHEET|ASSEMBLY SHEET|PLANS & ELEVATIONS', re.IGNORECASE)
 

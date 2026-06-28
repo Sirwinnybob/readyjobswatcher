@@ -857,13 +857,8 @@ class Application:
         self.pending_queue.resume_pending_operations(pdf_handler, rename_handler)
 
     def _is_root_available(self) -> bool:
-        root_dir = getattr(self.config, "ROOT_DIR", "")
-        if not root_dir:
-            return False
-        try:
-            return os.path.isdir(root_dir)
-        except OSError:
-            return False
+        from .utils import is_root_available
+        return is_root_available(self.config)
 
     def _observers_are_running(self) -> bool:
         return bool(

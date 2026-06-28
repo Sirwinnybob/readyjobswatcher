@@ -397,10 +397,8 @@ class PdfChangeHandler(FileSystemEventHandler):
         self.metadata_refresh_service = metadata_refresh_service
 
     def _is_root_available(self) -> bool:
-        try:
-            return os.path.isdir(self.config.ROOT_DIR)
-        except OSError:
-            return False
+        from .utils import is_root_available
+        return is_root_available(self.config)
 
     def _schedule_metadata_refresh(self, src_path: str, reason: str):
         if self.metadata_refresh_service is None:
