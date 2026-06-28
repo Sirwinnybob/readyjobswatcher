@@ -221,6 +221,7 @@ class Config:
                 self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
                 self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
                 self.backup_retention_days = int(config.get('backup_retention_days', self.backup_retention_days))
+                self.CNC_SCAN_TIMES = config.get('cnc_scan_times', self.CNC_SCAN_TIMES)
                 self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
                 self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
                 self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
@@ -269,6 +270,7 @@ class Config:
                         self.BACKUP_FOLDERS = config.get('backup_folders', self.BACKUP_FOLDERS)
                         self.BACKUP_TIMES = config.get('backup_times', self.BACKUP_TIMES)
                         self.backup_retention_days = int(config.get('backup_retention_days', self.backup_retention_days))
+                        self.CNC_SCAN_TIMES = config.get('cnc_scan_times', self.CNC_SCAN_TIMES)
                         self.pdf_conversion_delay_seconds = config.get('pdf_conversion_delay_seconds', self.pdf_conversion_delay_seconds)
                         self.new_folder_delay_seconds = config.get('new_folder_delay_seconds', self.new_folder_delay_seconds)
                         self.daily_restart_time = config.get('daily_restart_time', self.daily_restart_time)
@@ -330,6 +332,7 @@ class Config:
                 'backup_folders': self.BACKUP_FOLDERS,
                 'backup_times': self.BACKUP_TIMES,
                 'backup_retention_days': self.backup_retention_days,
+                'cnc_scan_times': self.CNC_SCAN_TIMES,
                 'pdf_conversion_delay_seconds': self.pdf_conversion_delay_seconds,
                 'new_folder_delay_seconds': self.new_folder_delay_seconds,
                 'daily_restart_time': self.daily_restart_time,
