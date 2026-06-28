@@ -147,22 +147,21 @@ def clear_old_logs():
     today_start = datetime.datetime.combine(now.date(), datetime.time(0, 0))
 
     for log_file in log_files:
-        if os.path.exists(log_file):
-            # Check if the file was last modified before today
+        try:
             mod_time = datetime.datetime.fromtimestamp(os.path.getmtime(log_file))
-
-            if mod_time < today_start:
-                # File is from a previous day - clear it
-                try:
-                    with open(log_file, 'w') as f:
-                        f.truncate(0)
-                    print(f"Cleared log file from previous day: {log_file} (last modified: {mod_time.strftime('%Y-%m-%d %H:%M:%S')})")
-                except OSError as e:
-                    print(f"Failed to clear log file {log_file}: {e}")
-                except Exception as e:
-                    import traceback
-                    print(f"Unexpected error clearing log file {log_file}: {e}")
-                    traceback.print_exc()
+        except FileNotFoundError:
+            continue
+        if mod_time < today_start:
+            try:
+                with open(log_file, 'w') as f:
+                    f.truncate(0)
+                print(f"Cleared log file from previous day: {log_file} (last modified: {mod_time.strftime('%Y-%m-%d %H:%M:%S')})")
+            except OSError as e:
+                print(f"Failed to clear log file {log_file}: {e}")
+            except Exception as e:
+                import traceback
+                print(f"Unexpected error clearing log file {log_file}: {e}")
+                traceback.print_exc()
 
 def cleanup_nested_dark_mode_folders(base_dir: str):
     """
@@ -206,8 +205,11 @@ def cleanup_nested_dark_mode_folders(base_dir: str):
                         dest = os.path.join(correct_dark_mode_path, entry.name)
 
                         try:
-                            # Only move if destination doesn't exist or is older
-                            if not os.path.exists(dest) or entry.stat().st_mtime > os.path.getmtime(dest):
+                            try:
+                                dest_mtime = os.path.getmtime(dest)
+                            except FileNotFoundError:
+                                dest_mtime = -1
+                            if entry.stat().st_mtime > dest_mtime:
                                 shutil.move(source, dest)
                                 logging.info(f"Moved {entry.name} from nested folder to {correct_dark_mode_path}")
                                 files_moved += 1
