@@ -156,41 +156,41 @@ class PendingQueue:
             # Step 3: Create backup of existing file (if it exists)
             if os.path.exists(self.queue_file):
                 try:
-                    if os.path.exists(backup_file):
-                        os.remove(backup_file)
-                    os.rename(self.queue_file, backup_file)
+                    os.replace(self.queue_file, backup_file)
                 except Exception as e:
                     pending_queue_logger.warning(f"Failed to create save backup: {e}")
 
-            # Step 4: Rename temp file to target (atomic on same filesystem)
+            # Step 4: Replace target with temp file (atomic on same filesystem)
             try:
-                os.rename(temp_file, self.queue_file)
+                os.replace(temp_file, self.queue_file)
             except Exception as e:
-                # If rename fails, try to restore from backup
-                pending_queue_logger.error(f"Failed to rename temp file: {e}")
+                # If replace fails, try to restore from backup
+                pending_queue_logger.error(f"Failed to replace queue file: {e}")
                 if os.path.exists(backup_file) and not os.path.exists(self.queue_file):
                     try:
-                        os.rename(backup_file, self.queue_file)
+                        os.replace(backup_file, self.queue_file)
                         pending_queue_logger.info("Restored queue file from backup after failed save")
                     except Exception:
                         pass
                 raise
 
             # Step 5: Clean up backup file on success
-            if os.path.exists(backup_file):
-                try:
-                    os.remove(backup_file)
-                except Exception:
-                    pass  # Not critical if cleanup fails
+            try:
+                os.remove(backup_file)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass  # Not critical if cleanup fails
 
         except Exception as e:
             pending_queue_logger.error(f"Failed to save pending queue: {e}", exc_info=True)
             # Clean up temp file on failure
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except Exception:
-                    pass
+            try:
+                os.remove(temp_file)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
 
     def add_pending_pdf(self, file_path: str, scheduled_time: float, invert_images: bool = False):
         """
