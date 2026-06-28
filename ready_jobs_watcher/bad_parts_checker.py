@@ -51,7 +51,6 @@ def load_blacklist() -> None:
     try:
         if os.path.exists(BLACKLIST_FILE) and os.path.getsize(BLACKLIST_FILE) > 0:
             with open(BLACKLIST_FILE, 'r') as f:
-                # Load as list of lists, convert to set of tuples
                 loaded_list = json.load(f)
                 BLACKLISTED_FILES = set(tuple(item) for item in loaded_list)
                 badparts_logger.info(f"Loaded {len(BLACKLISTED_FILES)} entries from blacklist.")
@@ -215,22 +214,18 @@ def save_to_blacklist_internal() -> None:
         with open(temp_file, 'w') as f:
             json.dump(list(list(item) for item in BLACKLISTED_FILES), f, indent=4)
 
-        # Atomic rename (on Windows, need to remove target first)
-        if os.path.exists(BLACKLIST_FILE):
-            os.remove(BLACKLIST_FILE)
-        os.rename(temp_file, BLACKLIST_FILE)
+        os.replace(temp_file, BLACKLIST_FILE)
 
     except OSError as e:
         badparts_logger.error(f"OS Error saving blacklist file internally: {e}")
-        if temp_file and os.path.exists(temp_file):
+        if temp_file:
             try:
                 os.remove(temp_file)
             except OSError:
                 pass
     except Exception as e:
         badparts_logger.error(f"Failed to save blacklist file internally: {e}", exc_info=True)
-        # Clean up temp file on failure
-        if temp_file and os.path.exists(temp_file):
+        if temp_file:
             try:
                 os.remove(temp_file)
             except OSError:
@@ -245,11 +240,13 @@ def load_permanently_ignored_blacklist() -> None:
     """
     global PERMANENTLY_IGNORED_FILES
     try:
-        if os.path.exists(PERMANENTLY_IGNORED_FILE):
+        try:
             with open(PERMANENTLY_IGNORED_FILE, 'r') as f:
                 loaded_list = json.load(f)
-                PERMANENTLY_IGNORED_FILES = set(tuple(item) for item in loaded_list)
-                badparts_logger.info(f"Loaded {len(PERMANENTLY_IGNORED_FILES)} entries from permanently ignored blacklist.")
+            PERMANENTLY_IGNORED_FILES = set(tuple(item) for item in loaded_list)
+            badparts_logger.info(f"Loaded {len(PERMANENTLY_IGNORED_FILES)} entries from permanently ignored blacklist.")
+        except FileNotFoundError:
+            pass
     except json.JSONDecodeError as e:
         badparts_logger.error(f"JSON decode error loading permanently ignored blacklist file: {e}")
     except OSError as e:
@@ -271,22 +268,18 @@ def save_permanently_ignored_blacklist_internal() -> None:
         with open(temp_file, 'w') as f:
             json.dump(list(list(item) for item in PERMANENTLY_IGNORED_FILES), f, indent=4)
 
-        # Atomic rename (on Windows, need to remove target first)
-        if os.path.exists(PERMANENTLY_IGNORED_FILE):
-            os.remove(PERMANENTLY_IGNORED_FILE)
-        os.rename(temp_file, PERMANENTLY_IGNORED_FILE)
+        os.replace(temp_file, PERMANENTLY_IGNORED_FILE)
 
     except OSError as e:
         badparts_logger.error(f"OS Error saving permanently ignored blacklist file internally: {e}")
-        if temp_file and os.path.exists(temp_file):
+        if temp_file:
             try:
                 os.remove(temp_file)
             except OSError:
                 pass
     except Exception as e:
         badparts_logger.error(f"Failed to save permanently ignored blacklist file internally: {e}", exc_info=True)
-        # Clean up temp file on failure
-        if temp_file and os.path.exists(temp_file):
+        if temp_file:
             try:
                 os.remove(temp_file)
             except OSError:
