@@ -47,62 +47,64 @@ def render_pdf_page_to_pixmap(pdf_full_path: str, page_num: int, thumbnail_path:
         try:
             import fitz
             doc = fitz.open(pdf_full_path)
-            page_idx = page_num - 1
-            if 0 <= page_idx < len(doc):
-                page = doc.load_page(page_idx)
-                
-                # Try to extract the largest embedded image first
-                images = page.get_images(full=True)
-                if images:
-                    largest_img = None
-                    max_area = 0
-                    for img in images:
-                        xref = img[0]
-                        w = img[2]
-                        h = img[3]
-                        area = w * h
-                        if area > max_area:
-                            max_area = area
-                            largest_img = img
-                    
-                    if largest_img:
-                        xref = largest_img[0]
-                        base_image = doc.extract_image(xref)
-                        if base_image:
-                            qpixmap = QPixmap()
-                            if qpixmap.loadFromData(base_image["image"]):
-                                pixmap = qpixmap
-                                pdf_loaded = True
-                                # Coordinates are already relative to the embedded image, no scaling needed!
-                                
-                if not pdf_loaded:
-                    # Fallback to rendering the entire PDF page
-                    mat = fitz.Matrix(zoom, zoom)
-                    pix = page.get_pixmap(matrix=mat, alpha=False)
-                    qimg = QImage(
-                        pix.samples,
-                        pix.width,
-                        pix.height,
-                        pix.stride,
-                        QImage.Format.Format_RGB888
-                    )
-                    pixmap = QPixmap.fromImage(qimg)
-                    pdf_loaded = True
-                    
-                    # Scale highlight box if needed (only for full page render)
-                    if highlight_rect and thumb_width and thumb_height:
-                        pdf_w = page.rect.width
-                        pdf_h = page.rect.height
-                        factor_x = (pdf_w * zoom) / thumb_width
-                        factor_y = (pdf_h * zoom) / thumb_height
-                        
-                        left, top, right, bottom = highlight_rect
-                        highlight_rect = (
-                            int(left * factor_x),
-                            int(top * factor_y),
-                            int(right * factor_x),
-                            int(bottom * factor_y)
+            try:
+                page_idx = page_num - 1
+                if 0 <= page_idx < len(doc):
+                    page = doc.load_page(page_idx)
+
+                    # Try to extract the largest embedded image first
+                    images = page.get_images(full=True)
+                    if images:
+                        largest_img = None
+                        max_area = 0
+                        for img in images:
+                            xref = img[0]
+                            w = img[2]
+                            h = img[3]
+                            area = w * h
+                            if area > max_area:
+                                max_area = area
+                                largest_img = img
+
+                        if largest_img:
+                            xref = largest_img[0]
+                            base_image = doc.extract_image(xref)
+                            if base_image:
+                                qpixmap = QPixmap()
+                                if qpixmap.loadFromData(base_image["image"]):
+                                    pixmap = qpixmap
+                                    pdf_loaded = True
+
+                    if not pdf_loaded:
+                        # Fallback to rendering the entire PDF page
+                        mat = fitz.Matrix(zoom, zoom)
+                        pix = page.get_pixmap(matrix=mat, alpha=False)
+                        qimg = QImage(
+                            pix.samples,
+                            pix.width,
+                            pix.height,
+                            pix.stride,
+                            QImage.Format.Format_RGB888
                         )
+                        pixmap = QPixmap.fromImage(qimg)
+                        pdf_loaded = True
+
+                        # Scale highlight box if needed (only for full page render)
+                        if highlight_rect and thumb_width and thumb_height:
+                            pdf_w = page.rect.width
+                            pdf_h = page.rect.height
+                            factor_x = (pdf_w * zoom) / thumb_width
+                            factor_y = (pdf_h * zoom) / thumb_height
+
+                            left, top, right, bottom = highlight_rect
+                            highlight_rect = (
+                                int(left * factor_x),
+                                int(top * factor_y),
+                                int(right * factor_x),
+                                int(bottom * factor_y)
+                            )
+            finally:
+                doc.close()
         except Exception as e:
             import logging
             logging.error(f"Error rendering PDF page: {e}")
