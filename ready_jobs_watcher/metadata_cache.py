@@ -49,17 +49,23 @@ def format_width(val: float) -> str:
     return s
 
 
+_3D_EXTENSIONS = frozenset((".glb", ".dae"))
+
+
 def has_3d_assets(job_folder: Path) -> bool:
     three_d_dir = job_folder / "3D"
     if not three_d_dir.is_dir():
         return False
-    for p in three_d_dir.glob("*"):
-        if p.is_file() and p.suffix.lower() in (".glb", ".dae"):
-            return True
-        if p.is_dir():
-            for sp in p.glob("*"):
-                if sp.is_file() and sp.suffix.lower() in (".glb", ".dae"):
-                    return True
+    try:
+        for p in three_d_dir.iterdir():
+            if p.is_file() and p.suffix.lower() in _3D_EXTENSIONS:
+                return True
+            if p.is_dir():
+                for sp in p.iterdir():
+                    if sp.is_file() and sp.suffix.lower() in _3D_EXTENSIONS:
+                        return True
+    except OSError:
+        pass
     return False
 
 
