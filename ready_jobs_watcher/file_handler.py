@@ -254,12 +254,6 @@ class JobProcessor:
         new_path = os.path.join(dir_path, new_name)
 
         try:
-            # Check if file still exists before attempting rename
-            if not os.path.exists(file_path):
-                logging.warning(f"File no longer exists, skipping: {file_path}")
-                return
-
-            # Check if destination already exists
             if os.path.exists(new_path):
                 logging.info(f"Destination already exists, skipping: {new_path}")
                 return
