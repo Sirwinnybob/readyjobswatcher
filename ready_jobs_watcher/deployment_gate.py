@@ -121,15 +121,15 @@ class DeploymentGateManager:
     def load_state(self, job_folder_name: str, *, create_if_missing: bool = False, default_deployed: bool = True) -> Dict:
         path = self._metadata_path_for_job(job_folder_name)
         with self._lock:
-            if not os.path.exists(path):
-                state = self._default_state(job_folder_name, deployed=default_deployed)
-                if create_if_missing:
-                    self._atomic_write_json(path, state)
-                return state
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     raw = json.load(f)
                 return self._coerce_state(job_folder_name, raw)
+            except FileNotFoundError:
+                state = self._default_state(job_folder_name, deployed=default_deployed)
+                if create_if_missing:
+                    self._atomic_write_json(path, state)
+                return state
             except Exception as exc:
                 main_logger.error("Failed reading deployment gate for %s: %s", job_folder_name, exc)
                 state = self._default_state(job_folder_name, deployed=default_deployed)

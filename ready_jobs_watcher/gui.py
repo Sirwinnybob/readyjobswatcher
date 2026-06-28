@@ -125,7 +125,7 @@ def render_pdf_page_to_pixmap(pdf_full_path: str, page_num: int, thumbnail_path:
                     base_name, _ = os.path.splitext(file_name)
                     json_path = os.path.join(dir_name, ".metadata", f"{base_name}.json")
                 
-                if json_path and os.path.exists(json_path):
+                if json_path:
                     try:
                         import json
                         with open(json_path, "r", encoding="utf-8") as f:
