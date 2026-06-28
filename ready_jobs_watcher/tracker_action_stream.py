@@ -197,8 +197,6 @@ def _load_legacy_json_actions(
             if name.startswith("."):
                 continue
             path = os.path.join(tracker_dir, name)
-            if not os.path.isfile(path):
-                continue
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     payload = json.load(f)

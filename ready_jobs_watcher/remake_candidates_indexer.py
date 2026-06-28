@@ -40,8 +40,10 @@ def _write_candidates(config: Config, job_folder_name: str, candidates: List[Dic
 
 def _remove_candidates_file(config: Config, job_folder_name: str) -> None:
     out_path = _candidates_output_path(config, job_folder_name)
-    if os.path.exists(out_path):
+    try:
         os.remove(out_path)
+    except FileNotFoundError:
+        pass
 
 
 def _collect_tracker_actions(tracker_dir: str) -> List[Dict]:

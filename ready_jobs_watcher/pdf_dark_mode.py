@@ -94,12 +94,15 @@ def run_dark_mode_conversion(dry_run: bool = False, theme: str = "classic", spec
             # Output to DARK MODE subfolder with same filename
             output_path = os.path.join(dark_mode_dir, input_filename)
 
-            if not force and os.path.exists(output_path):
-                input_mtime = os.path.getmtime(input_path)
-                output_mtime = os.path.getmtime(output_path)
-                if output_mtime >= input_mtime:
-                    pdf_darkmode_logger.debug(f"Skipping unmodified file: {input_path}")
-                    return True
+            if not force:
+                try:
+                    output_mtime = os.path.getmtime(output_path)
+                    input_mtime = os.path.getmtime(input_path)
+                    if output_mtime >= input_mtime:
+                        pdf_darkmode_logger.debug(f"Skipping unmodified file: {input_path}")
+                        return True
+                except FileNotFoundError:
+                    pass
 
             cmd.extend(["--output", output_path])
 
