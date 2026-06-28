@@ -785,15 +785,12 @@ class SettingsWindow(QWidget):
         self._show_pending_job_prompt_dialog(job_folder_name)
 
     def _get_job_row_by_name(self, job_folder_name: str) -> Optional[Dict]:
-        if not self.app_instance or not hasattr(self.app_instance, "get_jobs_dashboard_rows"):
+        if not self.app_instance or not hasattr(self.app_instance, "deployment_gate"):
             return None
         name = str(job_folder_name or "").strip()
         if not name:
             return None
-        for row in self.app_instance.get_jobs_dashboard_rows():
-            if str(row.get("jobFolderName", "")).strip().lower() == name.lower():
-                return row
-        return None
+        return self.app_instance.deployment_gate.load_state(name)
 
     def _show_pending_job_prompt_dialog(self, job_folder_name: str):
         if not self.app_instance:

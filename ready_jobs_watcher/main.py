@@ -326,7 +326,6 @@ class Application:
                 )
 
     def get_jobs_dashboard_rows(self):
-        self._backfill_modes_for_existing_jobs()
         return self.deployment_gate.list_job_states()
 
     def deploy_pending_job(self, job_folder_name: str, selected_mode: str):
@@ -1197,6 +1196,7 @@ class Application:
         except OSError as e:
             logging.error(f"Error during initial scan: {e}")
             return False
+        self._backfill_modes_for_existing_jobs()
         logging.info("Initial scan complete.")
         return True
 
