@@ -837,19 +837,14 @@ class PdfChangeHandler(FileSystemEventHandler):
                 pdf_dir = os.path.dirname(normalized_path)
                 pdf_filename = os.path.basename(normalized_path)
 
-                # Check for DARK MODE subfolder
-                dark_mode_dir = os.path.join(pdf_dir, "DARK MODE")
-                if os.path.exists(dark_mode_dir):
-                    dark_mode_pdf = os.path.join(dark_mode_dir, pdf_filename)
-
-                    if os.path.exists(dark_mode_pdf):
-                        try:
-                            os.remove(dark_mode_pdf)
-                            main_logger.info(f"Deleted corresponding dark mode PDF: {dark_mode_pdf}")
-                        except Exception as e:
-                            main_logger.error(f"Failed to delete dark mode PDF {dark_mode_pdf}: {e}")
-                    else:
-                        main_logger.debug(f"No corresponding dark mode PDF found at: {dark_mode_pdf}")
+                dark_mode_pdf = os.path.join(pdf_dir, "DARK MODE", pdf_filename)
+                try:
+                    os.remove(dark_mode_pdf)
+                    main_logger.info(f"Deleted corresponding dark mode PDF: {dark_mode_pdf}")
+                except FileNotFoundError:
+                    main_logger.debug(f"No corresponding dark mode PDF found at: {dark_mode_pdf}")
+                except Exception as e:
+                    main_logger.error(f"Failed to delete dark mode PDF {dark_mode_pdf}: {e}")
                 else:
                     main_logger.debug(f"No DARK MODE folder found at: {dark_mode_dir}")
 
