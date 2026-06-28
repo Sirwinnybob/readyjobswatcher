@@ -1016,8 +1016,6 @@ def _revision_path_for_job(job_folder_path: str) -> str:
 
 def _load_existing_index(job_folder_path: str) -> Optional[Dict]:
     out_path = _index_path_for_job(job_folder_path)
-    if not os.path.isfile(out_path):
-        return None
     try:
         with open(out_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
@@ -1027,6 +1025,8 @@ def _load_existing_index(job_folder_path: str) -> Optional[Dict]:
         if not isinstance(docs, list):
             return None
         return payload
+    except FileNotFoundError:
+        return None
     except Exception:
         return None
 
@@ -1045,14 +1045,14 @@ def _existing_index_references_closet_rod_pdf(job_folder_path: str, filename: st
 
 def _load_existing_revision_state(job_folder_path: str) -> Optional[Dict]:
     out_path = _revision_path_for_job(job_folder_path)
-    if not os.path.isfile(out_path):
-        return None
     try:
         with open(out_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
         if not isinstance(payload, dict):
             return None
         return payload
+    except FileNotFoundError:
+        return None
     except Exception:
         return None
 
@@ -1469,12 +1469,12 @@ def _remove_index_if_exists(job_folder_path: str) -> bool:
     out_path = os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR, HARDWOODS_INDEX_FILENAME)
     revision_path = _revision_path_for_job(job_folder_path)
     removed = False
-    if os.path.exists(out_path):
-        os.remove(out_path)
-        removed = True
-    if os.path.exists(revision_path):
-        os.remove(revision_path)
-        removed = True
+    for p in (out_path, revision_path):
+        try:
+            os.remove(p)
+            removed = True
+        except FileNotFoundError:
+            pass
     if removed:
         touch_hardwoods_refresh_signal(
             job_folder_path=job_folder_path,
