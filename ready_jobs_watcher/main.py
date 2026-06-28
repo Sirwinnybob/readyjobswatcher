@@ -375,74 +375,69 @@ class Application:
 
         logging.info("Re-parsing job %s (removing old parsed data first)...", job_folder_name)
 
+        import shutil
+
         # 1. Safely remove generated files:
         # a) Delete DARK MODE subfolder
         dark_mode_dir = os.path.join(job_path, "DARK MODE")
-        if os.path.isdir(dark_mode_dir):
-            import shutil
-            try:
-                shutil.rmtree(dark_mode_dir)
-                logging.info("Deleted DARK MODE folder for %s", job_folder_name)
-            except Exception as e:
-                logging.error("Failed to delete DARK MODE directory for %s: %s", job_folder_name, e)
+        try:
+            shutil.rmtree(dark_mode_dir)
+            logging.info("Deleted DARK MODE folder for %s", job_folder_name)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logging.error("Failed to delete DARK MODE directory for %s: %s", job_folder_name, e)
 
         # b) Delete generated remake bad parts candidate file inside CNC/.metadata/
         from .remake_candidates_indexer import REMAKE_CANDIDATES_FILENAME
         candidates_file = os.path.join(job_path, self.config.CNC_SUBDIR, ".metadata", REMAKE_CANDIDATES_FILENAME)
-        if os.path.isfile(candidates_file):
-            try:
-                os.remove(candidates_file)
-                logging.info("Deleted generated remake bad parts candidate file: %s", candidates_file)
-            except Exception as e:
-                logging.error("Failed to delete remake bad parts candidate file %s: %s", candidates_file, e)
+        try:
+            os.remove(candidates_file)
+            logging.info("Deleted generated remake bad parts candidate file: %s", candidates_file)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logging.error("Failed to delete remake bad parts candidate file %s: %s", candidates_file, e)
 
         # c) Delete generated 3d_medium.glb files inside 3D/<ROOM>/3d_medium.glb
         three_d_dir = os.path.join(job_path, "3D")
-        if os.path.isdir(three_d_dir):
-            try:
-                for root, dirs, files in os.walk(three_d_dir):
-                    for file in files:
-                        if file == "3d_medium.glb":
-                            file_path = os.path.join(root, file)
-                            try:
-                                os.remove(file_path)
-                                logging.info("Deleted generated GLB file: %s", file_path)
-                            except Exception as e:
-                                logging.error("Failed to delete GLB file %s: %s", file_path, e)
-            except Exception as e:
-                logging.error("Failed to scan/delete GLB files for %s: %s", job_folder_name, e)
+        try:
+            for root, dirs, files in os.walk(three_d_dir):
+                for file in files:
+                    if file == "3d_medium.glb":
+                        file_path = os.path.join(root, file)
+                        try:
+                            os.remove(file_path)
+                            logging.info("Deleted generated GLB file: %s", file_path)
+                        except FileNotFoundError:
+                            pass
+                        except Exception as e:
+                            logging.error("Failed to delete GLB file %s: %s", file_path, e)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logging.error("Failed to scan/delete GLB files for %s: %s", job_folder_name, e)
 
         # d) Delete specific program-created metadata files/folders and cache_static.json
         metadata_dir = os.path.join(job_path, ".metadata")
-        if os.path.isdir(metadata_dir):
-            import shutil
+        for fname in ("cabinet_sheet_index.json", "cache_static.json"):
+            path = os.path.join(metadata_dir, fname)
+            try:
+                os.remove(path)
+                logging.info("Deleted metadata file: %s", path)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                logging.error("Failed to delete metadata file %s: %s", path, e)
 
-            # Delete cabinet_sheet_index.json
-            ref_index_path = os.path.join(metadata_dir, "cabinet_sheet_index.json")
-            if os.path.isfile(ref_index_path):
-                try:
-                    os.remove(ref_index_path)
-                    logging.info("Deleted metadata file: %s", ref_index_path)
-                except Exception as e:
-                    logging.error("Failed to delete metadata file %s: %s", ref_index_path, e)
-
-            # Delete cache_static.json
-            cache_static_path = os.path.join(metadata_dir, "cache_static.json")
-            if os.path.isfile(cache_static_path):
-                try:
-                    os.remove(cache_static_path)
-                    logging.info("Deleted metadata file: %s", cache_static_path)
-                except Exception as e:
-                    logging.error("Failed to delete metadata file %s: %s", cache_static_path, e)
-
-            # Delete hardwoods/ subdirectory
-            hardwoods_dir = os.path.join(metadata_dir, "hardwoods")
-            if os.path.isdir(hardwoods_dir):
-                try:
-                    shutil.rmtree(hardwoods_dir)
-                    logging.info("Deleted metadata folder: %s", hardwoods_dir)
-                except Exception as e:
-                    logging.error("Failed to delete metadata directory %s: %s", hardwoods_dir, e)
+        hardwoods_dir = os.path.join(metadata_dir, "hardwoods")
+        try:
+            shutil.rmtree(hardwoods_dir)
+            logging.info("Deleted metadata folder: %s", hardwoods_dir)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logging.error("Failed to delete metadata directory %s: %s", hardwoods_dir, e)
 
         # 2. Reset parseReady to False in deployment gate
         self.deployment_gate.mark_parse_ready(job_folder_name, parse_ready=False)
@@ -746,25 +741,22 @@ class Application:
         current_pid = os.getpid()
 
         try:
-            # Check if lock file exists
-            if os.path.exists(lock_file):
+            try:
+                with open(lock_file, 'r') as f:
+                    existing_pid = int(f.read().strip())
+                if self._is_process_running(existing_pid):
+                    logging.warning(f"Another instance is already running (PID: {existing_pid}). Exiting.")
+                    return False
+                logging.info(f"Found stale lock file from PID {existing_pid}, removing it.")
+                os.remove(lock_file)
+            except FileNotFoundError:
+                pass
+            except (ValueError, IOError) as e:
+                logging.warning(f"Invalid or unreadable lock file, removing it: {e}")
                 try:
-                    with open(lock_file, 'r') as f:
-                        existing_pid = int(f.read().strip())
-
-                    # Check if the process with that PID is still running
-                    if self._is_process_running(existing_pid):
-                        logging.warning(f"Another instance is already running (PID: {existing_pid}). Exiting.")
-                        return False
-                    else:
-                        logging.info(f"Found stale lock file from PID {existing_pid}, removing it.")
-                        os.remove(lock_file)
-                except (ValueError, IOError) as e:
-                    logging.warning(f"Invalid or unreadable lock file, removing it: {e}")
-                    try:
-                        os.remove(lock_file)
-                    except Exception:
-                        pass
+                    os.remove(lock_file)
+                except Exception:
+                    pass
 
             # Write our PID to the lock file
             with open(lock_file, 'w') as f:
@@ -784,19 +776,22 @@ class Application:
         """Releases the single-instance lock by removing the PID file."""
         lock_file = os.path.join(BASE_DATA_DIR, "ready_jobs_watcher.lock")
         try:
-            if os.path.exists(lock_file):
-                # Verify it's our PID before removing
-                try:
-                    with open(lock_file, 'r') as f:
-                        existing_pid = int(f.read().strip())
-                    if existing_pid == os.getpid():
-                        os.remove(lock_file)
-                        logging.info("Released single instance lock.")
-                    else:
-                        logging.warning(f"Lock file contains different PID ({existing_pid} vs {os.getpid()}), not removing.")
-                except Exception:
-                    # If we can't read it, just try to remove it
+            try:
+                with open(lock_file, 'r') as f:
+                    existing_pid = int(f.read().strip())
+                if existing_pid == os.getpid():
                     os.remove(lock_file)
+                    logging.info("Released single instance lock.")
+                else:
+                    logging.warning(f"Lock file contains different PID ({existing_pid} vs {os.getpid()}), not removing.")
+            except FileNotFoundError:
+                pass
+            except Exception:
+                # If we can't read it, just try to remove it
+                try:
+                    os.remove(lock_file)
+                except FileNotFoundError:
+                    pass
                     logging.info("Released single instance lock.")
         except Exception as e:
             logging.error(f"Error releasing lock: {e}")
