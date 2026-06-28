@@ -488,11 +488,7 @@ class PdfChangeHandler(FileSystemEventHandler):
 
     def _run_index_refresh(self, pdf_path: str, reason: str):
         if self.deployment_gate is not None:
-            folder = os.path.dirname(pdf_path)
-            if os.path.basename(folder).upper() == "DARK MODE":
-                job_folder = os.path.dirname(folder)
-            else:
-                job_folder = folder
+            job_folder = self._resolve_job_folder_for_pdf(pdf_path)
             if not self.deployment_gate.should_process_job_folder(job_folder):
                 main_logger.info(
                     "Skipping index refresh for pending job (%s): %s",
