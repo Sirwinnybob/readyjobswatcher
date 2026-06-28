@@ -388,13 +388,11 @@ class PdfChangeHandler(FileSystemEventHandler):
         self._count_lock = threading.Lock()  # Lock for thread-safe counter increment
         self.tracker_monitor = tracker_monitor
         self.alert_coordinator = alert_coordinator
-        self._tracker_scan_timer = None
-        self._tracker_scan_lock = threading.Lock()
+        from .debounce import DebouncedTimer, DebouncedTimerMap
+        self._tracker_scan_debounce = DebouncedTimer(name="TrackerScanDebounce")
         self._index_reparse_delay_seconds = 10.0
-        self._index_reparse_timers = {}
-        self._index_reparse_lock = threading.Lock()
-        self._dae_reparse_timers = {}
-        self._dae_reparse_lock = threading.Lock()
+        self._index_reparse_debounce = DebouncedTimerMap(name_prefix="IndexReparse")
+        self._dae_reparse_debounce = DebouncedTimerMap(name_prefix="DaeConvert")
         self.deployment_gate = deployment_gate
         self.metadata_refresh_service = metadata_refresh_service
 
@@ -486,16 +484,9 @@ class PdfChangeHandler(FileSystemEventHandler):
         if self.config.bad_parts_mode != "tracker":
             return
         delay_seconds = 0.6
-        with self._tracker_scan_lock:
-            if self._tracker_scan_timer is not None:
-                self._tracker_scan_timer.cancel()
-            self._tracker_scan_timer = threading.Timer(
-                delay_seconds,
-                lambda: self._run_tracker_scan(reason, src_path)
-            )
-            self._tracker_scan_timer.name = "TrackerScanDebounceTimer"
-            self._tracker_scan_timer.daemon = True
-            self._tracker_scan_timer.start()
+        self._tracker_scan_debounce.schedule(
+            delay_seconds, self._run_tracker_scan, reason, src_path
+        )
 
     def _run_index_refresh(self, pdf_path: str, reason: str):
         if self.deployment_gate is not None:
@@ -522,22 +513,11 @@ class PdfChangeHandler(FileSystemEventHandler):
         self._schedule_metadata_refresh(pdf_path, "index_refresh_complete")
 
     def _schedule_index_refresh(self, pdf_path: str, reason: str):
-        def _timer_callback():
-            try:
-                self._run_index_refresh(pdf_path, reason)
-            finally:
-                with self._index_reparse_lock:
-                    self._index_reparse_timers.pop(pdf_path, None)
-
-        with self._index_reparse_lock:
-            existing = self._index_reparse_timers.get(pdf_path)
-            if existing is not None:
-                existing.cancel()
-            timer = threading.Timer(self._index_reparse_delay_seconds, _timer_callback)
-            timer.name = f"IndexReparse-{os.path.basename(pdf_path)}"
-            timer.daemon = True
-            self._index_reparse_timers[pdf_path] = timer
-            timer.start()
+        self._index_reparse_debounce.schedule(
+            pdf_path,
+            self._index_reparse_delay_seconds,
+            lambda: self._run_index_refresh(pdf_path, reason),
+        )
         main_logger.info(
             "Scheduled index re-parse in %ss (%s): %s",
             self._index_reparse_delay_seconds,
@@ -654,27 +634,14 @@ class PdfChangeHandler(FileSystemEventHandler):
             except Exception as e:
                 main_logger.error(f"DAE conversion failed for {dae_path}: {e}", exc_info=True)
 
-        def _timer_callback():
-            try:
-                if self.executor:
-                    self.executor.submit(_convert_task)
-                else:
-                    thread = threading.Thread(target=_convert_task, daemon=True, name=f"DaeConvert-{os.path.basename(os.path.dirname(dae_path))}")
-                    thread.start()
-            finally:
-                with self._dae_reparse_lock:
-                    self._dae_reparse_timers.pop(normalized_path, None)
+        def _dispatch_convert():
+            if self.executor:
+                self.executor.submit(_convert_task)
+            else:
+                thread = threading.Thread(target=_convert_task, daemon=True, name=f"DaeConvert-{os.path.basename(os.path.dirname(dae_path))}")
+                thread.start()
 
-        with self._dae_reparse_lock:
-            existing = self._dae_reparse_timers.get(normalized_path)
-            if existing is not None:
-                existing.cancel()
-
-            timer = threading.Timer(delay_seconds, _timer_callback)
-            timer.name = f"Timer-DaeConvert-{os.path.basename(os.path.dirname(dae_path))}"
-            timer.daemon = True
-            self._dae_reparse_timers[normalized_path] = timer
-            timer.start()
+        self._dae_reparse_debounce.schedule(normalized_path, delay_seconds, _dispatch_convert)
 
         main_logger.info(f"Scheduled DAE conversion in {delay_seconds}s: {dae_path}")
 
@@ -866,10 +833,7 @@ class PdfChangeHandler(FileSystemEventHandler):
                 self._schedule_metadata_refresh(event.src_path, "deleted")
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF deleted event detected by recursive watcher: {event.src_path}")
-                with self._index_reparse_lock:
-                    existing = self._index_reparse_timers.pop(event.src_path, None)
-                    if existing is not None:
-                        existing.cancel()
+                self._index_reparse_debounce.cancel(event.src_path)
                 if not self._is_cnc_path(event.src_path):
                     folder = os.path.dirname(event.src_path)
                     if os.path.basename(folder).upper() == "DARK MODE":

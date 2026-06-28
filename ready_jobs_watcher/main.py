@@ -133,8 +133,8 @@ class Application:
         self._pending_alert_lock = threading.Lock()
         self._pending_job_prompts = []
         self._pending_job_prompt_lock = threading.Lock()
-        self._pending_job_timers = {}
-        self._pending_job_timers_lock = threading.Lock()
+        from .debounce import DebouncedTimerMap
+        self._pending_job_timers = DebouncedTimerMap(name_prefix="PendingPrompt")
         self._pending_auto_release_notices = []
         self._pending_auto_release_notices_lock = threading.Lock()
         self.deployment_gate = DeploymentGateManager(self.config.ROOT_DIR)
@@ -239,21 +239,11 @@ class Application:
 
     def _schedule_pending_job_prompt(self, job_folder_name: str, delay_seconds: int):
         delay_seconds = max(1, int(delay_seconds))
-
-        def _timer_callback():
-            with self._pending_job_timers_lock:
-                self._pending_job_timers.pop(job_folder_name, None)
-            self._queue_pending_job_prompt(job_folder_name)
-
-        with self._pending_job_timers_lock:
-            existing = self._pending_job_timers.get(job_folder_name)
-            if existing is not None:
-                existing.cancel()
-            timer = threading.Timer(delay_seconds, _timer_callback)
-            timer.name = f"PendingPrompt-{job_folder_name}"
-            timer.daemon = True
-            self._pending_job_timers[job_folder_name] = timer
-            timer.start()
+        self._pending_job_timers.schedule(
+            job_folder_name,
+            delay_seconds,
+            lambda: self._queue_pending_job_prompt(job_folder_name),
+        )
 
     def remind_pending_job(self, job_folder_name: str, minutes: int = 15):
         self.deployment_gate.schedule_reminder(job_folder_name, minutes=minutes)
@@ -331,10 +321,7 @@ class Application:
     def deploy_pending_job(self, job_folder_name: str, selected_mode: str):
         self.deployment_gate.mark_deployed(job_folder_name, selected_mode=selected_mode)
         self.deployment_gate.clear_timers(job_folder_name)
-        with self._pending_job_timers_lock:
-            existing = self._pending_job_timers.pop(job_folder_name, None)
-            if existing is not None:
-                existing.cancel()
+        self._pending_job_timers.cancel(job_folder_name)
         parse_ready = self._parse_job_after_deploy(job_folder_name)
         self.deployment_gate.mark_parse_ready(job_folder_name, parse_ready=parse_ready)
         self.schedule_metadata_refresh_for_job(job_folder_name, "job_deployed")
@@ -625,13 +612,7 @@ class Application:
             except Exception as e:
                 logging.error(f"Error stopping alert coordinator: {e}")
 
-        with self._pending_job_timers_lock:
-            for timer in self._pending_job_timers.values():
-                try:
-                    timer.cancel()
-                except Exception:
-                    pass
-            self._pending_job_timers.clear()
+        self._pending_job_timers.cancel_all()
 
         # Stop tray icon and GUI
         if self.icon:
