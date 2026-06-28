@@ -381,11 +381,10 @@ class PdfChangeHandler(FileSystemEventHandler):
         self.rename_handler = rename_handler  # Reference to check pending folders
         self.pending_queue = pending_queue
         self.executor = executor  # ThreadPoolExecutor for background tasks
-        self._conversion_cooldown = {}  # Track last conversion time per file
-        self._cooldown_lock = threading.Lock()  # Lock for thread-safe access to cooldown dict
+        self._conversion_cooldown = {}
+        self._cooldown_lock = threading.Lock()
         self._cooldown_seconds = config.pdf_conversion_delay_seconds
-        self._conversion_count = 0  # Track number of conversions for periodic cleanup
-        self._count_lock = threading.Lock()  # Lock for thread-safe counter increment
+        self._cooldown_prune_threshold = max(120.0, self._cooldown_seconds * 2)
         self.tracker_monitor = tracker_monitor
         self.alert_coordinator = alert_coordinator
         from .debounce import DebouncedTimer, DebouncedTimerMap
@@ -519,19 +518,11 @@ class PdfChangeHandler(FileSystemEventHandler):
             os.path.basename(pdf_path),
         )
 
-    def _cleanup_old_cooldown_entries(self):
-        """Remove cooldown entries older than 1 hour to prevent dictionary from growing indefinitely."""
-        current_time = time.time()
-        one_hour_ago = current_time - 3600
-
-        # Remove entries older than 1 hour (with lock protection)
-        with self._cooldown_lock:
-            old_entries = [path for path, timestamp in self._conversion_cooldown.items() if timestamp < one_hour_ago]
-            for path in old_entries:
-                del self._conversion_cooldown[path]
-
-        if old_entries:
-            main_logger.debug(f"Cleaned up {len(old_entries)} old cooldown entries")
+    def _prune_cooldown_entries(self, current_time: float):
+        cutoff = current_time - self._cooldown_prune_threshold
+        stale = [p for p, t in self._conversion_cooldown.items() if t < cutoff]
+        for p in stale:
+            del self._conversion_cooldown[p]
 
     def _schedule_pdf_conversion(self, pdf_path: str, invert_images: bool, delay_seconds: Optional[float] = None):
         """
@@ -541,14 +532,6 @@ class PdfChangeHandler(FileSystemEventHandler):
             pdf_path (str): Full path to the PDF.
             invert_images (bool): Whether images should be inverted during conversion.
         """
-        # Periodic cleanup every 100 conversions (thread-safe)
-        with self._count_lock:
-            self._conversion_count += 1
-            should_cleanup = self._conversion_count % 100 == 0
-
-        if should_cleanup:
-            self._cleanup_old_cooldown_entries()
-
         delay_seconds = self._cooldown_seconds if delay_seconds is None else max(0.0, float(delay_seconds))
         main_logger.info(f"Scheduling PDF conversion in {delay_seconds}s: {os.path.basename(pdf_path)}")
 
@@ -721,11 +704,11 @@ class PdfChangeHandler(FileSystemEventHandler):
                 if self._should_convert_to_dark_mode(event.src_path):
                     current_time = time.time()
 
-                    # Thread-safe cooldown check
                     with self._cooldown_lock:
                         last_conversion = self._conversion_cooldown.get(event.src_path, 0)
                         if current_time - last_conversion >= self._cooldown_seconds:
                             self._conversion_cooldown[event.src_path] = current_time
+                            self._prune_cooldown_entries(current_time)
                             should_convert = True
                         else:
                             should_convert = False
@@ -733,9 +716,7 @@ class PdfChangeHandler(FileSystemEventHandler):
                     if should_convert:
                         from .pdf_dark_mode import should_invert_images
                         invert = should_invert_images(event.src_path)
-                        scheduled_time = current_time + self._cooldown_seconds
                         main_logger.info(f"Triggering dark mode conversion for modified PDF: {event.src_path} (invert_images={invert})")
-                        main_logger.info(f"PDF conversion will run in {self._cooldown_seconds} seconds")
 
                         # Save to persistent queue
                         if self.pending_queue:
@@ -781,11 +762,11 @@ class PdfChangeHandler(FileSystemEventHandler):
                 if self._should_convert_to_dark_mode(event.src_path):
                     current_time = time.time()
 
-                    # Thread-safe cooldown check
                     with self._cooldown_lock:
                         last_conversion = self._conversion_cooldown.get(event.src_path, 0)
                         if current_time - last_conversion >= self._cooldown_seconds:
                             self._conversion_cooldown[event.src_path] = current_time
+                            self._prune_cooldown_entries(current_time)
                             should_convert = True
                         else:
                             should_convert = False
@@ -793,9 +774,7 @@ class PdfChangeHandler(FileSystemEventHandler):
                     if should_convert:
                         from .pdf_dark_mode import should_invert_images
                         invert = should_invert_images(event.src_path)
-                        scheduled_time = current_time + self._cooldown_seconds
                         main_logger.info(f"Triggering dark mode conversion for created PDF: {event.src_path} (invert_images={invert})")
-                        main_logger.info(f"PDF conversion will run in {self._cooldown_seconds} seconds")
 
                         # Save to persistent queue
                         if self.pending_queue:
