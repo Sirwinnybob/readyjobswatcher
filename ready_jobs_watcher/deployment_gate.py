@@ -277,6 +277,25 @@ class DeploymentGateManager:
             },
         )
 
+    def schedule_deploy(
+        self,
+        job_folder_name: str,
+        deploy_at: datetime.datetime,
+        selected_mode: Optional[str] = None,
+    ) -> Dict:
+        """
+        Set an operator-chosen deploy time. `deploy_at` may be timezone-aware
+        or naive-local; it is converted to UTC ISO8601 for storage. This is
+        the only writer of timers.autoReleaseAt.
+        """
+        updates: Dict = {"timers": {"autoReleaseAt": deploy_at.astimezone(datetime.timezone.utc).isoformat()}}
+        if selected_mode is not None:
+            updates["selectedMode"] = self.normalize_mode(selected_mode)
+        return self.update_state(job_folder_name, operator_action=True, **updates)
+
+    def cancel_scheduled_deploy(self, job_folder_name: str) -> Dict:
+        return self.update_state(job_folder_name, timers={"autoReleaseAt": None})
+
     def mark_operator_action(self, job_folder_name: str) -> Dict:
         return self.update_state(job_folder_name, operator_action=True)
 

@@ -131,6 +131,48 @@ class TestDeploymentGateManager(unittest.TestCase):
             state = gate.ensure_pending_for_new_job(job, detected_mode="bad-mode", detection_source="manual")
             self.assertEqual(state["modeDetection"]["candidate"], MODE_UNKNOWN)
 
+    def test_schedule_deploy_sets_auto_release_and_mode(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = "1005 - TEST"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            gate.ensure_pending_for_new_job(job)
+
+            deploy_at = datetime(2026, 7, 6, 7, 0, 0, tzinfo=timezone.utc)
+            state = gate.schedule_deploy(job, deploy_at, selected_mode="FRAMELESS")
+
+            self.assertEqual(state["timers"]["autoReleaseAt"], deploy_at.isoformat())
+            self.assertEqual(state["selectedMode"], "FRAMELESS")
+            self.assertIsNotNone(state["timers"]["lastActionAt"])
+
+    def test_schedule_deploy_without_mode_leaves_existing_mode(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = "1006 - TEST"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            gate.ensure_pending_for_new_job(job)
+            gate.set_selected_mode(job, "BOTH")
+
+            deploy_at = datetime(2026, 7, 6, 7, 0, 0, tzinfo=timezone.utc)
+            state = gate.schedule_deploy(job, deploy_at)
+
+            self.assertEqual(state["selectedMode"], "BOTH")
+
+    def test_cancel_scheduled_deploy_clears_only_auto_release(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = "1007 - TEST"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            gate.ensure_pending_for_new_job(job)
+            gate.schedule_reminder(job, minutes=10)
+            deploy_at = datetime(2026, 7, 6, 7, 0, 0, tzinfo=timezone.utc)
+            gate.schedule_deploy(job, deploy_at)
+
+            state = gate.cancel_scheduled_deploy(job)
+
+            self.assertIsNone(state["timers"]["autoReleaseAt"])
+            self.assertIsNotNone(state["timers"]["remindAt"])
+
 
 class TestEnsureHiddenGatesForAllFolders(unittest.TestCase):
     def test_returns_names_of_newly_gated_folders_only(self):
