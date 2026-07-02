@@ -740,17 +740,24 @@ class SettingsWindow(QWidget):
             "PARSING": (QColor("#DBEAFE"), QColor("#1E40AF")),
             "ACTIVE":  (QColor("#D1FAE5"), QColor("#065F46")),
         }
+        hidden_style = (QColor("#E2E8F0"), QColor("#334155"))
 
         self.jobs_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             mode_detection = row.get("modeDetection", {}) if isinstance(row.get("modeDetection"), dict) else {}
             timers = row.get("timers", {}) if isinstance(row.get("timers"), dict) else {}
             state_name = derive_state(row)
-            bg, fg = state_styles.get(state_name, (None, None))
+            is_hidden_from_production = bool(row.get("hiddenFromProduction", False))
+            if is_hidden_from_production:
+                bg, fg = hidden_style
+                display_state = f"{state_name} (Hidden)"
+            else:
+                bg, fg = state_styles.get(state_name, (None, None))
+                display_state = state_name
 
             values = [
                 str(row.get("jobFolderName", "")),
-                state_name,
+                display_state,
                 str(row.get("selectedMode", "UNKNOWN")),
                 str(mode_detection.get("candidate", "UNKNOWN")),
                 str(mode_detection.get("source", "UNKNOWN")),
