@@ -57,13 +57,28 @@ def setup_logging():
     """
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
+    # main.py itself logs via bare logging.info/warning/...() calls (root logger),
+    # not a named logger. Without handlers here those records were silently
+    # dropped (INFO/DEBUG) or only reached stderr via Python's WARNING+ last-resort
+    # handler (never ready_jobs_watcher.log) - including every root-availability,
+    # reconnect, and observer-start message. Give the root logger real handlers so
+    # bare calls are actually persisted; 'main' below relies on propagation to them.
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_file_handler = logging.FileHandler(os.path.join(BASE_DATA_DIR, 'ready_jobs_watcher.log'))
+    root_file_handler.setFormatter(formatter)
+    root_logger.addHandler(root_file_handler)
+    root_console = logging.StreamHandler()
+    root_console.setFormatter(formatter)
+    root_console.setLevel(logging.INFO)
+    root_logger.addHandler(root_console)
+
     loggers = {
-        'main': 'ready_jobs_watcher.log',
         'backup': 'backup.log',
         'cnc': 'cnc_scan.log',
         'badparts': 'bad_parts.log',
         'pdf_darkmode': 'send_notification.log',
-        'pending_queue': 'ready_jobs_watcher.log'
+        'pending_queue': 'ready_jobs_watcher.log',
     }
 
     for name, filename in loggers.items():
@@ -72,14 +87,16 @@ def setup_logging():
         handler = logging.FileHandler(os.path.join(BASE_DATA_DIR, filename))
         handler.setFormatter(formatter)
         logger.addHandler(handler)
+        # Keep this subsystem's records out of the root handlers above so they
+        # don't get duplicated into ready_jobs_watcher.log.
+        logger.propagate = False
 
-    # Console handler for higher-level info
-    console = logging.StreamHandler()
-    console.setFormatter(formatter)
-    console.setLevel(logging.INFO)
-    logging.getLogger('main').addHandler(console)
+    # 'main' gets no handler of its own; it propagates to the root logger's
+    # handlers configured above, which write to the same ready_jobs_watcher.log.
+    main_logger = logging.getLogger('main')
+    main_logger.setLevel(logging.DEBUG)
 
-    return logging.getLogger('main')
+    return main_logger
 
 # --- Core Application Class ---
 class Application:
@@ -855,6 +872,22 @@ class Application:
         from .utils import is_root_available
         return is_root_available(self.config)
 
+    def _is_root_available_at_startup(self, attempts: int = 5, delay_seconds: float = 1.0) -> bool:
+        """Bounded retry for the availability checks that fire right after launch/restart.
+
+        A freshly spawned process can briefly see the share as unavailable while
+        the OS re-negotiates the SMB session torn down with the previous process
+        (app.restart() kills and respawns within ~2 seconds). Without this, a
+        routine restart logs a spurious "deferred" warning and then waits for the
+        next 30s reconnect poll instead of the share settling within a second or two.
+        """
+        for attempt in range(attempts):
+            if self._is_root_available():
+                return True
+            if attempt < attempts - 1:
+                time.sleep(delay_seconds)
+        return False
+
     def _observers_are_running(self) -> bool:
         return bool(
             self.observer
@@ -1036,7 +1069,7 @@ class Application:
 
     def _run_startup_glb_check(self):
         """Convert any DAE files under the root that are still missing GLBs."""
-        if not self._is_root_available():
+        if not self._is_root_available_at_startup():
             logging.warning(
                 "Startup GLB check deferred; Ready Jobs root is unavailable: %s",
                 self.config.ROOT_DIR,
@@ -1051,7 +1084,7 @@ class Application:
 
     def _run_cabinet_index_startup_check(self):
         """Rebuild stale cabinet indexes for jobs that were already indexed once."""
-        if not self._is_root_available():
+        if not self._is_root_available_at_startup():
             logging.warning(
                 "Startup cabinet index check deferred; Ready Jobs root is unavailable: %s",
                 self.config.ROOT_DIR,
@@ -1143,7 +1176,7 @@ class Application:
         if self.PAUSE_PROCESSING:
             logging.info("Initial scan skipped (GUI open).")
             return False
-        if not self._is_root_available():
+        if not self._is_root_available_at_startup():
             logging.warning(
                 "Initial scan deferred; Ready Jobs root is unavailable: %s. Auto-retry is active.",
                 self.config.ROOT_DIR,
