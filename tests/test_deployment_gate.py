@@ -188,6 +188,38 @@ class TestDeploymentGateManager(unittest.TestCase):
             self.assertIsNone(state["timers"]["autoReleaseAt"])
             self.assertIsNotNone(state["timers"]["remindAt"])
 
+    def test_hide_from_production_keeps_deployed_and_parse_ready(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = "1008 - TEST"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            gate.ensure_pending_for_new_job(job)
+            gate.mark_deployed(job, selected_mode="BOTH")
+            gate.mark_parse_ready(job, parse_ready=True)
+
+            state = gate.hide_from_production(job)
+
+            self.assertTrue(state["deployed"])
+            self.assertTrue(state["parseReady"])
+            self.assertTrue(state["hiddenFromProduction"])
+            self.assertFalse(gate.get_visibility(job, is_debug_build=False))
+            self.assertTrue(gate.get_visibility(job, is_debug_build=True))
+
+    def test_show_in_production_restores_visibility(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = "1009 - TEST"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            gate.ensure_pending_for_new_job(job)
+            gate.mark_deployed(job, selected_mode="BOTH")
+            gate.mark_parse_ready(job, parse_ready=True)
+            gate.hide_from_production(job)
+
+            state = gate.show_in_production(job)
+
+            self.assertFalse(state["hiddenFromProduction"])
+            self.assertTrue(gate.get_visibility(job, is_debug_build=False))
+
 
 class TestEnsureHiddenGatesForAllFolders(unittest.TestCase):
     def test_returns_names_of_newly_gated_folders_only(self):

@@ -221,6 +221,12 @@ class DeploymentGateManager:
     def mark_parse_ready(self, job_folder_name: str, parse_ready: bool) -> Dict:
         return self.update_state(job_folder_name, parseReady=bool(parse_ready))
 
+    def hide_from_production(self, job_folder_name: str) -> Dict:
+        return self.update_state(job_folder_name, hiddenFromProduction=True)
+
+    def show_in_production(self, job_folder_name: str) -> Dict:
+        return self.update_state(job_folder_name, hiddenFromProduction=False)
+
     def set_selected_mode(
         self,
         job_folder_name: str,
