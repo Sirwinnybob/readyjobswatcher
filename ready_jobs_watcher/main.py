@@ -10,6 +10,7 @@ import threading
 import logging
 import time
 import atexit
+import datetime
 
 from watchdog.observers import Observer
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +27,7 @@ from .scheduler import (
     stats_logger_scheduler,
     daily_restart_scheduler,
     pending_autorelease_scheduler,
+    pending_reminder_scheduler,
     metadata_end_of_day_scheduler,
 )
 from PyQt6.QtWidgets import QApplication
@@ -139,6 +141,7 @@ class Application:
         self.stats_thread = None
         self.restart_thread = None
         self.pending_autorelease_thread = None
+        self.pending_reminder_thread = None
         self.metadata_end_of_day_thread = None
         self.observer_monitor_thread = None
         self.tray_thread = None
@@ -266,6 +269,10 @@ class Application:
         self.deployment_gate.schedule_reminder(job_folder_name, minutes=minutes)
         self._schedule_pending_job_prompt(job_folder_name, delay_seconds=minutes * 60)
 
+    def _remind_pending_job_due(self, job_folder_name: str) -> None:
+        self._queue_pending_job_prompt(job_folder_name)
+        logging.info("Pending job reminder due, re-prompting: %s", job_folder_name)
+
     def set_job_selected_mode(self, job_folder_name: str, selected_mode: str):
         state = self.deployment_gate.set_selected_mode(job_folder_name, selected_mode)
         self.schedule_metadata_refresh_for_job(job_folder_name, "deployment_gate_updated")
@@ -360,6 +367,35 @@ class Application:
         self._queue_auto_release_notice(job_folder_name)
         logging.info("Pending job auto-released after inactivity: %s", job_folder_name)
         return True
+
+    def schedule_pending_job_deploy(self, job_folder_name: str, deploy_at: datetime.datetime, selected_mode: str) -> None:
+        state = self.deployment_gate.schedule_deploy(job_folder_name, deploy_at, selected_mode=selected_mode)
+        logging.info(
+            "Job deploy scheduled: job=%s deployAt=%s selectedMode=%s",
+            job_folder_name,
+            state.get("timers", {}).get("autoReleaseAt"),
+            state.get("selectedMode", "UNKNOWN"),
+        )
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+
+    def cancel_pending_job_schedule(self, job_folder_name: str) -> None:
+        self.deployment_gate.cancel_scheduled_deploy(job_folder_name)
+        logging.info("Job deploy schedule cancelled: job=%s", job_folder_name)
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+
+    def hide_job_from_production(self, job_folder_name: str) -> None:
+        self.deployment_gate.hide_from_production(job_folder_name)
+        logging.info("Job hidden from production: job=%s", job_folder_name)
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+
+    def show_job_in_production(self, job_folder_name: str) -> None:
+        self.deployment_gate.show_in_production(job_folder_name)
+        logging.info("Job shown in production: job=%s", job_folder_name)
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
 
     def _parse_job_after_deploy(self, job_folder_name: str) -> bool:
         job_path = os.path.join(self.config.ROOT_DIR, job_folder_name)
@@ -590,6 +626,7 @@ class Application:
             ('stats_thread', self.stats_thread),
             ('restart_thread', self.restart_thread),
             ('pending_autorelease_thread', self.pending_autorelease_thread),
+            ('pending_reminder_thread', self.pending_reminder_thread),
             ('metadata_end_of_day_thread', self.metadata_end_of_day_thread),
             ('observer_monitor_thread', self.observer_monitor_thread),
             ('tray_thread', self.tray_thread),
@@ -815,6 +852,8 @@ class Application:
 
     def start_threads(self):
         """Starts the background threads for retries and scheduled tasks."""
+        self.deployment_gate.migrate_clear_legacy_autorelease_timers()
+
         self.retry_thread = threading.Thread(target=self.retry_pending, daemon=True)
         self.retry_thread.start()
 
@@ -842,6 +881,13 @@ class Application:
             name="PendingAutoReleaseScheduler",
         )
         self.pending_autorelease_thread.start()
+        self.pending_reminder_thread = threading.Thread(
+            target=pending_reminder_scheduler,
+            args=(self.deployment_gate, self._remind_pending_job_due, self.stop_event),
+            daemon=True,
+            name="PendingReminderScheduler",
+        )
+        self.pending_reminder_thread.start()
         self.metadata_end_of_day_thread = threading.Thread(
             target=metadata_end_of_day_scheduler,
             args=(self.config, self.stop_event, self.metadata_refresh_service),
