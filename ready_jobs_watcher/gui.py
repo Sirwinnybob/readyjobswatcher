@@ -929,6 +929,8 @@ class SettingsWindow(QWidget):
         else:
             save_mode_btn = QPushButton("Save Mode")
             reparse_btn = QPushButton("Re-parse")
+            hidden_from_production = bool(state.get("hiddenFromProduction", False))
+            visibility_btn = QPushButton("Show in Production" if hidden_from_production else "Hide from Production")
             cancel_btn = QPushButton("Cancel")
 
             def _save_mode_action():
@@ -961,12 +963,22 @@ class SettingsWindow(QWidget):
                     self.refresh_jobs_dashboard()
                     dialog.accept()
 
+            def _visibility_action():
+                if hidden_from_production:
+                    self.app_instance.show_job_in_production(job_folder_name)
+                else:
+                    self.app_instance.hide_job_from_production(job_folder_name)
+                self.refresh_jobs_dashboard()
+                dialog.accept()
+
             save_mode_btn.clicked.connect(_save_mode_action)
             reparse_btn.clicked.connect(_reparse_action)
+            visibility_btn.clicked.connect(_visibility_action)
             cancel_btn.clicked.connect(dialog.reject)
 
             action_row.addWidget(save_mode_btn)
             action_row.addWidget(reparse_btn)
+            action_row.addWidget(visibility_btn)
             action_row.addStretch()
             action_row.addWidget(cancel_btn)
 
