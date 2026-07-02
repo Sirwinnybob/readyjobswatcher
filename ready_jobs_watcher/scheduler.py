@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from .utils import is_hidden, set_hidden_attribute, delete_codebase_folders, log_system_stats
 from .file_handler import JobProcessor
 from .config import Config
-from .remake_candidates_indexer import refresh_unresolved_bad_parts_all
+from .remake_candidates_indexer import refresh_unresolved_bad_parts_all, cleanup_orphaned_cnc_metadata_all
 from .deployment_gate import MODE_UNKNOWN, DeploymentGateManager
 
 main_logger = logging.getLogger('main')
@@ -130,6 +130,13 @@ def scan_cnc_pdfs_for_bad_parts(
         config (Config): System configuration containing relevant directory paths.
     """
     from .file_handler import JobProcessor
+
+    try:
+        removed = cleanup_orphaned_cnc_metadata_all(config, deployment_gate)
+        if removed:
+            cnc_logger.info(f"Orphaned CNC metadata cleanup removed {removed} file(s).")
+    except Exception as e:
+        cnc_logger.error(f"Error cleaning orphaned CNC metadata: {e}", exc_info=True)
 
     if config.bad_parts_mode == "tracker":
         if tracker_monitor is None:
@@ -468,6 +475,80 @@ def process_pending_autorelease_once(
             main_logger.error("Pending auto-release failed for %s: %s", job_folder_name, exc, exc_info=True)
 
     return released_count
+
+
+def process_pending_reminder_once(
+    deployment_gate: DeploymentGateManager,
+    reminder_callback: Callable[[str], None],
+    root_dir: Optional[str] = None,
+) -> int:
+    """
+    Sweep pending jobs and re-prompt any whose reminder is due.
+
+    Args:
+        deployment_gate: Gate manager used to read current job states.
+        reminder_callback: Callback invoked for due jobs as (job_folder_name,).
+        root_dir: Optional override for resolving job folder paths.
+    """
+    if root_dir is None:
+        root_dir = deployment_gate.root_dir
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    reminded_count = 0
+
+    for state in deployment_gate.list_job_states():
+        if bool(state.get("deployed", True)):
+            continue
+
+        timers = state.get("timers") if isinstance(state.get("timers"), dict) else {}
+        remind_at = _parse_iso_utc(timers.get("remindAt"))
+        if remind_at is None or remind_at > now:
+            continue
+
+        job_folder_name = str(state.get("jobFolderName") or "")
+        if not job_folder_name:
+            continue
+
+        job_folder_path = os.path.join(root_dir, job_folder_name)
+        if not os.path.isdir(job_folder_path):
+            main_logger.info("Skipping pending reminder for missing folder: %s", job_folder_path)
+            continue
+
+        try:
+            reminder_callback(job_folder_name)
+            deployment_gate.update_state(job_folder_name, timers={"remindAt": None})
+            reminded_count += 1
+        except Exception as exc:
+            main_logger.error("Pending reminder failed for %s: %s", job_folder_name, exc, exc_info=True)
+
+    return reminded_count
+
+
+def pending_reminder_scheduler(
+    deployment_gate: DeploymentGateManager,
+    reminder_callback: Callable[[str], None],
+    stop_event: threading.Event,
+    *,
+    sweep_interval_seconds: int = 60,
+) -> None:
+    """
+    Background loop that periodically re-prompts pending jobs whose reminder is due.
+    """
+    interval = max(1, int(sweep_interval_seconds))
+    main_logger.info("Pending reminder scheduler started (interval=%ss)", interval)
+
+    while not stop_event.is_set():
+        try:
+            reminded = process_pending_reminder_once(deployment_gate, reminder_callback)
+            if reminded:
+                main_logger.info("Pending reminder sweep re-prompted %s job(s)", reminded)
+        except Exception as exc:
+            main_logger.error("Error in pending reminder scheduler: %s", exc, exc_info=True)
+
+        if stop_event.wait(interval):
+            break
+
+    main_logger.info("Pending reminder scheduler stopped")
 
 
 def pending_autorelease_scheduler(
