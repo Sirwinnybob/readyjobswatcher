@@ -8,7 +8,6 @@ using PyQt6.
 import logging
 import os
 import sys
-import subprocess
 import threading
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
@@ -105,16 +104,8 @@ class RJWTrayIcon(QSystemTrayIcon):
 
     def restart_app(self):
         logging.info("Restarting application...")
-        self.main_app.stop()
         self.hide()
-
-        if hasattr(sys, '_MEIPASS'):
-            subprocess.Popen([sys.executable])
-        else:
-            subprocess.Popen([sys.executable] + sys.argv)
-
-        QApplication.quit()
-        sys.exit(0)
+        self.main_app.restart()
 
     def quit_app(self):
         logging.info("Shutting down...")
