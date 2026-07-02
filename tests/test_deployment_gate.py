@@ -205,6 +205,20 @@ class TestDeploymentGateManager(unittest.TestCase):
             self.assertFalse(gate.get_visibility(job, is_debug_build=False))
             self.assertTrue(gate.get_visibility(job, is_debug_build=True))
 
+    def test_re_detecting_a_hidden_deployed_job_resets_hidden_from_production(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = "1008B - TEST"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            gate.ensure_pending_for_new_job(job)
+            gate.mark_deployed(job, selected_mode="BOTH")
+            gate.mark_parse_ready(job, parse_ready=True)
+            gate.hide_from_production(job)
+
+            state = gate.ensure_pending_for_new_job(job)
+
+            self.assertFalse(state["hiddenFromProduction"])
+
     def test_show_in_production_restores_visibility(self):
         with tempfile.TemporaryDirectory() as root:
             job = "1009 - TEST"

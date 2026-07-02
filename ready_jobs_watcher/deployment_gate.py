@@ -194,6 +194,7 @@ class DeploymentGateManager:
 
         state["deployed"] = False
         state["parseReady"] = False
+        state["hiddenFromProduction"] = False
         state["selectedMode"] = self.normalize_mode(state.get("selectedMode") or MODE_UNKNOWN)
         state["modeDetection"] = {
             "candidate": self.normalize_mode(detected_mode),
