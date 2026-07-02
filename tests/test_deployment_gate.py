@@ -220,6 +220,37 @@ class TestDeploymentGateManager(unittest.TestCase):
             self.assertFalse(state["hiddenFromProduction"])
             self.assertTrue(gate.get_visibility(job, is_debug_build=False))
 
+    def test_migrate_clears_legacy_timer_on_pending_jobs_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            pending_job = "1010 - PENDING"
+            deployed_job = "1011 - DEPLOYED"
+            os.makedirs(os.path.join(root, pending_job), exist_ok=True)
+            os.makedirs(os.path.join(root, deployed_job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+
+            gate.ensure_pending_for_new_job(pending_job)
+            stale_at = (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
+            gate.update_state(pending_job, timers={"autoReleaseAt": stale_at})
+
+            gate.ensure_pending_for_new_job(deployed_job)
+            gate.mark_deployed(deployed_job, selected_mode="BOTH")
+
+            cleared_count = gate.migrate_clear_legacy_autorelease_timers()
+
+            self.assertEqual(cleared_count, 1)
+            self.assertIsNone(gate.load_state(pending_job)["timers"]["autoReleaseAt"])
+
+    def test_migrate_is_noop_when_nothing_stale(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = "1012 - CLEAN"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            gate.ensure_pending_for_new_job(job)
+
+            cleared_count = gate.migrate_clear_legacy_autorelease_timers()
+
+            self.assertEqual(cleared_count, 0)
+
 
 class TestEnsureHiddenGatesForAllFolders(unittest.TestCase):
     def test_returns_names_of_newly_gated_folders_only(self):
