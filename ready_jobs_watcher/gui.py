@@ -6,6 +6,7 @@ Allows users to configure paths, backup schedules, operation delays,
 and alert behavior, as well as view running logs.
 """
 import logging
+import datetime
 from typing import Dict, List, Optional
 
 from PyQt6.QtWidgets import (
@@ -13,9 +14,9 @@ from PyQt6.QtWidgets import (
     QTabWidget, QListWidget, QTimeEdit, QSpinBox, QTextEdit, QMessageBox,
     QFormLayout, QGroupBox, QInputDialog, QCheckBox, QComboBox, QDialog,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QScrollArea,
-    QSplitter, QGridLayout
+    QSplitter, QGridLayout, QDateTimeEdit
 )
-from PyQt6.QtCore import QTime, QObject, pyqtSignal, Qt
+from PyQt6.QtCore import QTime, QDateTime, QObject, pyqtSignal, Qt
 from PyQt6.QtGui import QTextCursor, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtCore import QTimer
 from .alert_coordinator import AlertBatch
@@ -803,6 +804,7 @@ class SettingsWindow(QWidget):
 
         state = self._get_job_row_by_name(job_folder_name) or {}
         derived = derive_state(state)
+        timers = state.get("timers", {}) if isinstance(state.get("timers"), dict) else {}
         mode_detection = state.get("modeDetection", {}) if isinstance(state.get("modeDetection"), dict) else {}
         detected_mode = str(mode_detection.get("candidate") or "UNKNOWN")
         detected_source = str(mode_detection.get("source") or "UNKNOWN")
@@ -857,6 +859,19 @@ class SettingsWindow(QWidget):
             remind_spin.setValue(15)
             remind_spin.setSuffix(" min")
             snooze_btn = QPushButton("Snooze")
+
+            scheduled_at = str(timers.get("autoReleaseAt") or "").strip()
+            schedule_label = QLabel(
+                f"Deploy scheduled for {scheduled_at}" if scheduled_at else "No deploy scheduled"
+            )
+            schedule_edit = QDateTimeEdit(dialog)
+            schedule_edit.setCalendarPopup(True)
+            schedule_edit.setDateTime(QDateTime.currentDateTime().addSecs(3600))
+            schedule_edit.setMinimumDateTime(QDateTime.currentDateTime())
+            schedule_btn = QPushButton("Schedule Deploy")
+            cancel_schedule_btn = QPushButton("Cancel Schedule")
+            cancel_schedule_btn.setEnabled(bool(scheduled_at))
+
             cancel_btn = QPushButton("Cancel")
             release_btn = QPushButton("Release")
             release_btn.setObjectName("primaryButton")
@@ -866,6 +881,18 @@ class SettingsWindow(QWidget):
                 if selected != selected_mode:
                     self.app_instance.set_job_selected_mode(job_folder_name, selected)
                 self.app_instance.remind_pending_job(job_folder_name, minutes=remind_spin.value())
+                self.refresh_jobs_dashboard()
+                dialog.accept()
+
+            def _schedule_action():
+                selected = mode_combo.currentText().strip() or "UNKNOWN"
+                deploy_at = schedule_edit.dateTime().toPyDateTime().astimezone(datetime.timezone.utc)
+                self.app_instance.schedule_pending_job_deploy(job_folder_name, deploy_at, selected)
+                self.refresh_jobs_dashboard()
+                dialog.accept()
+
+            def _cancel_schedule_action():
+                self.app_instance.cancel_pending_job_schedule(job_folder_name)
                 self.refresh_jobs_dashboard()
                 dialog.accept()
 
@@ -881,8 +908,17 @@ class SettingsWindow(QWidget):
                 dialog.accept()
 
             snooze_btn.clicked.connect(_snooze_action)
+            schedule_btn.clicked.connect(_schedule_action)
+            cancel_schedule_btn.clicked.connect(_cancel_schedule_action)
             cancel_btn.clicked.connect(dialog.reject)
             release_btn.clicked.connect(_release_action)
+
+            layout.addWidget(schedule_label)
+            schedule_row = QHBoxLayout()
+            schedule_row.addWidget(schedule_edit)
+            schedule_row.addWidget(schedule_btn)
+            schedule_row.addWidget(cancel_schedule_btn)
+            layout.addLayout(schedule_row)
 
             action_row.addWidget(remind_label)
             action_row.addWidget(remind_spin)
