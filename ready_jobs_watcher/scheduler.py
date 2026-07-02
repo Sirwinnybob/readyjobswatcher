@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from .utils import is_hidden, set_hidden_attribute, delete_codebase_folders, log_system_stats
 from .file_handler import JobProcessor
 from .config import Config
-from .remake_candidates_indexer import refresh_unresolved_bad_parts_all, cleanup_orphaned_cnc_metadata_all
+from .remake_candidates_indexer import refresh_unresolved_bad_parts_all
 from .deployment_gate import MODE_UNKNOWN, DeploymentGateManager
 
 main_logger = logging.getLogger('main')
@@ -130,13 +130,6 @@ def scan_cnc_pdfs_for_bad_parts(
         config (Config): System configuration containing relevant directory paths.
     """
     from .file_handler import JobProcessor
-
-    try:
-        removed = cleanup_orphaned_cnc_metadata_all(config, deployment_gate)
-        if removed:
-            cnc_logger.info(f"Orphaned CNC metadata cleanup removed {removed} file(s).")
-    except Exception as e:
-        cnc_logger.error(f"Error cleaning orphaned CNC metadata: {e}", exc_info=True)
 
     if config.bad_parts_mode == "tracker":
         if tracker_monitor is None:
