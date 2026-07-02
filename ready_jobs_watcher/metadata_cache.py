@@ -32,12 +32,15 @@ def _read_json(path: Path, default=None):
         return default
 
 
-def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
+def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> bool:
+    if _read_json(path) == payload:
+        return False
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".json.tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
     os.replace(tmp_path, path)
+    return True
 
 
 def format_width(val: float) -> str:

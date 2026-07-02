@@ -10,14 +10,17 @@ import glob
 import json
 import logging
 import os
+import time
 from typing import Dict, List, Optional, Tuple
 
 from .config import Config
 from .tracker_action_stream import load_cnc_tracker_actions
 
 main_logger = logging.getLogger("main")
+cnc_logger = logging.getLogger("cnc")
 
 REMAKE_CANDIDATES_FILENAME = "remake_bad_parts_candidates.json"
+THUMBS_SUBDIR = ".thumbs"
 
 
 def _candidates_output_path(config: Config, job_folder_name: str) -> str:
@@ -30,12 +33,20 @@ def _candidates_output_path(config: Config, job_folder_name: str) -> str:
     )
 
 
-def _write_candidates(config: Config, job_folder_name: str, candidates: List[Dict]) -> None:
+def _write_candidates(config: Config, job_folder_name: str, candidates: List[Dict]) -> bool:
     out_path = _candidates_output_path(config, job_folder_name)
+    try:
+        with open(out_path, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+        if isinstance(existing, dict) and existing.get("candidates") == candidates:
+            return False
+    except Exception:
+        pass
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     payload = {"jobFolderName": job_folder_name, "candidates": candidates}
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
+    return True
 
 
 def _remove_candidates_file(config: Config, job_folder_name: str) -> None:
@@ -162,12 +173,12 @@ def refresh_unresolved_bad_parts_for_job(config: Config, job_folder_name: str, d
         return False
     metadata_by_pdf = _load_metadata_by_pdf(metadata_dir)
     candidates = _build_candidates(job_folder_name, actions, metadata_by_pdf)
-    _write_candidates(config, job_folder_name, candidates)
-    main_logger.info(
-        "Remake candidates index updated: job=%s count=%s",
-        job_folder_name,
-        len(candidates),
-    )
+    if _write_candidates(config, job_folder_name, candidates):
+        main_logger.info(
+            "Remake candidates index updated: job=%s count=%s",
+            job_folder_name,
+            len(candidates),
+        )
     return True
 
 
@@ -186,6 +197,96 @@ def refresh_unresolved_bad_parts_all(config: Config, deployment_gate=None) -> in
     except Exception as exc:
         main_logger.error(f"Failed refreshing unresolved bad parts across jobs: {exc}", exc_info=True)
     return refreshed
+
+
+def _sidecar_has_matching_pdf(sidecar_path: str, cnc_dir: str) -> bool:
+    stem = os.path.splitext(os.path.basename(sidecar_path))[0]
+    candidates = {stem}
+    try:
+        with open(sidecar_path, "r", encoding="utf-8") as f:
+            md = json.load(f)
+        pdf_name = md.get("pdfFilename") if isinstance(md, dict) else None
+        if pdf_name:
+            candidates.add(os.path.splitext(str(pdf_name))[0])
+    except Exception as exc:
+        main_logger.warning(f"Could not parse sidecar {sidecar_path} during orphan check: {exc}")
+        # Malformed/unreadable sidecar: don't treat as orphaned on this basis alone.
+        return True
+    return any(os.path.isfile(os.path.join(cnc_dir, c + ".pdf")) for c in candidates)
+
+
+def cleanup_orphaned_cnc_metadata_for_job(config: Config, job_folder_name: str) -> int:
+    """
+    Remove CNC sidecar JSON files (and their thumbnails) that no longer have
+    a matching PDF in the job's CNC folder.
+
+    These sidecars are written by the PDF splitter, not by Ready Jobs Watcher,
+    but can be left behind when a split/remake PDF is deleted or replaced.
+    A grace period (config.cnc_orphan_metadata_grace_minutes) protects sidecars
+    written moments ago, in case a split is still in progress.
+    """
+    job_root = os.path.join(config.ROOT_DIR, job_folder_name)
+    cnc_dir = os.path.join(job_root, config.CNC_SUBDIR)
+    metadata_dir = os.path.join(cnc_dir, ".metadata")
+    thumbs_dir = os.path.join(metadata_dir, THUMBS_SUBDIR)
+    if not os.path.isdir(metadata_dir):
+        return 0
+
+    grace_seconds = max(0, int(getattr(config, "cnc_orphan_metadata_grace_minutes", 30))) * 60
+    now = time.time()
+    removed = 0
+
+    for sidecar_path in glob.glob(os.path.join(metadata_dir, "*.json")):
+        name = os.path.basename(sidecar_path)
+        if name == REMAKE_CANDIDATES_FILENAME:
+            continue
+        try:
+            mtime = os.path.getmtime(sidecar_path)
+        except OSError:
+            continue
+        if (now - mtime) < grace_seconds:
+            continue
+        if _sidecar_has_matching_pdf(sidecar_path, cnc_dir):
+            continue
+
+        stem = os.path.splitext(name)[0]
+        try:
+            os.remove(sidecar_path)
+            removed += 1
+            cnc_logger.info(f"Removed orphaned CNC sidecar metadata: {sidecar_path}")
+        except OSError as exc:
+            cnc_logger.warning(f"Failed removing orphaned sidecar {sidecar_path}: {exc}")
+            continue
+
+        if os.path.isdir(thumbs_dir):
+            for thumb_path in glob.glob(os.path.join(thumbs_dir, glob.escape(stem) + "_p*.png")):
+                try:
+                    os.remove(thumb_path)
+                    removed += 1
+                    cnc_logger.info(f"Removed orphaned CNC thumbnail: {thumb_path}")
+                except OSError as exc:
+                    cnc_logger.warning(f"Failed removing orphaned thumbnail {thumb_path}: {exc}")
+
+    return removed
+
+
+def cleanup_orphaned_cnc_metadata_all(config: Config, deployment_gate=None) -> int:
+    removed_total = 0
+    root_dir = config.ROOT_DIR
+    if not os.path.isdir(root_dir):
+        return 0
+    try:
+        with os.scandir(root_dir) as it:
+            for entry in it:
+                if not entry.is_dir():
+                    continue
+                job_root = entry.path
+                if deployment_gate is not None and not deployment_gate.should_process_job_folder(job_root):
+                    continue
+                removed_total += cleanup_orphaned_cnc_metadata_for_job(config, entry.name)
+    except Exception as exc:
+        cnc_logger.error(f"Failed cleaning orphaned CNC metadata across jobs: {exc}", exc_info=True)
+    return removed_total
 
 
 def derive_job_from_tracker_path(config: Config, src_path: str) -> Optional[str]:

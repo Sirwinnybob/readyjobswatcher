@@ -991,8 +991,16 @@ def _find_hardwoods_docs(job_folder_path: str) -> Dict[str, Tuple[str, str]]:
 def _write_index(job_folder_path: str, payload: Dict) -> Optional[str]:
     try:
         metadata_dir = os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR)
-        os.makedirs(metadata_dir, exist_ok=True)
         out_path = os.path.join(metadata_dir, HARDWOODS_INDEX_FILENAME)
+        try:
+            with open(out_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            # "generatedAt" always differs, so compare only the actual document content.
+            if isinstance(existing, dict) and existing.get("documents") == payload.get("documents"):
+                return out_path
+        except Exception:
+            pass
+        os.makedirs(metadata_dir, exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
         touch_hardwoods_refresh_signal(

@@ -63,6 +63,7 @@ class Config:
         self.bad_parts_toast_enabled = True
         self.bad_parts_sound_profile = "triple_beep"  # triple_beep | none
         self.tracker_reconcile_interval_seconds = 300
+        self.cnc_orphan_metadata_grace_minutes = 30
         self.metadata_cache_debounce_seconds = 600
         self.metadata_end_of_day_time = "20:00"
         self.metadata_snapshot_enabled = True
@@ -199,6 +200,9 @@ class Config:
         self.tracker_reconcile_interval_seconds = int(
             config.get("tracker_reconcile_interval_seconds", self.tracker_reconcile_interval_seconds)
         )
+        self.cnc_orphan_metadata_grace_minutes = int(
+            config.get("cnc_orphan_metadata_grace_minutes", self.cnc_orphan_metadata_grace_minutes)
+        )
         self.metadata_cache_debounce_seconds = float(
             config.get("metadata_cache_debounce_seconds", self.metadata_cache_debounce_seconds)
         )
@@ -308,6 +312,7 @@ class Config:
                 'bad_parts_toast_enabled': self.bad_parts_toast_enabled,
                 'bad_parts_sound_profile': self.bad_parts_sound_profile,
                 'tracker_reconcile_interval_seconds': self.tracker_reconcile_interval_seconds,
+                'cnc_orphan_metadata_grace_minutes': self.cnc_orphan_metadata_grace_minutes,
                 'metadata_cache_debounce_seconds': self.metadata_cache_debounce_seconds,
                 'metadata_end_of_day_time': self.metadata_end_of_day_time,
                 'metadata_snapshot_enabled': self.metadata_snapshot_enabled,

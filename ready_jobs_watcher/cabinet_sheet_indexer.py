@@ -755,15 +755,23 @@ def _build_virtual_combined_assembly(
     }
 
 
-def _write_index(job_folder_path: str, payload: Dict) -> None:
+def _write_index(job_folder_path: str, payload: Dict) -> bool:
     try:
         metadata_dir = os.path.join(job_folder_path, ".metadata")
-        os.makedirs(metadata_dir, exist_ok=True)
         out_path = os.path.join(metadata_dir, REFERENCE_INDEX_FILENAME)
+        try:
+            with open(out_path, "r", encoding="utf-8") as f:
+                if json.load(f) == payload:
+                    return False
+        except Exception:
+            pass
+        os.makedirs(metadata_dir, exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+        return True
     except OSError as exc:
         main_logger.warning("cabinet_sheet_indexer: could not write index for %s: %s", job_folder_path, exc)
+        return False
 
 
 def build_reference_index_for_job(job_folder_path: str) -> bool:
@@ -848,18 +856,18 @@ def build_reference_index_for_job(job_folder_path: str) -> bool:
             },
         },
     }
-    _write_index(job_folder_path, payload)
-    touch_cnc_refresh_signal(
-        job_folder_path=job_folder_path,
-        reason="reference_index_updated",
-        source="cabinet_sheet_indexer",
-    )
-    main_logger.info(
-        "Reference index updated: job=%s assemblyCabs=%s plansCabs=%s",
-        os.path.basename(job_folder_path),
-        len(virtual_combined.get("cabinetToPages", {})),
-        len(plans_result.cabinet_to_pages),
-    )
+    if _write_index(job_folder_path, payload):
+        touch_cnc_refresh_signal(
+            job_folder_path=job_folder_path,
+            reason="reference_index_updated",
+            source="cabinet_sheet_indexer",
+        )
+        main_logger.info(
+            "Reference index updated: job=%s assemblyCabs=%s plansCabs=%s",
+            os.path.basename(job_folder_path),
+            len(virtual_combined.get("cabinetToPages", {})),
+            len(plans_result.cabinet_to_pages),
+        )
     return True
 
 
