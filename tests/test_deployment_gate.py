@@ -158,6 +158,21 @@ class TestDeploymentGateManager(unittest.TestCase):
 
             self.assertEqual(state["selectedMode"], "BOTH")
 
+    def test_schedule_deploy_converts_naive_datetime_to_utc(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = "1008 - TEST"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            gate.ensure_pending_for_new_job(job)
+
+            deploy_at = datetime(2026, 7, 6, 7, 0, 0)
+            state = gate.schedule_deploy(job, deploy_at)
+
+            self.assertEqual(
+                state["timers"]["autoReleaseAt"],
+                deploy_at.astimezone(timezone.utc).isoformat(),
+            )
+
     def test_cancel_scheduled_deploy_clears_only_auto_release(self):
         with tempfile.TemporaryDirectory() as root:
             job = "1007 - TEST"
