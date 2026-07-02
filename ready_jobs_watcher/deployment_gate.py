@@ -22,7 +22,6 @@ MODE_FRAMELESS = "FRAMELESS"
 MODE_BOTH = "BOTH"
 MODE_UNKNOWN = "UNKNOWN"
 MODE_VALUES = {MODE_FACE_FRAME, MODE_FRAMELESS, MODE_BOTH, MODE_UNKNOWN}
-PENDING_AUTO_RELEASE_HOURS = 30
 
 
 class DeploymentGateManager:
@@ -150,10 +149,6 @@ class DeploymentGateManager:
             )
             return coerced
 
-    @staticmethod
-    def _auto_release_at_from(action_at: datetime.datetime) -> str:
-        return (action_at + datetime.timedelta(hours=PENDING_AUTO_RELEASE_HOURS)).isoformat()
-
     def update_state(self, job_folder_name: str, operator_action: bool = False, **updates) -> Dict:
         with self._lock:
             state = self.load_state(job_folder_name, create_if_missing=True, default_deployed=True)
@@ -185,7 +180,6 @@ class DeploymentGateManager:
                 now_dt = datetime.datetime.now(datetime.timezone.utc)
                 current_timers = state.get("timers", {})
                 current_timers["lastActionAt"] = now_dt.isoformat()
-                current_timers["autoReleaseAt"] = self._auto_release_at_from(now_dt)
                 state["timers"] = current_timers
 
             return self.save_state(job_folder_name, state)
@@ -207,8 +201,8 @@ class DeploymentGateManager:
             "detectedAt": self._now_iso(),
         }
 
-        if not had_existing_state or not was_pending or not current_timers.get("autoReleaseAt"):
-            current_timers["autoReleaseAt"] = self._auto_release_at_from(now_dt)
+        # autoReleaseAt is operator-set only (see schedule_deploy); re-detecting an
+        # already-pending job must never touch it, so any explicit schedule survives.
         if not had_existing_state or not was_pending or not current_timers.get("lastActionAt"):
             current_timers["lastActionAt"] = now_dt.isoformat()
         state["timers"] = current_timers

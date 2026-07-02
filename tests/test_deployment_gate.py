@@ -25,7 +25,7 @@ class TestDeploymentGateManager(unittest.TestCase):
             self.assertEqual(state["modeDetection"]["candidate"], MODE_BOTH)
             self.assertEqual(state["modeDetection"]["source"], "DELIVERY_SHEET")
             self.assertFalse(state["hiddenFromProduction"])
-            self.assertIsNotNone(state["timers"]["autoReleaseAt"])
+            self.assertIsNone(state["timers"]["autoReleaseAt"])
             self.assertIsNotNone(state["timers"]["lastActionAt"])
             self.assertFalse(gate.should_process_job_folder(os.path.join(root, job)))
 
@@ -45,49 +45,50 @@ class TestDeploymentGateManager(unittest.TestCase):
             self.assertEqual(state["selectedMode"], "FACE-FRAME")
             self.assertTrue(gate.should_process_job_folder(os.path.join(root, job)))
 
-    def test_duplicate_pending_events_do_not_reset_auto_release_timer(self):
+    def test_duplicate_pending_events_preserve_operator_scheduled_deploy(self):
         with tempfile.TemporaryDirectory() as root:
             job = "1001 - TEST"
             os.makedirs(os.path.join(root, job), exist_ok=True)
             gate = DeploymentGateManager(root)
 
-            first = gate.ensure_pending_for_new_job(job, detected_mode="BOTH", detection_source="FIRST")
-            first_auto_release = first["timers"]["autoReleaseAt"]
+            gate.ensure_pending_for_new_job(job, detected_mode="BOTH", detection_source="FIRST")
+            scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
+            gate.update_state(job, timers={"autoReleaseAt": scheduled_at})
+
             second = gate.ensure_pending_for_new_job(job, detected_mode="FRAMELESS", detection_source="SECOND")
 
-            self.assertEqual(second["timers"]["autoReleaseAt"], first_auto_release)
+            self.assertEqual(second["timers"]["autoReleaseAt"], scheduled_at)
             self.assertEqual(second["modeDetection"]["candidate"], "FRAMELESS")
 
-    def test_operator_action_resets_auto_release_for_pending_jobs(self):
+    def test_operator_action_no_longer_touches_auto_release(self):
         with tempfile.TemporaryDirectory() as root:
             job = "1002 - TEST"
             os.makedirs(os.path.join(root, job), exist_ok=True)
             gate = DeploymentGateManager(root)
 
             state = gate.ensure_pending_for_new_job(job)
-            before = datetime.fromisoformat(state["timers"]["autoReleaseAt"])
+            self.assertIsNone(state["timers"]["autoReleaseAt"])
+            before_last_action = state["timers"]["lastActionAt"]
+
             updated = gate.mark_operator_action(job)
-            after = datetime.fromisoformat(updated["timers"]["autoReleaseAt"])
 
-            self.assertGreater(after, before)
+            self.assertIsNone(updated["timers"]["autoReleaseAt"])
             self.assertIsNotNone(updated["timers"]["lastActionAt"])
+            self.assertGreaterEqual(updated["timers"]["lastActionAt"], before_last_action)
 
-    def test_operator_action_helpers_extend_pending_auto_release(self):
+    def test_operator_action_helpers_do_not_touch_auto_release(self):
         with tempfile.TemporaryDirectory() as root:
             job = "1002B - TEST"
             os.makedirs(os.path.join(root, job), exist_ok=True)
             gate = DeploymentGateManager(root)
 
-            state = gate.ensure_pending_for_new_job(job)
-            initial = datetime.fromisoformat(state["timers"]["autoReleaseAt"])
+            gate.ensure_pending_for_new_job(job)
 
             mode_update = gate.set_selected_mode(job, "FACE-FRAME")
-            mode_after = datetime.fromisoformat(mode_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(mode_after, initial)
+            self.assertIsNone(mode_update["timers"]["autoReleaseAt"])
 
             remind_update = gate.schedule_reminder(job, minutes=1)
-            remind_after = datetime.fromisoformat(remind_update["timers"]["autoReleaseAt"])
-            self.assertGreaterEqual(remind_after, mode_after)
+            self.assertIsNone(remind_update["timers"]["autoReleaseAt"])
 
     def test_mode_detection_can_skip_operator_action_touch(self):
         with tempfile.TemporaryDirectory() as root:
