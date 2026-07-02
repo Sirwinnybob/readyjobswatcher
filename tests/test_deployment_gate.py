@@ -251,6 +251,14 @@ class TestDeploymentGateManager(unittest.TestCase):
 
             self.assertEqual(cleared_count, 0)
 
+    def test_migrate_returns_zero_for_empty_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            gate = DeploymentGateManager(root)
+
+            cleared_count = gate.migrate_clear_legacy_autorelease_timers()
+
+            self.assertEqual(cleared_count, 0)
+
 
 class TestEnsureHiddenGatesForAllFolders(unittest.TestCase):
     def test_returns_names_of_newly_gated_folders_only(self):

@@ -338,12 +338,12 @@ class DeploymentGateManager:
 
     def migrate_clear_legacy_autorelease_timers(self) -> int:
         """
-        One-time startup cleanup: clear timers.autoReleaseAt on every currently
-        PENDING job. Existing pending jobs may carry a value stamped by the old
-        default-30h-timer behavior, indistinguishable on disk from a genuine
-        operator schedule - clearing it here ensures nothing deploys as a
-        surprise right after that behavior is removed. Safe to call on every
-        startup: a no-op once nothing stale remains.
+        One-time startup cleanup: clear a stale timers.autoReleaseAt on every
+        currently PENDING job that has one set. Existing pending jobs may carry
+        a value stamped by the old default-30h-timer behavior, indistinguishable
+        on disk from a genuine operator schedule - clearing it here ensures
+        nothing deploys as a surprise right after that behavior is removed.
+        Safe to call on every startup: a no-op once nothing stale remains.
         """
         cleared = 0
         for state in self.list_job_states():
@@ -355,8 +355,11 @@ class DeploymentGateManager:
             job_folder_name = str(state.get("jobFolderName") or "")
             if not job_folder_name:
                 continue
-            self.update_state(job_folder_name, timers={"autoReleaseAt": None})
-            cleared += 1
+            try:
+                self.update_state(job_folder_name, timers={"autoReleaseAt": None})
+                cleared += 1
+            except Exception as exc:
+                main_logger.error("Failed clearing legacy auto-release timer for %s: %s", job_folder_name, exc)
         if cleared:
             main_logger.info("Cleared legacy auto-release timer on %d pending job(s).", cleared)
         return cleared
