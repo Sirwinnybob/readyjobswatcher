@@ -193,6 +193,11 @@ class JobsDashboardSignal(QObject):
     refresh_requested = pyqtSignal()
 
 
+class ConsolidationSignal(QObject):
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+
 class QtLogHandler(logging.Handler):
     def __init__(self, log_signal):
         super().__init__()
@@ -311,6 +316,9 @@ class SettingsWindow(QWidget):
         self.auto_release_signal.new_job.connect(self._show_auto_release_dialog)
         self.jobs_dashboard_signal = JobsDashboardSignal()
         self.jobs_dashboard_signal.refresh_requested.connect(self._refresh_jobs_dashboard)
+        self.consolidation_signal = ConsolidationSignal()
+        self.consolidation_signal.completed.connect(self._show_consolidation_complete)
+        self.consolidation_signal.failed.connect(self._show_consolidation_failed)
         self.alert_coordinator = None
         self.bad_parts_center_dialog = None
         self.jobs_table = None
@@ -536,11 +544,15 @@ class SettingsWindow(QWidget):
         force_convert_pdfs_btn = QPushButton("Force Convert All PDFs")
         force_convert_pdfs_btn.clicked.connect(self.trigger_force_convert_pdfs)
 
+        self.run_consolidation_btn = QPushButton("Run Tracker Consolidation Now")
+        self.run_consolidation_btn.clicked.connect(self.trigger_run_consolidation)
+
         layout.addWidget(backup_btn)
         layout.addWidget(scan_cnc_btn)
         layout.addWidget(scan_ready_jobs_btn)
         layout.addWidget(convert_pdfs_btn)
         layout.addWidget(force_convert_pdfs_btn)
+        layout.addWidget(self.run_consolidation_btn)
         layout.addStretch()
 
         self.tabs.addTab(tab, "Actions")
@@ -621,6 +633,43 @@ class SettingsWindow(QWidget):
             from ready_jobs_watcher.pdf_dark_mode import process_directory
             threading.Thread(target=process_directory, args=(self.config.ROOT_DIR, True), daemon=True).start()
             QMessageBox.information(self, "Convert", "Forced PDF conversion started.")
+
+    def trigger_run_consolidation(self):
+        service = getattr(getattr(self, "app_instance", None), "metadata_refresh_service", None)
+        if service is None:
+            QMessageBox.warning(self, "Consolidation", "Metadata refresh service is not initialized.")
+            return
+
+        import threading
+        QMessageBox.information(self, "Consolidation", "Tracker consolidation started in background.")
+        threading.Thread(target=self._run_consolidation_worker, args=(service,), daemon=True).start()
+
+    def _run_consolidation_worker(self, service):
+        try:
+            summary = service.run_scheduled_sweep(consolidate_trackers=True)
+            self.consolidation_signal.completed.emit(summary)
+        except Exception as exc:
+            logging.error("Manual tracker consolidation failed: %s", exc, exc_info=True)
+            self.consolidation_signal.failed.emit(str(exc))
+
+    def _show_consolidation_complete(self, summary):
+        summary = summary or {}
+        QMessageBox.information(
+            self,
+            "Consolidation Complete",
+            "Tracker consolidation completed.\n\n"
+            f"Processed: {summary.get('processed', 0)}\n"
+            f"Rebuilt: {summary.get('rebuilt', 0)}\n"
+            f"Archived: {summary.get('archived', 0)}\n"
+            f"Errors: {summary.get('errors', 0)}",
+        )
+
+    def _show_consolidation_failed(self, message):
+        QMessageBox.critical(
+            self,
+            "Consolidation Failed",
+            f"Tracker consolidation failed:\n{message}",
+        )
 
     def trigger_rename_job(self):
         job_folder_name = self._selected_job_folder_name()
