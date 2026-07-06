@@ -1418,7 +1418,12 @@ class SettingsWindow(QWidget):
 
     def show_window(self):
         self.update_status()
-        self.show()
+        self.showNormal()
         self.raise_()
         self.activateWindow()
-
+        logging.info(
+            "Settings window show requested (visible=%s minimized=%s active=%s)",
+            self.isVisible(),
+            self.isMinimized(),
+            self.isActiveWindow(),
+        )

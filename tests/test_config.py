@@ -110,6 +110,23 @@ def test_metadata_cache_defaults(monkeypatch):
     assert cfg.metadata_snapshot_daypart_limit is True
 
 
+def test_root_offline_restart_default(monkeypatch):
+    monkeypatch.setattr(Config, "load", lambda self: None)
+    cfg = Config()
+    assert cfg.root_offline_restart_minutes == 15
+
+
+def test_get_next_backup_time_does_not_log_status_timer_noise(monkeypatch, caplog):
+    monkeypatch.setattr(Config, "load", lambda self: None)
+    cfg = Config()
+    cfg.BACKUP_TIMES = ["16:25"]
+
+    with caplog.at_level("DEBUG", logger="main"):
+        cfg.get_next_backup_time()
+
+    assert "Calculating next backup time" not in caplog.text
+
+
 def test_validate_metadata_cache_config(config_instance):
     assert config_instance._validate_config({"metadata_cache_debounce_seconds": 8}) is True
     assert config_instance._validate_config({"metadata_cache_debounce_seconds": 0}) is True
@@ -126,3 +143,10 @@ def test_validate_metadata_cache_config(config_instance):
     assert config_instance._validate_config({"metadata_snapshot_max_per_job": 0}) is False
     assert config_instance._validate_config({"metadata_snapshot_daypart_limit": True}) is True
     assert config_instance._validate_config({"metadata_snapshot_daypart_limit": "yes"}) is False
+
+
+def test_validate_root_offline_restart_config(config_instance):
+    assert config_instance._validate_config({"root_offline_restart_minutes": 15}) is True
+    assert config_instance._validate_config({"root_offline_restart_minutes": 0}) is True
+    assert config_instance._validate_config({"root_offline_restart_minutes": -1}) is False
+    assert config_instance._validate_config({"root_offline_restart_minutes": "15"}) is False

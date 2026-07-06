@@ -43,7 +43,7 @@ from .cabinet_sheet_indexer import (
 from .hardwoods_cutlist_indexer import build_hardwoods_cutlist_index_for_job
 from .dae_converter import convert_3d_models_for_job, scan_root_for_missing_glbs
 from .deployment_gate import DeploymentGateManager
-from .notifications import send_notification
+from .notifications import send_notification, send_critical_alert
 from .metadata_refresh import MetadataRefreshService
 
 ROOT_RECONNECT_POLL_SECONDS = 30
@@ -134,6 +134,7 @@ class Application:
         self._observer_lock = threading.RLock()
         self._pending_operations_restored = False
         self._root_unavailable_logged = False
+        self._root_offline_since = None
 
         self.retry_thread = None
         self.backup_thread = None
@@ -956,6 +957,32 @@ class Application:
         except Exception as exc:
             logging.warning("Failed joining %s: %s", name, exc)
 
+    def _maybe_restart_after_root_offline(self, now_monotonic: float) -> None:
+        restart_minutes = float(getattr(self.config, "root_offline_restart_minutes", 0) or 0)
+        if restart_minutes <= 0 or self._root_offline_since is None:
+            return
+
+        offline_seconds = now_monotonic - self._root_offline_since
+        threshold_seconds = restart_minutes * 60
+        if offline_seconds < threshold_seconds:
+            return
+
+        logging.warning(
+            "Ready Jobs root has stayed unavailable for %.1f minutes; restarting app to refresh SMB state.",
+            offline_seconds / 60,
+        )
+        send_critical_alert(
+            "Ready Jobs Watcher Needs Attention",
+            (
+                "Ready Jobs Watcher has not been able to reach the Ready Jobs network share "
+                f"for {offline_seconds / 60:.1f} minutes:\n\n"
+                f"{self.config.ROOT_DIR}\n\n"
+                "It will restart after this alert is dismissed to try to refresh the network connection."
+            ),
+        )
+        self._root_offline_since = now_monotonic
+        self.restart()
+
     def _observer_reconnect_loop(self, stop_event: threading.Event):
         poll_seconds = max(5, int(getattr(self.config, "root_offline_retry_seconds", ROOT_RECONNECT_POLL_SECONDS)))
         was_available = None
@@ -963,10 +990,14 @@ class Application:
             is_available = self._is_root_available()
 
             if is_available:
+                self._root_offline_since = None
                 started = self.start_observers()
                 if was_available is False and started:
                     self._run_root_catchup_scans("after reconnect")
             else:
+                now_monotonic = time.monotonic()
+                if self._root_offline_since is None:
+                    self._root_offline_since = now_monotonic
                 if was_available is not False:
                     logging.warning(
                         "Ready Jobs root is offline/unavailable: %s. Watchers paused; auto-retry is active.",
@@ -979,6 +1010,7 @@ class Application:
                         self.observer = Observer()
                         self.pdf_observer = Observer()
                 self._root_unavailable_logged = True
+                self._maybe_restart_after_root_offline(now_monotonic)
 
             was_available = is_available
             if stop_event.wait(poll_seconds):

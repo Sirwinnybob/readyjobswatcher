@@ -48,6 +48,8 @@ def _build_minimal_app() -> Application:
     app.stop_event = threading.Event()
     app.observer = _FakeObserver()
     app.pdf_observer = _FakeObserver()
+    app.restart_calls = []
+    app.restart = lambda: app.restart_calls.append("restart")  # type: ignore[method-assign]
     app.restore_calls = []
     app.restore_pending_operations = lambda rename_handler, pdf_handler: app.restore_calls.append(
         (rename_handler, pdf_handler)
@@ -163,6 +165,35 @@ class TestMainObserverResilience(unittest.TestCase):
             app._bootstrap_new_job_folders()
 
             self.assertEqual(detected, ["100 - NEW JOB"])
+
+    def test_root_offline_restart_disabled_when_threshold_zero(self):
+        app = _build_minimal_app()
+        app.config.root_offline_restart_minutes = 0
+        app._root_offline_since = 100.0
+
+        app._maybe_restart_after_root_offline(1000.0)
+
+        self.assertEqual(app.restart_calls, [])
+
+    def test_root_offline_restart_waits_until_threshold(self):
+        app = _build_minimal_app()
+        app.config.root_offline_restart_minutes = 15
+        app._root_offline_since = 100.0
+
+        app._maybe_restart_after_root_offline(999.0)
+
+        self.assertEqual(app.restart_calls, [])
+
+    def test_root_offline_restart_triggers_after_threshold(self):
+        app = _build_minimal_app()
+        app.config.root_offline_restart_minutes = 15
+        app._root_offline_since = 100.0
+
+        with patch("ready_jobs_watcher.main.send_critical_alert") as alert:
+            app._maybe_restart_after_root_offline(1000.0)
+
+        alert.assert_called_once()
+        self.assertEqual(app.restart_calls, ["restart"])
 
 
 if __name__ == "__main__":

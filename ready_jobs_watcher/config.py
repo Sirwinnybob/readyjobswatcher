@@ -64,6 +64,7 @@ class Config:
         self.bad_parts_sound_profile = "triple_beep"  # triple_beep | none
         self.tracker_reconcile_interval_seconds = 300
         self.cnc_orphan_metadata_grace_minutes = 30
+        self.root_offline_restart_minutes = 15
         self.metadata_cache_debounce_seconds = 600
         self.metadata_end_of_day_time = "20:00"
         self.metadata_snapshot_enabled = True
@@ -179,6 +180,11 @@ class Config:
             if not isinstance(config["assimp_path"], str):
                 main_logger.error("Config validation failed: assimp_path must be a string or null")
                 return False
+        if "root_offline_restart_minutes" in config:
+            value = config["root_offline_restart_minutes"]
+            if not isinstance(value, (int, float)) or value < 0:
+                main_logger.error("Config validation failed: root_offline_restart_minutes must be a number >= 0")
+                return False
 
         return True
 
@@ -202,6 +208,9 @@ class Config:
         )
         self.cnc_orphan_metadata_grace_minutes = int(
             config.get("cnc_orphan_metadata_grace_minutes", self.cnc_orphan_metadata_grace_minutes)
+        )
+        self.root_offline_restart_minutes = float(
+            config.get("root_offline_restart_minutes", self.root_offline_restart_minutes)
         )
         self.metadata_cache_debounce_seconds = float(
             config.get("metadata_cache_debounce_seconds", self.metadata_cache_debounce_seconds)
@@ -313,6 +322,7 @@ class Config:
                 'bad_parts_sound_profile': self.bad_parts_sound_profile,
                 'tracker_reconcile_interval_seconds': self.tracker_reconcile_interval_seconds,
                 'cnc_orphan_metadata_grace_minutes': self.cnc_orphan_metadata_grace_minutes,
+                'root_offline_restart_minutes': self.root_offline_restart_minutes,
                 'metadata_cache_debounce_seconds': self.metadata_cache_debounce_seconds,
                 'metadata_end_of_day_time': self.metadata_end_of_day_time,
                 'metadata_snapshot_enabled': self.metadata_snapshot_enabled,
@@ -351,7 +361,6 @@ class Config:
         Returns:
             datetime.datetime: The closest upcoming backup time.
         """
-        main_logger.debug("Calculating next backup time")
         now = datetime.datetime.now()
         today = now.date()
         backup_datetimes = []
