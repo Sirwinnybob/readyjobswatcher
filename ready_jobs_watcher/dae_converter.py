@@ -445,7 +445,7 @@ def _convert_polygons_element_to_triangles(
                 raise RuntimeError("Invalid index tuple width in <ph>/<p>")
             outer_ring = [outer_values[i:i + tuple_size] for i in range(0, len(outer_values), tuple_size)]
             rings.append(outer_ring)
-            for hole in [c for c in list(primitive) if _local_name(c.tag) == "h"]:
+            for hole in (c for c in primitive if _local_name(c.tag) == "h"):
                 hole_values = _parse_ints(hole.text or "")
                 if len(hole_values) % tuple_size != 0:
                     raise RuntimeError("Invalid index tuple width in <ph>/<h>")
