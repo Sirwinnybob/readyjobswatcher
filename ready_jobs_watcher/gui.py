@@ -8,6 +8,7 @@ and alert behavior, as well as view running logs.
 import logging
 import datetime
 import os
+import re
 from typing import Dict, List, Optional
 
 from PyQt6.QtWidgets import (
@@ -21,6 +22,8 @@ from PyQt6.QtCore import QTime, QDateTime, QObject, pyqtSignal, Qt
 from PyQt6.QtGui import QTextCursor, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtCore import QTimer
 from .alert_coordinator import AlertBatch
+INVALID_CHARS_REGEX = re.compile(r"[<>:\"/\\|?*]")
+
 from .tracker_bad_parts import BadPartDetailRecord, TrackerBadPartKey
 
 def render_pdf_page_to_pixmap(pdf_full_path: str, page_num: int, thumbnail_path: Optional[str], highlight_rect: Optional[tuple], zoom: float = 2.5) -> Optional[QPixmap]:
@@ -693,7 +696,7 @@ class SettingsWindow(QWidget):
 
         # Check for invalid characters in folder name
         invalid_chars = '<>:"/\\|?*'
-        if any(c in new_name for c in invalid_chars):
+        if INVALID_CHARS_REGEX.search(new_name):
             QMessageBox.critical(
                 self,
                 "Rename Job",
