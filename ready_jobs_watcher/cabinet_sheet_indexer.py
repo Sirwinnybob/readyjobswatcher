@@ -77,10 +77,10 @@ _SECTION_EXCLUDES = re.compile(
     r"Full\s*Overlay|Overlay\b|Inset\b|\d{3,}\s*-",
     re.IGNORECASE,
 )
-_KNOWN_SECTIONS = {
+_KNOWN_SECTIONS = (
     "face frame", "doors", "frame", "panel stock",
     "hardware", "drawer fronts", "drawer boxes",
-}
+)
 
 
 @dataclass
@@ -163,7 +163,7 @@ def _extract_section_name(line: str) -> Optional[str]:
     if _SECTION_EXCLUDES.search(content):
         return None
     lower = content.lower()
-    if any(lower.startswith(k) for k in _KNOWN_SECTIONS):
+    if lower.startswith(_KNOWN_SECTIONS):
         return content
     return None
 

@@ -26,3 +26,6 @@ Action: For deep or recursive scans where specific directories should be skipped
 ## 2024-05-30 - Optimize os.walk with os.scandir
 Learning: Using `os.walk` in conjunction with `[d.upper() for d in root.split(os.sep)]` to ignore specific directories during traversal is inefficient. `os.walk` will still walk the subdirectories of the ignored folders if the `dirs` list is not mutated in-place.
 Action: For deep or recursive scans where specific directories should be skipped, use an iterative `os.scandir` stack pattern. This avoids full list allocation, reduces redundant system `stat()` overhead via `DirEntry` attributes, and allows skipping ignored directories entirely without traversing them.
+## 2026-06-22 - [Avoid O(N) string prefix checks]
+**Learning:** File processing loops that check for prefixes can be optimized significantly by pre-computing the prefixes into a tuple, allowing `startswith()` to execute in fast C code rather than a slow Python `for` loop. It's over 3-8x faster.
+**Action:** Next time I see a loop doing `if val.startswith(prefix) for prefix in collection` or a multi-line `or val.startswith()`, replace it with `val.startswith(tuple_of_prefixes)`.
