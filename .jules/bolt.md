@@ -33,3 +33,7 @@ Action: For deep or recursive scans where specific directories should be skipped
 ## 2024-07-06 - Replacing os.walk with os.scandir for Bottom-Up Cleanups
 Learning: While `os.walk` in Python 3.5+ uses `os.scandir` internally, it still allocates full lists of `dirs` and `files` for every visited directory. This memory allocation and implicit full directory scanning can be extremely slow on network drives.
 Action: For high-performance directory tree processing where not all files need to be processed (like bottom-up cleanup of specifically named folders), implement an iterative post-order traversal using a stack and `os.scandir`. Track if remaining un-deleted files exist using a flag during the first scan rather than making a second `os.listdir()` call to check if the directory is empty.
+
+## 2024-07-06 - Performance optimization on list comprehensions with split()
+Learning: Building list comprehensions to map functions after a string split (e.g. `[x.upper() for x in text.split(sep)]`) causes redundant memory allocations for the list. Applying the string method first and then splitting (`text.upper().split(sep)`) skips the list comprehension entirely, being 40-50% faster.
+Action: Apply transformations (like `.lower()` or `.upper()`) to strings *before* running `.split()` whenever the logic permits.

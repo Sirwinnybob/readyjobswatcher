@@ -185,7 +185,7 @@ def process_directory(directory_path: str, force: bool = False):
     pdf_darkmode_logger.info(f"Scanning directory for dark mode conversion: {directory_path}")
 
     # Check if the base directory itself is in a DARK MODE folder
-    if "DARK MODE" in [d.upper() for d in directory_path.split(os.sep)]:
+    if "DARK MODE" in directory_path.upper().split(os.sep):
         return
 
     # Use an iterative os.scandir stack for better performance than os.walk
