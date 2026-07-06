@@ -26,3 +26,7 @@ Action: For deep or recursive scans where specific directories should be skipped
 ## 2024-05-30 - Optimize os.walk with os.scandir
 Learning: Using `os.walk` in conjunction with `[d.upper() for d in root.split(os.sep)]` to ignore specific directories during traversal is inefficient. `os.walk` will still walk the subdirectories of the ignored folders if the `dirs` list is not mutated in-place.
 Action: For deep or recursive scans where specific directories should be skipped, use an iterative `os.scandir` stack pattern. This avoids full list allocation, reduces redundant system `stat()` overhead via `DirEntry` attributes, and allows skipping ignored directories entirely without traversing them.
+
+## 2024-07-06 - Replacing os.walk with os.scandir for Bottom-Up Cleanups
+Learning: While `os.walk` in Python 3.5+ uses `os.scandir` internally, it still allocates full lists of `dirs` and `files` for every visited directory. This memory allocation and implicit full directory scanning can be extremely slow on network drives.
+Action: For high-performance directory tree processing where not all files need to be processed (like bottom-up cleanup of specifically named folders), implement an iterative post-order traversal using a stack and `os.scandir`. Track if remaining un-deleted files exist using a flag during the first scan rather than making a second `os.listdir()` call to check if the directory is empty.
