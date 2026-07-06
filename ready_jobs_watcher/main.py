@@ -366,7 +366,7 @@ class Application:
             self.settings_window.refresh_jobs_dashboard()
 
     def auto_release_pending_job(self, job_folder_name: str, selected_mode: str) -> bool:
-        state = self.deployment_gate.load_state(job_folder_name, create_if_missing=False, default_deployed=True)
+        state = self.deployment_gate.load_state(job_folder_name, create_if_missing=False, default_deployed=False)
         if bool(state.get("deployed", True)):
             return False
         self.deployment_gate.update_state(job_folder_name, hiddenFromProduction=False, operator_action=False)
@@ -401,6 +401,14 @@ class Application:
     def show_job_in_production(self, job_folder_name: str) -> None:
         self.deployment_gate.show_in_production(job_folder_name)
         logging.info("Job shown in production: job=%s", job_folder_name)
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+
+    def pull_job_from_deployment(self, job_folder_name: str) -> None:
+        self.deployment_gate.pull_from_deployment(job_folder_name)
+        self._queue_pending_job_prompt(job_folder_name)
+        self.schedule_metadata_refresh_for_job(job_folder_name, "job_pulled_from_deployment")
+        logging.info("Job pulled from deployment: job=%s", job_folder_name)
         if self.settings_window:
             self.settings_window.refresh_jobs_dashboard()
 
@@ -609,7 +617,7 @@ class Application:
             logging.error("Failed updating legacy bad-parts blacklist after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
 
         try:
-            state = self.deployment_gate.load_state(new_name, create_if_missing=False, default_deployed=True)
+            state = self.deployment_gate.load_state(new_name, create_if_missing=False, default_deployed=False)
             self.deployment_gate.save_state(new_name, state)
         except Exception as exc:
             logging.error("Failed refreshing deployment gate after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
@@ -1455,10 +1463,10 @@ class Application:
                         if is_hidden(full_path):
                             logging.info(f"Skipping hidden item: {full_path}")
                             continue
-                        self.job_processor.process_job_folder(full_path)
                         if not self.deployment_gate.should_process_job_folder(full_path):
                             logging.info(f"Skipping pending job during initial parse: {full_path}")
                             continue
+                        self.job_processor.process_job_folder(full_path)
                         eligible_paths.append(full_path)
 
             def _build_indexes_for_job(job_path):

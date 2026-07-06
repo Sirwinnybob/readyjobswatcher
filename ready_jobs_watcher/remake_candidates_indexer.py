@@ -44,8 +44,10 @@ def _write_candidates(config: Config, job_folder_name: str, candidates: List[Dic
         pass
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     payload = {"jobFolderName": job_folder_name, "candidates": candidates}
-    with open(out_path, "w", encoding="utf-8") as f:
+    temp_path = f"{out_path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
+    os.replace(temp_path, out_path)
     return True
 
 

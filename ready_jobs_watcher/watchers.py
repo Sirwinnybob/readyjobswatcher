@@ -486,7 +486,7 @@ class PdfChangeHandler(FileSystemEventHandler):
                 self.alert_coordinator.submit_events(events)
             job_folder_name = derive_job_from_tracker_path(self.config, src_path)
             if job_folder_name and self.deployment_gate is not None:
-                state = self.deployment_gate.load_state(job_folder_name, default_deployed=True)
+                state = self.deployment_gate.load_state(job_folder_name, default_deployed=False)
                 if not bool(state.get("deployed", True)):
                     main_logger.info("Skipping tracker scan refresh for pending job: %s", job_folder_name)
                     return

@@ -117,7 +117,7 @@ class DeploymentGateManager:
         state["updatedAt"] = str(raw.get("updatedAt", state["updatedAt"]) or state["updatedAt"])
         return state
 
-    def load_state(self, job_folder_name: str, *, create_if_missing: bool = False, default_deployed: bool = True) -> Dict:
+    def load_state(self, job_folder_name: str, *, create_if_missing: bool = False, default_deployed: bool = False) -> Dict:
         path = self._metadata_path_for_job(job_folder_name)
         with self._lock:
             try:
@@ -141,7 +141,11 @@ class DeploymentGateManager:
             coerced = self._coerce_state(job_folder_name, state)
             coerced["updatedAt"] = self._now_iso()
             metadata_path = self._metadata_path_for_job(job_folder_name)
-            self._atomic_write_json(metadata_path, coerced)
+            try:
+                self._atomic_write_json(metadata_path, coerced)
+            except OSError as exc:
+                main_logger.error("Failed writing deployment gate for %s: %s", job_folder_name, exc)
+                raise
             touch_cnc_refresh_signal(
                 job_folder_path=os.path.dirname(os.path.dirname(metadata_path)),
                 reason="deployment_gate_updated",
@@ -151,7 +155,7 @@ class DeploymentGateManager:
 
     def update_state(self, job_folder_name: str, operator_action: bool = False, **updates) -> Dict:
         with self._lock:
-            state = self.load_state(job_folder_name, create_if_missing=True, default_deployed=True)
+            state = self.load_state(job_folder_name, create_if_missing=True, default_deployed=False)
             mode_detection = updates.pop("modeDetection", None)
             timers = updates.pop("timers", None)
 
@@ -221,6 +225,22 @@ class DeploymentGateManager:
 
     def mark_parse_ready(self, job_folder_name: str, parse_ready: bool) -> Dict:
         return self.update_state(job_folder_name, parseReady=bool(parse_ready))
+
+    def pull_from_deployment(self, job_folder_name: str) -> Dict:
+        """
+        Revert a deployed (ACTIVE/PARSING) job back to PENDING - the operator-
+        triggered inverse of mark_deployed. Hides it from production again and
+        clears timers so it starts a fresh pending cycle, exactly like a
+        freshly-detected job would.
+        """
+        self.update_state(
+            job_folder_name,
+            deployed=False,
+            parseReady=False,
+            hiddenFromProduction=False,
+            operator_action=True,
+        )
+        return self.clear_timers(job_folder_name)
 
     def hide_from_production(self, job_folder_name: str) -> Dict:
         return self.update_state(job_folder_name, hiddenFromProduction=True)
@@ -308,11 +328,11 @@ class DeploymentGateManager:
 
     def should_process_job_folder(self, job_folder_path: str) -> bool:
         job_folder_name = os.path.basename(os.path.normpath(job_folder_path))
-        state = self.load_state(job_folder_name, create_if_missing=False, default_deployed=True)
+        state = self.load_state(job_folder_name, create_if_missing=False, default_deployed=False)
         return bool(state.get("deployed", True))
 
     def get_visibility(self, job_folder_name: str, is_debug_build: bool) -> bool:
-        state = self.load_state(job_folder_name, create_if_missing=False, default_deployed=True)
+        state = self.load_state(job_folder_name, create_if_missing=False, default_deployed=False)
         if not bool(state.get("deployed", True)):
             return False
         if not bool(state.get("parseReady", True)):
@@ -330,7 +350,7 @@ class DeploymentGateManager:
                 for entry in entries:
                     if not entry.is_dir() or entry.name.startswith("."):
                         continue
-                    state = self.load_state(entry.name, create_if_missing=False, default_deployed=True)
+                    state = self.load_state(entry.name, create_if_missing=False, default_deployed=False)
                     rows.append(state)
         except OSError as exc:
             main_logger.error("Failed listing deployment gate jobs: %s", exc)
@@ -367,7 +387,7 @@ class DeploymentGateManager:
 
 
 def load_job_gate_state(root_dir: str, job_folder_name: str) -> Dict:
-    return DeploymentGateManager(root_dir).load_state(job_folder_name, create_if_missing=False, default_deployed=True)
+    return DeploymentGateManager(root_dir).load_state(job_folder_name, create_if_missing=False, default_deployed=False)
 
 
 def derive_state(state: Dict) -> str:
@@ -378,8 +398,11 @@ def derive_state(state: Dict) -> str:
     PARSING  -> deployed but parse not yet complete
     ACTIVE   -> deployed and parse complete (visible to production)
 
-    Defaults match load_state defaults (deployed=True, parseReady=True) so a
-    legacy gate with missing keys reads as ACTIVE.
+    The state.get(..., True) fallbacks here only matter for a gate file that
+    exists on disk but predates the "deployed"/"parseReady" fields (pre-gate
+    legacy jobs, which were always effectively active) - see _coerce_state.
+    A gate file that doesn't exist at all defaults to PENDING; see
+    load_state's default_deployed parameter.
     """
     if not bool(state.get("deployed", True)):
         return "PENDING"

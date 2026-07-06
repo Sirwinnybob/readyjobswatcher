@@ -761,13 +761,17 @@ def _write_index(job_folder_path: str, payload: Dict) -> bool:
         out_path = os.path.join(metadata_dir, REFERENCE_INDEX_FILENAME)
         try:
             with open(out_path, "r", encoding="utf-8") as f:
-                if json.load(f) == payload:
-                    return False
+                existing = json.load(f)
+            # "generatedAt" always differs, so compare only the actual document content.
+            if isinstance(existing, dict) and existing.get("documents") == payload.get("documents"):
+                return False
         except Exception:
             pass
         os.makedirs(metadata_dir, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f:
+        temp_path = f"{out_path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(temp_path, out_path)
         return True
     except OSError as exc:
         main_logger.warning("cabinet_sheet_indexer: could not write index for %s: %s", job_folder_path, exc)

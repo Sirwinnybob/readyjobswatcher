@@ -718,20 +718,33 @@ class SettingsWindow(QWidget):
 
         try:
             os.rename(old_path, new_path)
-            if self.app_instance and hasattr(self.app_instance, "rename_job"):
-                self.app_instance.rename_job(job_folder_name, new_name)
-            self.refresh_jobs_dashboard()
-            QMessageBox.information(
-                self,
-                "Rename Job",
-                f"Job successfully renamed to '{new_name}'."
-            )
         except Exception as exc:
             QMessageBox.critical(
                 self,
                 "Rename Job",
                 f"Failed to rename job folder on disk:\n{exc}"
             )
+            return
+
+        try:
+            if self.app_instance and hasattr(self.app_instance, "rename_job"):
+                self.app_instance.rename_job(job_folder_name, new_name)
+        except Exception as exc:
+            self.refresh_jobs_dashboard()
+            QMessageBox.warning(
+                self,
+                "Rename Job",
+                f"Folder was renamed to '{new_name}' on disk, but updating internal job "
+                f"state failed:\n{exc}\n\nSome metadata may need manual review."
+            )
+            return
+
+        self.refresh_jobs_dashboard()
+        QMessageBox.information(
+            self,
+            "Rename Job",
+            f"Job successfully renamed to '{new_name}'."
+        )
 
     def set_alert_coordinator(self, alert_coordinator):
         self.alert_coordinator = alert_coordinator
@@ -938,21 +951,37 @@ class SettingsWindow(QWidget):
 
             def _snooze_action():
                 selected = mode_combo.currentText().strip() or "UNKNOWN"
-                if selected != selected_mode:
-                    self.app_instance.set_job_selected_mode(job_folder_name, selected)
-                self.app_instance.remind_pending_job(job_folder_name, minutes=remind_spin.value())
+                minutes = remind_spin.value()
+
+                def _worker():
+                    if selected != selected_mode:
+                        self.app_instance.set_job_selected_mode(job_folder_name, selected)
+                    self.app_instance.remind_pending_job(job_folder_name, minutes=minutes)
+
+                import threading
+                threading.Thread(target=_worker, daemon=True).start()
                 self.refresh_jobs_dashboard()
                 dialog.accept()
 
             def _schedule_action():
                 selected = mode_combo.currentText().strip() or "UNKNOWN"
                 deploy_at = schedule_edit.dateTime().toPyDateTime().astimezone(datetime.timezone.utc)
-                self.app_instance.schedule_pending_job_deploy(job_folder_name, deploy_at, selected)
+                import threading
+                threading.Thread(
+                    target=self.app_instance.schedule_pending_job_deploy,
+                    args=(job_folder_name, deploy_at, selected),
+                    daemon=True,
+                ).start()
                 self.refresh_jobs_dashboard()
                 dialog.accept()
 
             def _cancel_schedule_action():
-                self.app_instance.cancel_pending_job_schedule(job_folder_name)
+                import threading
+                threading.Thread(
+                    target=self.app_instance.cancel_pending_job_schedule,
+                    args=(job_folder_name,),
+                    daemon=True,
+                ).start()
                 self.refresh_jobs_dashboard()
                 dialog.accept()
 
@@ -991,11 +1020,17 @@ class SettingsWindow(QWidget):
             reparse_btn = QPushButton("Re-parse")
             hidden_from_production = bool(state.get("hiddenFromProduction", False))
             visibility_btn = QPushButton("Show in Production" if hidden_from_production else "Hide from Production")
+            pull_btn = QPushButton("Pull from Deployment")
             cancel_btn = QPushButton("Cancel")
 
             def _save_mode_action():
                 selected = mode_combo.currentText().strip() or "UNKNOWN"
-                self.app_instance.set_job_selected_mode(job_folder_name, selected)
+                import threading
+                threading.Thread(
+                    target=self.app_instance.set_job_selected_mode,
+                    args=(job_folder_name, selected),
+                    daemon=True,
+                ).start()
                 self.refresh_jobs_dashboard()
                 dialog.accept()
 
@@ -1024,21 +1059,46 @@ class SettingsWindow(QWidget):
                     dialog.accept()
 
             def _visibility_action():
-                if hidden_from_production:
-                    self.app_instance.show_job_in_production(job_folder_name)
-                else:
-                    self.app_instance.hide_job_from_production(job_folder_name)
+                target = (
+                    self.app_instance.show_job_in_production
+                    if hidden_from_production
+                    else self.app_instance.hide_job_from_production
+                )
+                import threading
+                threading.Thread(target=target, args=(job_folder_name,), daemon=True).start()
                 self.refresh_jobs_dashboard()
                 dialog.accept()
+
+            def _pull_from_deployment_action():
+                reply = QMessageBox.question(
+                    dialog,
+                    "Pull from Deployment",
+                    f"Are you sure you want to pull job '{job_folder_name}' from deployment?\n\n"
+                    "It will be hidden from production and marked PENDING again until "
+                    "you release it.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    import threading
+                    threading.Thread(
+                        target=self.app_instance.pull_job_from_deployment,
+                        args=(job_folder_name,),
+                        daemon=True,
+                    ).start()
+                    self.refresh_jobs_dashboard()
+                    dialog.accept()
 
             save_mode_btn.clicked.connect(_save_mode_action)
             reparse_btn.clicked.connect(_reparse_action)
             visibility_btn.clicked.connect(_visibility_action)
+            pull_btn.clicked.connect(_pull_from_deployment_action)
             cancel_btn.clicked.connect(dialog.reject)
 
             action_row.addWidget(save_mode_btn)
             action_row.addWidget(reparse_btn)
             action_row.addWidget(visibility_btn)
+            action_row.addWidget(pull_btn)
             action_row.addStretch()
             action_row.addWidget(cancel_btn)
 

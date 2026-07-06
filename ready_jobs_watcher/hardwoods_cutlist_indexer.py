@@ -1001,8 +1001,10 @@ def _write_index(job_folder_path: str, payload: Dict) -> Optional[str]:
         except Exception:
             pass
         os.makedirs(metadata_dir, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f:
+        temp_path = f"{out_path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(temp_path, out_path)
         touch_hardwoods_refresh_signal(
             job_folder_path=job_folder_path,
             reason="hardwoods_index_updated",

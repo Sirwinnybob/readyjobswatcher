@@ -23,6 +23,13 @@ else:
 main_logger = logging.getLogger('main')
 
 
+def _atomic_write_json(path: str, payload: Dict, indent: int = 4) -> None:
+    temp_path = f"{path}.tmp"
+    with open(temp_path, 'w') as f:
+        json.dump(payload, f, indent=indent)
+    os.replace(temp_path, path)
+
+
 class Config:
     """
     Manages application configuration settings.
@@ -287,8 +294,7 @@ class Config:
                         if self._validate_config(config):
                             main_logger.info("Successfully restored config from backup")
                             # Save restored config
-                            with open(self.CONFIG_FILE, 'w') as f:
-                                json.dump(config, f, indent=4)
+                            _atomic_write_json(self.CONFIG_FILE, config)
                         else:
                             main_logger.error("Backup config is also invalid, using defaults")
                             return
@@ -312,8 +318,7 @@ class Config:
                         self._apply_config_dict(config)
                         main_logger.info("Successfully restored config from backup")
                         # Save restored config
-                        with open(self.CONFIG_FILE, 'w') as f:
-                            json.dump(config, f, indent=4)
+                        _atomic_write_json(self.CONFIG_FILE, config)
                     else:
                         main_logger.warning("Backup config validation failed, using defaults")
                 except Exception as backup_error:
