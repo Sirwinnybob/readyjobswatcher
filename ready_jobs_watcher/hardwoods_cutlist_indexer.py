@@ -540,14 +540,14 @@ def _is_totals_terminator_text(text: str) -> bool:
         "CAB (QTY)",
     }:
         return True
-    return (
-        upper.startswith("MATERIAL:")
-        or upper.startswith("DOOR TYPE:")
-        or upper.startswith("OUTSIDE EDGE PROFILE:")
-        or upper.startswith("INSIDE EDGE PROFILE:")
-        or upper.startswith("ROUTE PATTERN:")
-        or upper.startswith("PANEL DETAIL:")
-    )
+    return upper.startswith((
+        "MATERIAL:",
+        "DOOR TYPE:",
+        "OUTSIDE EDGE PROFILE:",
+        "INSIDE EDGE PROFILE:",
+        "ROUTE PATTERN:",
+        "PANEL DETAIL:",
+    ))
 
 
 def _parse_totals_blocks_from_words(
