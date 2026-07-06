@@ -665,8 +665,8 @@ class SettingsWindow(QWidget):
 
         try:
             os.rename(old_path, new_path)
-            # The folder renaming on disk will trigger the watchdog.
-            # But let's also force a dashboard refresh immediately.
+            if self.app_instance and hasattr(self.app_instance, "rename_job"):
+                self.app_instance.rename_job(job_folder_name, new_name)
             self.refresh_jobs_dashboard()
             QMessageBox.information(
                 self,

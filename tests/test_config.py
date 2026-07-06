@@ -116,6 +116,15 @@ def test_root_offline_restart_default(monkeypatch):
     assert cfg.root_offline_restart_minutes == 15
 
 
+def test_ready_jobs_polling_defaults(monkeypatch):
+    monkeypatch.setattr(Config, "load", lambda self: None)
+    cfg = Config()
+    assert cfg.filesystem_monitor_mode == "hybrid"
+    assert cfg.ready_jobs_file_poll_seconds == 60
+    assert cfg.ready_jobs_root_poll_seconds == 10
+    assert cfg.ready_jobs_stable_poll_count == 2
+
+
 def test_get_next_backup_time_does_not_log_status_timer_noise(monkeypatch, caplog):
     monkeypatch.setattr(Config, "load", lambda self: None)
     cfg = Config()
@@ -150,3 +159,16 @@ def test_validate_root_offline_restart_config(config_instance):
     assert config_instance._validate_config({"root_offline_restart_minutes": 0}) is True
     assert config_instance._validate_config({"root_offline_restart_minutes": -1}) is False
     assert config_instance._validate_config({"root_offline_restart_minutes": "15"}) is False
+
+
+def test_validate_ready_jobs_polling_config(config_instance):
+    assert config_instance._validate_config({"filesystem_monitor_mode": "hybrid"}) is True
+    assert config_instance._validate_config({"filesystem_monitor_mode": "polling"}) is True
+    assert config_instance._validate_config({"filesystem_monitor_mode": "watchdog"}) is True
+    assert config_instance._validate_config({"filesystem_monitor_mode": "off"}) is False
+    assert config_instance._validate_config({"ready_jobs_file_poll_seconds": 60}) is True
+    assert config_instance._validate_config({"ready_jobs_root_poll_seconds": 10}) is True
+    assert config_instance._validate_config({"ready_jobs_stable_poll_count": 2}) is True
+    assert config_instance._validate_config({"ready_jobs_file_poll_seconds": 0}) is False
+    assert config_instance._validate_config({"ready_jobs_root_poll_seconds": -1}) is False
+    assert config_instance._validate_config({"ready_jobs_stable_poll_count": 0}) is False

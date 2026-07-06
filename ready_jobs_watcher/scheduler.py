@@ -321,11 +321,19 @@ def metadata_end_of_day_scheduler(config: Config, stop_event: threading.Event, m
             if stop_event.wait(sleep_seconds):
                 break
 
-            try:
-                summary = process_metadata_end_of_day_once(metadata_refresh_service)
-                main_logger.info("Metadata end-of-day sweep complete: %s", summary)
-            except Exception as exc:
-                main_logger.error("Metadata end-of-day sweep failed: %s", exc, exc_info=True)
+            # A transient SMB session drop/re-auth right at sweep time can fail the
+            # whole sweep; one retry after a short pause usually rides it out.
+            for attempt in range(2):
+                try:
+                    summary = process_metadata_end_of_day_once(metadata_refresh_service)
+                    main_logger.info("Metadata end-of-day sweep complete: %s", summary)
+                    break
+                except Exception as exc:
+                    if attempt == 0:
+                        main_logger.warning("Metadata end-of-day sweep failed, retrying once: %s", exc)
+                        stop_event.wait(30)
+                    else:
+                        main_logger.error("Metadata end-of-day sweep failed: %s", exc, exc_info=True)
         except Exception as exc:
             main_logger.error("Error in metadata end-of-day scheduler: %s", exc, exc_info=True)
             stop_event.wait(3600)

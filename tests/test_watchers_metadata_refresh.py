@@ -64,3 +64,26 @@ def test_index_refresh_completion_schedules_metadata_refresh(monkeypatch, tmp_pa
     handler._run_index_refresh(str(path), "created")
 
     assert refresh.calls == [(str(path), "index_refresh_complete")]
+
+
+def test_pdf_delete_with_dark_mode_copy_removes_pending_queue(monkeypatch, tmp_path):
+    removed = []
+    config = SimpleNamespace(
+        ROOT_DIR=str(tmp_path),
+        bad_parts_mode="legacy",
+        pdf_conversion_delay_seconds=30,
+    )
+    pending_queue = SimpleNamespace(remove_pending_pdf=lambda path: removed.append(path))
+    handler = PdfChangeHandler(config, pending_queue=pending_queue)
+    path = tmp_path / "123 - Test Job" / "123 - Assembly Sheets.pdf"
+    dark = path.parent / "DARK MODE" / path.name
+    dark.parent.mkdir(parents=True)
+    dark.write_text("dark", encoding="utf-8")
+
+    monkeypatch.setattr(watchers, "build_reference_index_for_pdf_event", lambda pdf_path: None)
+    monkeypatch.setattr(watchers, "build_hardwoods_cutlist_index_for_pdf_event", lambda pdf_path, deployment_gate=None: None)
+
+    handler.on_deleted(SimpleNamespace(is_directory=False, src_path=str(path)))
+
+    assert not dark.exists()
+    assert removed == [str(path)]

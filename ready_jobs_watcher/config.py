@@ -65,6 +65,10 @@ class Config:
         self.tracker_reconcile_interval_seconds = 300
         self.cnc_orphan_metadata_grace_minutes = 30
         self.root_offline_restart_minutes = 15
+        self.filesystem_monitor_mode = "hybrid"
+        self.ready_jobs_file_poll_seconds = 60
+        self.ready_jobs_root_poll_seconds = 10
+        self.ready_jobs_stable_poll_count = 2
         self.metadata_cache_debounce_seconds = 600
         self.metadata_end_of_day_time = "20:00"
         self.metadata_snapshot_enabled = True
@@ -185,6 +189,21 @@ class Config:
             if not isinstance(value, (int, float)) or value < 0:
                 main_logger.error("Config validation failed: root_offline_restart_minutes must be a number >= 0")
                 return False
+        if "filesystem_monitor_mode" in config:
+            if config["filesystem_monitor_mode"] not in ("hybrid", "polling", "watchdog"):
+                main_logger.error("Config validation failed: filesystem_monitor_mode must be hybrid, polling, or watchdog")
+                return False
+        for key in ("ready_jobs_file_poll_seconds", "ready_jobs_root_poll_seconds"):
+            if key in config:
+                value = config[key]
+                if not isinstance(value, (int, float)) or value <= 0:
+                    main_logger.error("Config validation failed: %s must be a number > 0", key)
+                    return False
+        if "ready_jobs_stable_poll_count" in config:
+            value = config["ready_jobs_stable_poll_count"]
+            if not isinstance(value, int) or value < 1:
+                main_logger.error("Config validation failed: ready_jobs_stable_poll_count must be an integer >= 1")
+                return False
 
         return True
 
@@ -211,6 +230,16 @@ class Config:
         )
         self.root_offline_restart_minutes = float(
             config.get("root_offline_restart_minutes", self.root_offline_restart_minutes)
+        )
+        self.filesystem_monitor_mode = config.get("filesystem_monitor_mode", self.filesystem_monitor_mode)
+        self.ready_jobs_file_poll_seconds = float(
+            config.get("ready_jobs_file_poll_seconds", self.ready_jobs_file_poll_seconds)
+        )
+        self.ready_jobs_root_poll_seconds = float(
+            config.get("ready_jobs_root_poll_seconds", self.ready_jobs_root_poll_seconds)
+        )
+        self.ready_jobs_stable_poll_count = int(
+            config.get("ready_jobs_stable_poll_count", self.ready_jobs_stable_poll_count)
         )
         self.metadata_cache_debounce_seconds = float(
             config.get("metadata_cache_debounce_seconds", self.metadata_cache_debounce_seconds)
@@ -323,6 +352,10 @@ class Config:
                 'tracker_reconcile_interval_seconds': self.tracker_reconcile_interval_seconds,
                 'cnc_orphan_metadata_grace_minutes': self.cnc_orphan_metadata_grace_minutes,
                 'root_offline_restart_minutes': self.root_offline_restart_minutes,
+                'filesystem_monitor_mode': self.filesystem_monitor_mode,
+                'ready_jobs_file_poll_seconds': self.ready_jobs_file_poll_seconds,
+                'ready_jobs_root_poll_seconds': self.ready_jobs_root_poll_seconds,
+                'ready_jobs_stable_poll_count': self.ready_jobs_stable_poll_count,
                 'metadata_cache_debounce_seconds': self.metadata_cache_debounce_seconds,
                 'metadata_end_of_day_time': self.metadata_end_of_day_time,
                 'metadata_snapshot_enabled': self.metadata_snapshot_enabled,

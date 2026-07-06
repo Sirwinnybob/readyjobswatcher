@@ -42,6 +42,8 @@ config.json
 # Runtime data files
 pending_queue.json
 pending_queue.json.backup
+polling_snapshot.json
+polling_snapshot.json.tmp
 tracker_bad_parts_state.json
 metadata_snapshots/
 

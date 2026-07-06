@@ -106,8 +106,30 @@ def delete_codebase_folders(directory_to_scan):
 
     while stack:
         current_dir = stack.pop()
+
+        # A directory open can transiently fail right after the SMB session to the
+        # share drops and has to re-authenticate; retry briefly before treating it
+        # as a real error, since a single retry usually rides out that window.
+        entries = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                entries = os.scandir(current_dir)
+                break
+            except PermissionError:
+                logging.warning(f"Permission denied accessing directory for codebase cleanup: {current_dir}")
+                break
+            except OSError as e:
+                last_error = e
+                if attempt < 2:
+                    time.sleep(2)
+        if entries is None:
+            if last_error is not None:
+                logging.error(f"Error accessing directory for codebase cleanup {current_dir}: {last_error}")
+            continue
+
         try:
-            with os.scandir(current_dir) as entries:
+            with entries:
                 for entry in entries:
                     if entry.is_dir(follow_symlinks=False):
                         if entry.name == 'codebase':
@@ -122,10 +144,6 @@ def delete_codebase_folders(directory_to_scan):
                         else:
                             # Only add non-'codebase' directories to the stack for further scanning
                             stack.append(entry.path)
-        except PermissionError:
-            logging.warning(f"Permission denied accessing directory for codebase cleanup: {current_dir}")
-        except OSError as e:
-            logging.error(f"Error accessing directory for codebase cleanup {current_dir}: {e}")
         except Exception as e:
             logging.error(f"Unexpected error scanning directory for codebase cleanup {current_dir}: {e}", exc_info=True)
 

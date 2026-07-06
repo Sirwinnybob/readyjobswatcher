@@ -45,6 +45,7 @@ from .dae_converter import convert_3d_models_for_job, scan_root_for_missing_glbs
 from .deployment_gate import DeploymentGateManager
 from .notifications import send_notification, send_critical_alert
 from .metadata_refresh import MetadataRefreshService
+from .polling import ReadyJobsPoller
 
 ROOT_RECONNECT_POLL_SECONDS = 30
 
@@ -133,6 +134,9 @@ class Application:
         self.desktop_observer = Observer()
         self._observer_lock = threading.RLock()
         self._pending_operations_restored = False
+        self.poller = None
+        self.poller_thread = None
+        self._polling_started = False
         self._root_unavailable_logged = False
         self._root_offline_since = None
 
@@ -564,6 +568,43 @@ class Application:
         except Exception as exc:
             logging.error("Failed scheduling metadata refresh for %s: %s", job_folder_name, exc, exc_info=True)
 
+    def rename_job(self, old_name: str, new_name: str) -> None:
+        old_name = str(old_name or "").strip()
+        new_name = str(new_name or "").strip()
+        if not old_name or not new_name or old_name == new_name:
+            return
+
+        old_num = JobProcessor.extract_job_number(old_name) or ""
+        new_num = JobProcessor.extract_job_number(new_name) or ""
+        try:
+            if self.pending_queue is not None and hasattr(self.pending_queue, "rename_job_folder"):
+                self.pending_queue.rename_job_folder(old_name, new_name, old_num, new_num)
+        except Exception as exc:
+            logging.error("Failed updating pending queue after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
+
+        try:
+            if self.tracker_monitor is not None and hasattr(self.tracker_monitor, "rename_job_folder"):
+                self.tracker_monitor.rename_job_folder(old_name, new_name, old_num, new_num)
+        except Exception as exc:
+            logging.error("Failed updating tracker state after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
+
+        try:
+            from .bad_parts_checker import rename_blacklist_job
+            rename_blacklist_job(old_name, new_name, old_num, new_num)
+        except Exception as exc:
+            logging.error("Failed updating legacy bad-parts blacklist after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
+
+        try:
+            state = self.deployment_gate.load_state(new_name, create_if_missing=False, default_deployed=True)
+            self.deployment_gate.save_state(new_name, state)
+        except Exception as exc:
+            logging.error("Failed refreshing deployment gate after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
+
+        self.schedule_metadata_refresh_for_job(new_name, "job_renamed")
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+        logging.info("Job rename propagated: %s -> %s", old_name, new_name)
+
     def start(self):
         """Initializes and starts all application components."""
         os.makedirs(self.config.BACKUP_DIR, exist_ok=True)
@@ -629,6 +670,7 @@ class Application:
             ('pending_autorelease_thread', self.pending_autorelease_thread),
             ('pending_reminder_thread', self.pending_reminder_thread),
             ('metadata_end_of_day_thread', self.metadata_end_of_day_thread),
+            ('poller_thread', self.poller_thread),
             ('observer_monitor_thread', self.observer_monitor_thread),
             ('tray_thread', self.tray_thread),
         ]
@@ -700,9 +742,9 @@ class Application:
         # Cleanly hide the tray icon to prevent ghost icons on Windows
         if self.icon:
             try:
-                self.icon.stop()
+                self.icon.hide()
             except Exception as e:
-                logging.error(f"Error stopping tray icon during restart: {e}")
+                logging.error(f"Error hiding tray icon during restart: {e}")
 
         # Release the lock file so the new instance doesn't think we're still running
         self.release_lock()
@@ -751,8 +793,7 @@ class Application:
             # Restart tray icon
             if self.settings_window and self.config:
                 self.icon = create_tray_icon(self.settings_window, self.config, self)
-                self.tray_thread = threading.Thread(target=self.icon.run, daemon=True)
-                self.tray_thread.start()
+                self.icon.show()
 
     def _is_process_running(self, pid):
         """
@@ -983,6 +1024,32 @@ class Application:
         self._root_offline_since = now_monotonic
         self.restart()
 
+    def _start_polling_if_needed(self, rename_handler, pdf_handler) -> bool:
+        mode = str(getattr(self.config, "filesystem_monitor_mode", "hybrid") or "hybrid").lower()
+        if mode not in ("hybrid", "polling"):
+            return False
+        if self._polling_started and self.poller_thread and self.poller_thread.is_alive():
+            return True
+
+        snapshot_file = os.path.join(BASE_DATA_DIR, "polling_snapshot.json")
+        self.poller = ReadyJobsPoller(self.config, snapshot_file, rename_handler, pdf_handler)
+        self.poller_thread = threading.Thread(
+            target=self.poller.run,
+            args=(self.stop_event,),
+            daemon=True,
+            name="ReadyJobsPollingReconciler",
+        )
+        self.poller_thread.start()
+        self._polling_started = True
+        logging.info(
+            "Ready Jobs polling reconciler started: root=%ss files=%ss stable=%s mode=%s",
+            getattr(self.config, "ready_jobs_root_poll_seconds", 10),
+            getattr(self.config, "ready_jobs_file_poll_seconds", 60),
+            getattr(self.config, "ready_jobs_stable_poll_count", 2),
+            mode,
+        )
+        return True
+
     def _observer_reconnect_loop(self, stop_event: threading.Event):
         poll_seconds = max(5, int(getattr(self.config, "root_offline_retry_seconds", ROOT_RECONNECT_POLL_SECONDS)))
         was_available = None
@@ -1017,7 +1084,7 @@ class Application:
                 break
 
     def start_observers(self):
-        """Starts the filesystem watchers. Returns True when both core observers are running."""
+        """Starts filesystem monitoring. Polling is authoritative in hybrid/polling modes."""
         root_dir = self.config.ROOT_DIR
         if not self._is_root_available():
             if not self._root_unavailable_logged:
@@ -1029,15 +1096,19 @@ class Application:
             return False
 
         with self._observer_lock:
-            if self._observers_are_running():
+            mode = str(getattr(self.config, "filesystem_monitor_mode", "hybrid") or "hybrid").lower()
+            polling_enabled = mode in ("hybrid", "polling")
+            watchdog_enabled = mode in ("hybrid", "watchdog")
+
+            if watchdog_enabled and self._observers_are_running():
+                if polling_enabled:
+                    self._root_unavailable_logged = False
+                    return self._start_polling_if_needed(
+                        self.observer.scheduled[0][0] if getattr(self.observer, "scheduled", None) else None,
+                        self.pdf_observer.scheduled[0][0] if getattr(self.pdf_observer, "scheduled", None) else None,
+                    )
                 self._root_unavailable_logged = False
                 return True
-
-            # Ensure fresh observer instances before attempting restart.
-            self._stop_observer_if_running(self.observer, "main_observer")
-            self._stop_observer_if_running(self.pdf_observer, "pdf_observer")
-            self.observer = Observer()
-            self.pdf_observer = Observer()
 
             event_handler = RenameHandler(
                 self.config,
@@ -1058,6 +1129,30 @@ class Application:
                 deployment_gate=self.deployment_gate,
                 metadata_refresh_service=getattr(self, "metadata_refresh_service", None),
             )
+
+            if polling_enabled:
+                self._start_polling_if_needed(event_handler, pdf_event_handler)
+
+            # In polling modes, restore as soon as the authoritative poller is running.
+            if polling_enabled and not self._pending_operations_restored:
+                self.restore_pending_operations(event_handler, pdf_event_handler)
+                self._pending_operations_restored = True
+
+            if not watchdog_enabled:
+                self._stop_observer_if_running(self.observer, "main_observer")
+                self._stop_observer_if_running(self.pdf_observer, "pdf_observer")
+                self.observer = Observer()
+                self.pdf_observer = Observer()
+                logging.info("Watchdog observers skipped; filesystem_monitor_mode=%s.", mode)
+                self._root_unavailable_logged = False
+                return True
+
+            # Ensure fresh observer instances before attempting restart.
+            self._stop_observer_if_running(self.observer, "main_observer")
+            self._stop_observer_if_running(self.pdf_observer, "pdf_observer")
+            self.observer = Observer()
+            self.pdf_observer = Observer()
+
             try:
                 self.observer.schedule(event_handler, root_dir, recursive=True)
                 self.observer.start()
@@ -1065,7 +1160,7 @@ class Application:
                 self.pdf_observer.start()
             except Exception as exc:
                 logging.warning(
-                    "Failed to start filesystem observers for %s: %s. Retrying while app stays online.",
+                    "Failed to start watchdog observers for %s: %s.",
                     root_dir,
                     exc,
                 )
@@ -1073,6 +1168,10 @@ class Application:
                 self._stop_observer_if_running(self.pdf_observer, "pdf_observer")
                 self.observer = Observer()
                 self.pdf_observer = Observer()
+                if polling_enabled:
+                    logging.warning("Continuing with polling reconciliation; watchdog will retry later.")
+                    self._root_unavailable_logged = False
+                    return True
                 self._root_unavailable_logged = True
                 return False
 
@@ -1080,7 +1179,6 @@ class Application:
             logging.info(f"Watching {root_dir} for PDF changes...")
             self._root_unavailable_logged = False
 
-            # Restore pending operations from last session once per app process.
             if not self._pending_operations_restored:
                 self.restore_pending_operations(event_handler, pdf_event_handler)
                 self._pending_operations_restored = True

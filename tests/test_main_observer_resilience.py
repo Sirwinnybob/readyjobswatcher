@@ -35,7 +35,13 @@ class _FakeObserver:
 
 def _build_minimal_app() -> Application:
     app = Application.__new__(Application)
-    app.config = types.SimpleNamespace(ROOT_DIR=r"Y:\Ready Jobs")
+    app.config = types.SimpleNamespace(
+        ROOT_DIR=r"Y:\Ready Jobs",
+        filesystem_monitor_mode="hybrid",
+        ready_jobs_file_poll_seconds=60,
+        ready_jobs_root_poll_seconds=10,
+        ready_jobs_stable_poll_count=2,
+    )
     app.job_processor = object()
     app.pending_queue = object()
     app.executor = object()
@@ -48,6 +54,9 @@ def _build_minimal_app() -> Application:
     app.stop_event = threading.Event()
     app.observer = _FakeObserver()
     app.pdf_observer = _FakeObserver()
+    app.poller = None
+    app.poller_thread = None
+    app._polling_started = False
     app.restart_calls = []
     app.restart = lambda: app.restart_calls.append("restart")  # type: ignore[method-assign]
     app.restore_calls = []
@@ -88,8 +97,51 @@ class TestMainObserverResilience(unittest.TestCase):
         self.assertEqual(len(app.restore_calls), 1)
         self.assertFalse(app._root_unavailable_logged)
 
+    def test_start_observers_hybrid_starts_watchdog_and_poller(self):
+        app = _build_minimal_app()
+        app._is_root_available = lambda: True  # type: ignore[method-assign]
+        poller_starts = []
+        app._start_polling_if_needed = lambda rename_handler, pdf_handler: poller_starts.append(  # type: ignore[method-assign]
+            (rename_handler, pdf_handler)
+        )
+
+        with patch("ready_jobs_watcher.main.Observer", side_effect=lambda: _FakeObserver()), patch(
+            "ready_jobs_watcher.main.RenameHandler", side_effect=lambda *args, **kwargs: object()
+        ), patch(
+            "ready_jobs_watcher.main.PdfChangeHandler", side_effect=lambda *args, **kwargs: object()
+        ):
+            ok = app.start_observers()
+
+        self.assertTrue(ok)
+        self.assertEqual(len(app.observer.scheduled), 1)
+        self.assertEqual(len(app.pdf_observer.scheduled), 1)
+        self.assertEqual(len(poller_starts), 1)
+
+    def test_start_observers_polling_mode_skips_watchdog_observers(self):
+        app = _build_minimal_app()
+        app.config.filesystem_monitor_mode = "polling"
+        app._is_root_available = lambda: True  # type: ignore[method-assign]
+        poller_starts = []
+        app._start_polling_if_needed = lambda rename_handler, pdf_handler: poller_starts.append(  # type: ignore[method-assign]
+            (rename_handler, pdf_handler)
+        )
+
+        with patch("ready_jobs_watcher.main.Observer", side_effect=lambda: _FakeObserver()), patch(
+            "ready_jobs_watcher.main.RenameHandler", side_effect=lambda *args, **kwargs: object()
+        ), patch(
+            "ready_jobs_watcher.main.PdfChangeHandler", side_effect=lambda *args, **kwargs: object()
+        ):
+            ok = app.start_observers()
+
+        self.assertTrue(ok)
+        self.assertEqual(app.observer.scheduled, [])
+        self.assertEqual(app.pdf_observer.scheduled, [])
+        self.assertEqual(len(poller_starts), 1)
+        self.assertEqual(len(app.restore_calls), 1)
+
     def test_start_observers_handles_observer_start_failure(self):
         app = _build_minimal_app()
+        app.config.filesystem_monitor_mode = "watchdog"
         app._is_root_available = lambda: True  # type: ignore[method-assign]
         created = []
 

@@ -9,6 +9,7 @@ import logging
 import time
 import threading
 import os
+from types import SimpleNamespace
 from typing import Optional
 from watchdog.events import FileSystemEventHandler
 
@@ -83,6 +84,15 @@ class RenameHandler(FileSystemEventHandler):
         self._pending_folders_lock = threading.Lock()  # Lock for thread-safe access
         self._folder_delay_seconds = config.new_folder_delay_seconds
         self.deployment_gate = deployment_gate
+
+    def handle_created_path(self, path: str, is_directory: bool) -> None:
+        self.on_created(SimpleNamespace(src_path=path, is_directory=is_directory))
+
+    def handle_modified_path(self, path: str, is_directory: bool) -> None:
+        self.on_modified(SimpleNamespace(src_path=path, is_directory=is_directory))
+
+    def handle_moved_path(self, src_path: str, dest_path: str, is_directory: bool) -> None:
+        self.on_moved(SimpleNamespace(src_path=src_path, dest_path=dest_path, is_directory=is_directory))
 
     def _is_top_level_job_folder(self, folder_path: str) -> bool:
         root_norm = os.path.normcase(os.path.normpath(self.config.ROOT_DIR))
@@ -394,6 +404,15 @@ class PdfChangeHandler(FileSystemEventHandler):
         self._dae_reparse_debounce = DebouncedTimerMap(name_prefix="DaeConvert")
         self.deployment_gate = deployment_gate
         self.metadata_refresh_service = metadata_refresh_service
+
+    def handle_created_path(self, path: str, is_directory: bool) -> None:
+        self.on_created(SimpleNamespace(src_path=path, is_directory=is_directory))
+
+    def handle_modified_path(self, path: str, is_directory: bool) -> None:
+        self.on_modified(SimpleNamespace(src_path=path, is_directory=is_directory))
+
+    def handle_deleted_path(self, path: str, is_directory: bool) -> None:
+        self.on_deleted(SimpleNamespace(src_path=path, is_directory=is_directory))
 
     def _is_root_available(self) -> bool:
         from .utils import is_root_available
@@ -720,7 +739,7 @@ class PdfChangeHandler(FileSystemEventHandler):
 
                         # Save to persistent queue
                         if self.pending_queue:
-                            self.pending_queue.add_pending_pdf(event.src_path, scheduled_time, invert)
+                            self.pending_queue.add_pending_pdf(event.src_path, current_time + self._cooldown_seconds, invert)
 
                         # Schedule the conversion
                         self._schedule_pdf_conversion(event.src_path, invert)
@@ -778,7 +797,7 @@ class PdfChangeHandler(FileSystemEventHandler):
 
                         # Save to persistent queue
                         if self.pending_queue:
-                            self.pending_queue.add_pending_pdf(event.src_path, scheduled_time, invert)
+                            self.pending_queue.add_pending_pdf(event.src_path, current_time + self._cooldown_seconds, invert)
 
                         # Schedule the conversion
                         self._schedule_pdf_conversion(event.src_path, invert)
@@ -845,8 +864,6 @@ class PdfChangeHandler(FileSystemEventHandler):
                     main_logger.debug(f"No corresponding dark mode PDF found at: {dark_mode_pdf}")
                 except Exception as e:
                     main_logger.error(f"Failed to delete dark mode PDF {dark_mode_pdf}: {e}")
-                else:
-                    main_logger.debug(f"No DARK MODE folder found at: {dark_mode_dir}")
 
                 # Also remove from cooldown tracking to prevent memory leak (thread-safe)
                 with self._cooldown_lock:
