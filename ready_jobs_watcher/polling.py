@@ -32,6 +32,7 @@ class ReadyJobsPoller:
         self.pdf_handler = pdf_handler
         self.stable_poll_count = max(1, int(getattr(config, "ready_jobs_stable_poll_count", 2)))
         self._pending: Dict[PendingKey, int] = {}
+        self._scan_path_errors = False
         self._snapshot = self._load_snapshot()
 
     def _load_snapshot(self) -> Dict:
@@ -39,6 +40,15 @@ class ReadyJobsPoller:
             with self.snapshot_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict) and isinstance(data.get("entries"), dict):
+                saved_root = str(data.get("root_dir") or "")
+                current_root = str(getattr(self.config, "ROOT_DIR", "") or "")
+                if os.path.normcase(os.path.normpath(saved_root)) != os.path.normcase(os.path.normpath(current_root)):
+                    main_logger.info(
+                        "Discarding polling snapshot for different root: saved=%s current=%s",
+                        saved_root,
+                        current_root,
+                    )
+                    return {"version": 1, "root_dir": self.config.ROOT_DIR, "entries": {}}
                 return data
         except FileNotFoundError:
             pass
@@ -75,9 +85,10 @@ class ReadyJobsPoller:
             }
         except OSError as exc:
             main_logger.debug("Polling skipped unavailable path %s: %s", path, exc)
+            self._scan_path_errors = True
             return None
 
-    def _scan_root_entries(self) -> Dict[str, SnapshotEntry]:
+    def _scan_root_entries(self) -> Optional[Dict[str, SnapshotEntry]]:
         root = Path(self.config.ROOT_DIR)
         entries: Dict[str, SnapshotEntry] = {}
         try:
@@ -92,11 +103,13 @@ class ReadyJobsPoller:
                         entries[self._rel_path(child)] = entry
                 except OSError as exc:
                     main_logger.debug("Polling skipped root entry %s: %s", child, exc)
+                    self._scan_path_errors = True
         except OSError as exc:
             main_logger.warning("Ready Jobs root polling failed for %s: %s", root, exc)
+            return None
         return entries
 
-    def _scan_file_entries(self) -> Dict[str, SnapshotEntry]:
+    def _scan_file_entries(self) -> Optional[Dict[str, SnapshotEntry]]:
         root = Path(self.config.ROOT_DIR)
         entries: Dict[str, SnapshotEntry] = {}
         try:
@@ -110,8 +123,10 @@ class ReadyJobsPoller:
                         entries[self._rel_path(child)] = entry
                 except OSError as exc:
                     main_logger.debug("Polling skipped file entry %s: %s", child, exc)
+                    self._scan_path_errors = True
         except OSError as exc:
             main_logger.warning("Ready Jobs file polling failed for %s: %s", root, exc)
+            return None
         return entries
 
     def _is_stable(self, event_type: str, src_rel: str, dest_rel: str, signature: str) -> bool:
@@ -165,26 +180,40 @@ class ReadyJobsPoller:
         entries: Dict[str, SnapshotEntry] = dict(self._snapshot.get("entries", {}))
         current: Dict[str, SnapshotEntry] = {}
         scanned_rels = set()
+        successful_scan = False
+        self._scan_path_errors = False
 
         if scan_root:
             root_entries = self._scan_root_entries()
-            current.update(root_entries)
-            previous_root = {
-                rel
-                for rel, entry in entries.items()
-                if bool(entry.get("root_entry"))
-            }
-            scanned_rels.update(previous_root | set(root_entries))
+            if root_entries is not None:
+                successful_scan = True
+                current.update(root_entries)
+                previous_root = {
+                    rel
+                    for rel, entry in entries.items()
+                    if bool(entry.get("root_entry"))
+                }
+                scanned_rels.update(previous_root | set(root_entries))
 
         if scan_files:
             file_entries = self._scan_file_entries()
-            current.update(file_entries)
-            previous_files = {
-                rel
-                for rel, entry in entries.items()
-                if not bool(entry.get("is_dir"))
-            }
-            scanned_rels.update(previous_files | set(file_entries))
+            if file_entries is not None:
+                successful_scan = True
+                current.update(file_entries)
+                previous_files = {
+                    rel
+                    for rel, entry in entries.items()
+                    if not bool(entry.get("is_dir"))
+                }
+                scanned_rels.update(previous_files | set(file_entries))
+
+        if not successful_scan:
+            main_logger.warning("Ready Jobs polling skipped reconciliation because all requested scans failed.")
+            return
+
+        if self._scan_path_errors:
+            main_logger.warning("Ready Jobs polling skipped reconciliation because one or more paths could not be scanned.")
+            return
 
         if not scanned_rels:
             self._snapshot = {"version": 1, "root_dir": self.config.ROOT_DIR, "entries": entries}

@@ -247,6 +247,29 @@ class TestMainObserverResilience(unittest.TestCase):
         alert.assert_called_once()
         self.assertEqual(app.restart_calls, ["restart"])
 
+    def test_restart_spawn_failure_alerts_and_exits_instead_of_restoring_false_alive(self):
+        app = Application.__new__(Application)
+        app.stop_event = threading.Event()
+        app.icon = None
+        app.settings_window = None
+        app.config = types.SimpleNamespace()
+        calls = []
+        app.release_lock = lambda: calls.append("release_lock")  # type: ignore[method-assign]
+        app.acquire_lock = lambda: calls.append("acquire_lock")  # type: ignore[method-assign]
+
+        with patch("ready_jobs_watcher.main.time.sleep"), patch(
+            "subprocess.Popen", side_effect=OSError("cannot spawn")
+        ), patch("ready_jobs_watcher.main.send_critical_alert") as alert, patch(
+            "ready_jobs_watcher.main.os._exit", side_effect=SystemExit
+        ) as exit_process:
+            with self.assertRaises(SystemExit):
+                app.restart()
+
+        alert.assert_called_once()
+        exit_process.assert_called_once_with(1)
+        self.assertTrue(app.stop_event.is_set())
+        self.assertEqual(calls, ["release_lock"])
+
 
 if __name__ == "__main__":
     unittest.main()

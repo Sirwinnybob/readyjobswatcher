@@ -7,6 +7,7 @@ and alert behavior, as well as view running logs.
 """
 import logging
 import datetime
+import os
 from typing import Dict, List, Optional
 
 from PyQt6.QtWidgets import (
@@ -1390,6 +1391,7 @@ class SettingsWindow(QWidget):
             self.backup_times_list.takeItem(row)
 
     def save_settings(self):
+        old_root_dir = self.config.ROOT_DIR
         self.config.ROOT_DIR = self.root_dir_input.text()
         self.config.CNC_SUBDIR = self.cnc_subdir_input.text()
         self.config.BACKUP_DIR = self.backup_dir_input.text()
@@ -1408,7 +1410,12 @@ class SettingsWindow(QWidget):
         self.config.bad_parts_sound_profile = self.bad_parts_sound_combo.currentData()
 
         self.config.save()
-        QMessageBox.information(self, "Success", "Settings saved successfully.")
+        old_root = os.path.normcase(os.path.normpath(old_root_dir or ""))
+        new_root = os.path.normcase(os.path.normpath(self.config.ROOT_DIR or ""))
+        message = "Settings saved successfully."
+        if old_root != new_root:
+            message += " Restart Ready Jobs Watcher for the root directory change to take effect."
+        QMessageBox.information(self, "Success", message)
 
         # Optionally schedule backup update in app_instance if it exists
         if self.app_instance and hasattr(self.app_instance, 'scheduler'):

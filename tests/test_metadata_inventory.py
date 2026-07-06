@@ -39,6 +39,17 @@ def test_unknown_json_under_metadata_is_external_source_trigger(tmp_path):
     assert is_rebuild_trigger(future_file, root) is True
 
 
+def test_tracker_ndjson_event_file_is_external_source_trigger(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    event_file = root / "123 - Test Job" / "CNC" / ".tracker" / "events" / "2026-07.ndjson"
+
+    classification = classify_metadata_path(event_file, root)
+
+    assert classification.ownership == OwnershipMode.EXTERNAL_SOURCE
+    assert classification.reason == "tracker_source"
+    assert is_rebuild_trigger(event_file, root) is True
+
+
 def test_temporary_and_archive_files_are_ignored(tmp_path):
     root = tmp_path / "Ready Jobs"
     tmp_file = root / "123 - Test Job" / ".metadata" / "cache_static.json.tmp"

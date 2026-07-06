@@ -144,6 +144,7 @@ class MetadataRefreshService:
         return self.scheduler.schedule(job_folder, reason)
 
     def refresh_job_now(self, job_folder: Path, reason: str) -> None:
+        consolidate_trackers = "tracker" in str(reason or "").lower()
         refresh_single_job(
             self.root_dir,
             Path(job_folder),
@@ -152,7 +153,7 @@ class MetadataRefreshService:
             archive_retention_days=self.archive_retention_days,
             archive_max_snapshots_per_job=self.archive_max_snapshots_per_job,
             archive_daypart_limit=self.archive_daypart_limit,
-            consolidate_trackers=False,
+            consolidate_trackers=consolidate_trackers,
         )
 
     def refresh_all_now(self, reason: str) -> dict:

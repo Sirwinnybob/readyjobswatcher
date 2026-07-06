@@ -132,6 +132,8 @@ class Application:
         self.observer = Observer()
         self.pdf_observer = Observer()
         self.desktop_observer = Observer()
+        self.rename_event_handler = None
+        self.pdf_event_handler = None
         self._observer_lock = threading.RLock()
         self._pending_operations_restored = False
         self.poller = None
@@ -576,11 +578,23 @@ class Application:
 
         old_num = JobProcessor.extract_job_number(old_name) or ""
         new_num = JobProcessor.extract_job_number(new_name) or ""
+        pending_pdf_path_map = {}
         try:
             if self.pending_queue is not None and hasattr(self.pending_queue, "rename_job_folder"):
-                self.pending_queue.rename_job_folder(old_name, new_name, old_num, new_num)
+                result = self.pending_queue.rename_job_folder(old_name, new_name, old_num, new_num)
+                if isinstance(result, dict):
+                    pending_pdf_path_map = result
         except Exception as exc:
             logging.error("Failed updating pending queue after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
+
+        self._retarget_pending_renames(old_name, new_name, old_num, new_num)
+
+        try:
+            handler = getattr(self, "pdf_event_handler", None)
+            if handler is not None and hasattr(handler, "retarget_pending_pdf_conversions"):
+                handler.retarget_pending_pdf_conversions(pending_pdf_path_map)
+        except Exception as exc:
+            logging.error("Failed retargeting PDF conversion timers after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
 
         try:
             if self.tracker_monitor is not None and hasattr(self.tracker_monitor, "rename_job_folder"):
@@ -604,6 +618,78 @@ class Application:
         if self.settings_window:
             self.settings_window.refresh_jobs_dashboard()
         logging.info("Job rename propagated: %s -> %s", old_name, new_name)
+
+    @staticmethod
+    def _target_filename_for_job(job_num: str, original_name: str) -> str:
+        if " - " in original_name:
+            prefix, rest = original_name.split(" - ", 1)
+            if prefix == job_num:
+                return original_name
+            return job_num + " - " + rest
+        return job_num + " - " + original_name
+
+    @staticmethod
+    def _retarget_path_for_job_rename(
+        path: str,
+        old_name: str,
+        new_name: str,
+        old_num: str,
+        new_num: str,
+        *,
+        update_leaf_filename: bool = True,
+    ) -> str:
+        from pathlib import Path
+
+        parts = list(Path(path).parts)
+        changed = False
+        for idx, part in enumerate(parts):
+            if part == old_name:
+                parts[idx] = new_name
+                changed = True
+        if not changed:
+            return os.path.normpath(path)
+        if update_leaf_filename and parts and new_num:
+            filename = parts[-1]
+            if old_num and filename.startswith(old_num + " - "):
+                filename = new_num + " - " + filename[len(old_num + " - "):]
+            elif " - " in filename:
+                prefix, rest = filename.split(" - ", 1)
+                if prefix != new_num:
+                    filename = new_num + " - " + rest
+            else:
+                filename = new_num + " - " + filename
+            parts[-1] = filename
+        return os.path.normpath(str(Path(*parts)))
+
+    def _retarget_pending_renames(self, old_name: str, new_name: str, old_num: str, new_num: str) -> None:
+        if not getattr(self, "PENDING_RENAMES", None):
+            return
+        with self.pending_renames_lock:
+            updated = {}
+            for old_path, (job_num, dir_path, original_name, next_retry) in self.PENDING_RENAMES.items():
+                normalized_old_path = os.path.normpath(old_path)
+                new_path = self._retarget_path_for_job_rename(
+                    normalized_old_path,
+                    old_name,
+                    new_name,
+                    old_num,
+                    new_num,
+                    update_leaf_filename=True,
+                )
+                new_dir = self._retarget_path_for_job_rename(
+                    dir_path,
+                    old_name,
+                    new_name,
+                    old_num,
+                    new_num,
+                    update_leaf_filename=False,
+                )
+                next_job_num = new_num if new_path != normalized_old_path else job_num
+                next_original_name = original_name
+                if new_path != normalized_old_path and new_num:
+                    next_original_name = self._target_filename_for_job(new_num, original_name)
+                updated[new_path] = (next_job_num, new_dir, next_original_name, next_retry)
+            self.PENDING_RENAMES = updated
 
     def start(self):
         """Initializes and starts all application components."""
@@ -786,14 +872,12 @@ class Application:
 
         except Exception as e:
             logging.error(f"Failed to spawn new process during restart: {e}")
-            # If we failed to spawn, try to restore normal operation by un-setting the stop event
-            self.stop_event.clear()
-            # Try to re-acquire the lock
-            self.acquire_lock()
-            # Restart tray icon
-            if self.settings_window and self.config:
-                self.icon = create_tray_icon(self.settings_window, self.config, self)
-                self.icon.show()
+            send_critical_alert(
+                "Ready Jobs Watcher restart failed",
+                "Ready Jobs Watcher could not start a replacement process and will exit. "
+                "Start it manually to resume monitoring.",
+            )
+            os._exit(1)
 
     def _is_process_running(self, pid):
         """
@@ -1129,6 +1213,8 @@ class Application:
                 deployment_gate=self.deployment_gate,
                 metadata_refresh_service=getattr(self, "metadata_refresh_service", None),
             )
+            self.rename_event_handler = event_handler
+            self.pdf_event_handler = pdf_event_handler
 
             if polling_enabled:
                 self._start_polling_if_needed(event_handler, pdf_event_handler)
@@ -1420,7 +1506,7 @@ class Application:
             for old_path, (job_num, dir_path, original_name, next_retry) in pending_snapshot.items():
                 if current_time >= next_retry:
                     # Retry the rename operation
-                    new_name = job_num + ' - ' + original_name
+                    new_name = self._target_filename_for_job(job_num, original_name)
                     new_path = os.path.join(dir_path, new_name)
                     try:
                         # Check if source file exists

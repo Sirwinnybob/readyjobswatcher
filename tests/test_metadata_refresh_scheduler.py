@@ -1,4 +1,5 @@
 from ready_jobs_watcher.metadata_refresh import DebouncedMetadataRefreshScheduler
+from ready_jobs_watcher.metadata_refresh import MetadataRefreshService
 
 
 class FakeTimer:
@@ -77,3 +78,31 @@ def test_root_production_order_change_debounces_global_refresh(tmp_path):
     FakeTimer.instances[0].fire()
     assert job_calls == []
     assert global_calls == ["production_order_updated"]
+
+
+def test_tracker_reason_refresh_consolidates_trackers(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_refresh_single_job(root_dir, job_folder, **kwargs):
+        calls.append((root_dir, job_folder, kwargs))
+
+    monkeypatch.setattr("ready_jobs_watcher.metadata_refresh.refresh_single_job", fake_refresh_single_job)
+    config = type(
+        "Config",
+        (),
+        {
+            "ROOT_DIR": str(tmp_path),
+            "metadata_snapshot_enabled": False,
+            "metadata_snapshot_retention_days": 30,
+            "metadata_snapshot_max_per_job": 3,
+            "metadata_snapshot_daypart_limit": True,
+            "metadata_cache_debounce_seconds": 0,
+        },
+    )()
+    service = MetadataRefreshService(config)
+    job = tmp_path / "123 - TEST"
+
+    service.refresh_job_now(job, "tracker_modified")
+
+    assert calls
+    assert calls[0][2]["consolidate_trackers"] is True

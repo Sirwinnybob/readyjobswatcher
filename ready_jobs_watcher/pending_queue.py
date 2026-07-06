@@ -250,12 +250,16 @@ class PendingQueue:
                 self.save()
                 pending_queue_logger.debug(f"Removed pending folder: {folder_path}")
 
-    def rename_job_folder(self, old_name: str, new_name: str, old_num: str, new_num: str) -> None:
+    def rename_job_folder(self, old_name: str, new_name: str, old_num: str, new_num: str) -> Dict[str, str]:
         """
         Updates paths in pending_folders and pending_pdfs when a job folder is renamed.
+
+        Returns:
+            Dict[str, str]: Mapping of old pending PDF paths to their new paths.
         """
         from pathlib import Path
 
+        pdf_path_map: Dict[str, str] = {}
         with self.lock:
             # Update pending_folders
             new_pending_folders = {}
@@ -291,12 +295,14 @@ class PendingQueue:
                             filename = new_num + " - " + filename
                         parts[-1] = filename
                     new_path = os.path.normpath(str(Path(*parts)))
+                    pdf_path_map[os.path.normpath(pdf_path)] = new_path
                     new_pending_pdfs[new_path] = info
                 else:
                     new_pending_pdfs[pdf_path] = info
             self.pending_pdfs = new_pending_pdfs
 
             self.save()
+        return pdf_path_map
 
     def get_pending_pdf(self, file_path: str) -> Optional[Dict]:
         """

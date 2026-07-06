@@ -96,3 +96,43 @@ def test_load_cnc_tracker_actions_handles_top_level_array(tmp_path):
     assert len(actions) == 1
     assert actions[0]["file"] == "A.pdf"
     assert actions[0]["page"] == 2
+
+
+def test_load_cnc_tracker_actions_merges_migrated_and_legacy_sources(tmp_path):
+    tracker_dir = tmp_path / "job" / "CNC" / ".tracker"
+    ndjson = tracker_dir / "events" / "tablet-a.ndjson"
+    legacy = tracker_dir / "tablet-b.json"
+    _write(
+        ndjson,
+        json.dumps(
+            {
+                "eventId": "e1",
+                "op": "set_complete_true",
+                "payload": {"file": "A.pdf", "page": 1, "fileFingerprint": "fp1"},
+                "lamport": 1,
+                "wallTime": "2026-05-12T10:00:00Z",
+            }
+        )
+        + "\n",
+    )
+    _write(
+        legacy,
+        json.dumps(
+            {
+                "actions": [
+                    {
+                        "file": "B.pdf",
+                        "page": 2,
+                        "action": "bad_part",
+                        "part": 7,
+                        "timestamp": "2026-05-12T10:00:01Z",
+                    }
+                ]
+            }
+        ),
+    )
+
+    actions = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert len(actions) == 2
+    assert [action["file"] for action in actions] == ["A.pdf", "B.pdf"]

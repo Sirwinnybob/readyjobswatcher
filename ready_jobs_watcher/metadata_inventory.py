@@ -75,6 +75,8 @@ def classify_metadata_path(path: os.PathLike | str, root_dir: os.PathLike | str)
         return MetadataClassification(OwnershipMode.EXTERNAL_SOURCE, rel, "pgm_sorting_cnc_sidecar")
     if "/.metadata/" in rel_lower and (name.endswith(".json") or "." not in name):
         return MetadataClassification(OwnershipMode.EXTERNAL_SOURCE, rel, "metadata_source")
+    if "/.tracker/events/" in rel_lower and name.endswith(".ndjson"):
+        return MetadataClassification(OwnershipMode.EXTERNAL_SOURCE, rel, "tracker_source")
     if "/.tracker/" in rel_lower and name.endswith(".json"):
         return MetadataClassification(OwnershipMode.EXTERNAL_SOURCE, rel, "tracker_source")
     if name.endswith(".pdf"):

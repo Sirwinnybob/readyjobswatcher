@@ -81,7 +81,7 @@ def test_rename_job_folder_in_pending_queue(tmp_path):
     q.add_pending_pdf(other_pdf, time.time() + 10, invert_images=False)
     q.add_pending_folder(folder_path, time.time() + 10)
 
-    q.rename_job_folder("123 - TEST", "999 - NEW", "123", "999")
+    mapping = q.rename_job_folder("123 - TEST", "999 - NEW", "123", "999")
 
     new_pdf = os.path.normpath(str(tmp_path / "999 - NEW/CNC/999 - file.pdf"))
     new_folder = os.path.normpath(str(tmp_path / "999 - NEW/CNC"))
@@ -90,6 +90,7 @@ def test_rename_job_folder_in_pending_queue(tmp_path):
     assert q.get_pending_pdf(new_pdf) is not None
     assert q.get_pending_pdf(new_pdf)["invert_images"] is True
     assert q.get_pending_pdf(other_pdf) is not None
+    assert mapping == {pdf_path: new_pdf}
 
     assert q.get_pending_folder(folder_path) is None
     assert q.get_pending_folder(new_folder) is not None

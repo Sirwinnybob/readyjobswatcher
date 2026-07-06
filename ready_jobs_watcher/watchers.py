@@ -402,6 +402,9 @@ class PdfChangeHandler(FileSystemEventHandler):
         self._index_reparse_delay_seconds = 10.0
         self._index_reparse_debounce = DebouncedTimerMap(name_prefix="IndexReparse")
         self._dae_reparse_debounce = DebouncedTimerMap(name_prefix="DaeConvert")
+        self._pdf_conversion_timers = {}
+        self._pdf_conversion_timer_info = {}
+        self._pdf_conversion_timer_lock = threading.Lock()
         self.deployment_gate = deployment_gate
         self.metadata_refresh_service = metadata_refresh_service
 
@@ -460,6 +463,11 @@ class PdfChangeHandler(FileSystemEventHandler):
         if "\\cnc\\.tracker\\events\\" in normalized and normalized.endswith(".ndjson"):
             return True
         return normalized.endswith(".json") and "\\cnc\\.tracker\\" in normalized
+
+    def _metadata_refresh_reason_for_path(self, file_path: str, event_reason: str) -> str:
+        if self._is_tracker_stream_file(file_path):
+            return f"tracker_{event_reason}"
+        return event_reason
 
     @staticmethod
     def _is_cnc_path(file_path: str) -> bool:
@@ -553,6 +561,7 @@ class PdfChangeHandler(FileSystemEventHandler):
         """
         delay_seconds = self._cooldown_seconds if delay_seconds is None else max(0.0, float(delay_seconds))
         main_logger.info(f"Scheduling PDF conversion in {delay_seconds}s: {os.path.basename(pdf_path)}")
+        normalized_pdf_path = os.path.normcase(os.path.normpath(pdf_path))
 
         def _convert_task():
             try:
@@ -600,6 +609,9 @@ class PdfChangeHandler(FileSystemEventHandler):
                     self._reschedule_pending_pdf_conversion(pdf_path, invert_images, delay_seconds=60.0)
 
         def _timer_callback():
+            with self._pdf_conversion_timer_lock:
+                self._pdf_conversion_timers.pop(normalized_pdf_path, None)
+                self._pdf_conversion_timer_info.pop(normalized_pdf_path, None)
             # Submit actual processing to executor or run in thread
             if self.executor:
                 self.executor.submit(_convert_task)
@@ -612,7 +624,32 @@ class PdfChangeHandler(FileSystemEventHandler):
         timer = threading.Timer(delay_seconds, _timer_callback)
         timer.name = f"Timer-PDFConvert-{os.path.basename(pdf_path)}"
         timer.daemon = True
+        with self._pdf_conversion_timer_lock:
+            old_timer = self._pdf_conversion_timers.get(normalized_pdf_path)
+            if old_timer is not None:
+                old_timer.cancel()
+            self._pdf_conversion_timers[normalized_pdf_path] = timer
+            self._pdf_conversion_timer_info[normalized_pdf_path] = {
+                "invert_images": invert_images,
+                "delay_seconds": delay_seconds,
+            }
         timer.start()
+
+    def retarget_pending_pdf_conversions(self, path_map: dict[str, str]) -> None:
+        """Cancel active conversion timers for renamed PDF paths and reschedule them under new paths."""
+        for old_path, new_path in (path_map or {}).items():
+            normalized_old = os.path.normcase(os.path.normpath(old_path))
+            with self._pdf_conversion_timer_lock:
+                timer = self._pdf_conversion_timers.pop(normalized_old, None)
+                info = self._pdf_conversion_timer_info.pop(normalized_old, None)
+            if timer is None or info is None:
+                continue
+            timer.cancel()
+            self._schedule_pdf_conversion(
+                new_path,
+                bool(info.get("invert_images", False)),
+                delay_seconds=float(info.get("delay_seconds", self._cooldown_seconds)),
+            )
 
     def _schedule_dae_conversion(self, dae_path: str):
         """Schedule a DAE→GLB conversion after a short stabilisation delay."""
@@ -711,7 +748,10 @@ class PdfChangeHandler(FileSystemEventHandler):
             if not event.is_directory and self._is_watcher_refresh_signal(event.src_path):
                 return
             if not event.is_directory:
-                self._schedule_metadata_refresh(event.src_path, "modified")
+                self._schedule_metadata_refresh(
+                    event.src_path,
+                    self._metadata_refresh_reason_for_path(event.src_path, "modified"),
+                )
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF modified event detected by recursive watcher: {event.src_path}")
                 if self._is_cnc_path(event.src_path):
@@ -769,7 +809,10 @@ class PdfChangeHandler(FileSystemEventHandler):
                 return
 
             if not event.is_directory:
-                self._schedule_metadata_refresh(event.src_path, "created")
+                self._schedule_metadata_refresh(
+                    event.src_path,
+                    self._metadata_refresh_reason_for_path(event.src_path, "created"),
+                )
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF created event detected by recursive watcher: {event.src_path}")
                 if self._is_cnc_path(event.src_path):
@@ -822,7 +865,10 @@ class PdfChangeHandler(FileSystemEventHandler):
             if not event.is_directory and self._is_watcher_refresh_signal(event.src_path):
                 return
             if not event.is_directory:
-                self._schedule_metadata_refresh(event.src_path, "deleted")
+                self._schedule_metadata_refresh(
+                    event.src_path,
+                    self._metadata_refresh_reason_for_path(event.src_path, "deleted"),
+                )
             if not event.is_directory and event.src_path.lower().endswith('.pdf'):
                 main_logger.debug(f"PDF deleted event detected by recursive watcher: {event.src_path}")
                 self._index_reparse_debounce.cancel(event.src_path)

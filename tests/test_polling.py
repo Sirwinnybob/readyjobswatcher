@@ -64,7 +64,7 @@ def test_poll_dispatches_created_modified_and_deleted_files_after_stable_count(t
     assert ("created", pdf.name, False) in recorder.calls
 
     recorder.calls.clear()
-    pdf.write_text("two", encoding="utf-8")
+    pdf.write_text("two changed", encoding="utf-8")
     poller.poll_once(scan_root=False, scan_files=True)
     assert recorder.calls == []
     poller.poll_once(scan_root=False, scan_files=True)
@@ -91,3 +91,118 @@ def test_poll_treats_single_top_level_job_delete_create_as_likely_rename(tmp_pat
     poller.poll_once(scan_root=True, scan_files=False)
 
     assert recorder.calls == [("moved", "123 - OLD", "999 - NEW", True)]
+
+
+def test_snapshot_for_different_root_is_discarded_without_delete_dispatch(tmp_path):
+    old_root = tmp_path / "Old Ready Jobs"
+    new_root = tmp_path / "New Ready Jobs"
+    old_root.mkdir()
+    new_root.mkdir()
+    job = new_root / "123 - TEST"
+    job.mkdir()
+    pdf = job / "123 - Assembly Sheets.pdf"
+    pdf.write_text("current", encoding="utf-8")
+    snapshot_path = tmp_path / "polling_snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "root_dir": str(old_root),
+                "entries": {
+                    "999 - OLD/999 - Assembly Sheets.pdf": {
+                        "is_dir": False,
+                        "size": 3,
+                        "mtime_ns": 1,
+                        "root_entry": False,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    recorder = _Recorder()
+
+    poller = ReadyJobsPoller(_config(new_root), snapshot_path, recorder, recorder)
+    poller.poll_once(scan_root=True, scan_files=True)
+
+    assert recorder.calls == []
+    data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert data["root_dir"] == str(new_root)
+    assert "123 - TEST/123 - Assembly Sheets.pdf" in data["entries"]
+    assert "999 - OLD/999 - Assembly Sheets.pdf" not in data["entries"]
+
+
+def test_failed_file_scan_does_not_dispatch_deletes_or_mutate_snapshot(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    root.mkdir()
+    snapshot_path = tmp_path / "polling_snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "root_dir": str(root),
+                "entries": {
+                    "123 - TEST/123 - Assembly Sheets.pdf": {
+                        "is_dir": False,
+                        "size": 7,
+                        "mtime_ns": 10,
+                        "root_entry": False,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    recorder = _Recorder()
+    poller = ReadyJobsPoller(_config(root), snapshot_path, recorder, recorder)
+    poller._scan_file_entries = lambda: None  # type: ignore[method-assign]
+
+    poller.poll_once(scan_root=False, scan_files=True)
+
+    assert recorder.calls == []
+    data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert "123 - TEST/123 - Assembly Sheets.pdf" in data["entries"]
+
+
+def test_per_path_file_scan_failure_does_not_dispatch_delete_or_mutate_snapshot(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    job = root / "123 - TEST"
+    job.mkdir(parents=True)
+    pdf = job / "123 - Assembly Sheets.pdf"
+    pdf.write_text("current", encoding="utf-8")
+    snapshot_path = tmp_path / "polling_snapshot.json"
+    rel_path = "123 - TEST/123 - Assembly Sheets.pdf"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "root_dir": str(root),
+                "entries": {
+                    rel_path: {
+                        "is_dir": False,
+                        "size": 7,
+                        "mtime_ns": 10,
+                        "root_entry": False,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    recorder = _Recorder()
+    poller = ReadyJobsPoller(_config(root), snapshot_path, recorder, recorder)
+    original_entry_for_path = poller._entry_for_path
+
+    def fail_for_pdf(path, *, is_root_entry):
+        if Path(path) == pdf:
+            poller._scan_path_errors = True
+            return None
+        return original_entry_for_path(path, is_root_entry=is_root_entry)
+
+    poller._entry_for_path = fail_for_pdf  # type: ignore[method-assign]
+
+    poller.poll_once(scan_root=False, scan_files=True)
+
+    assert recorder.calls == []
+    data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert rel_path in data["entries"]

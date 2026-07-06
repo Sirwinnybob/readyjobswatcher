@@ -59,9 +59,25 @@ def _load_tracker_actions(
     logger=None,
 ) -> List[Dict[str, Any]]:
     ndjson_files = _collect_ndjson_files(tracker_dirs)
+    legacy_actions = _load_legacy_json_actions(tracker_dirs, logger=logger)
     if ndjson_files:
-        return _load_migrated_event_actions(ndjson_files, mapper, logger=logger)
-    return _load_legacy_json_actions(tracker_dirs, logger=logger)
+        migrated_actions = _load_migrated_event_actions(ndjson_files, mapper, logger=logger)
+        return _sort_combined_actions(migrated_actions + legacy_actions)
+    return legacy_actions
+
+
+def _sort_combined_actions(actions: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(
+        actions,
+        key=lambda action: (
+            str(action.get("timestamp", "") or ""),
+            _coerce_int(action.get("_lamport")) or 0,
+            str(action.get("_event_id", "") or ""),
+            str(action.get("file", "") or ""),
+            _coerce_int(action.get("page")) or 0,
+            str(action.get("action", "") or ""),
+        ),
+    )
 
 
 def _collect_ndjson_files(tracker_dirs: Sequence[str]) -> List[str]:
