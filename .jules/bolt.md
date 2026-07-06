@@ -29,3 +29,7 @@ Action: For deep or recursive scans where specific directories should be skipped
 ## 2026-06-22 - [Avoid O(N) string prefix checks]
 **Learning:** File processing loops that check for prefixes can be optimized significantly by pre-computing the prefixes into a tuple, allowing `startswith()` to execute in fast C code rather than a slow Python `for` loop. It's over 3-8x faster.
 **Action:** Next time I see a loop doing `if val.startswith(prefix) for prefix in collection` or a multi-line `or val.startswith()`, replace it with `val.startswith(tuple_of_prefixes)`.
+
+## 2024-07-06 - Replacing os.walk with os.scandir for Bottom-Up Cleanups
+Learning: While `os.walk` in Python 3.5+ uses `os.scandir` internally, it still allocates full lists of `dirs` and `files` for every visited directory. This memory allocation and implicit full directory scanning can be extremely slow on network drives.
+Action: For high-performance directory tree processing where not all files need to be processed (like bottom-up cleanup of specifically named folders), implement an iterative post-order traversal using a stack and `os.scandir`. Track if remaining un-deleted files exist using a flag during the first scan rather than making a second `os.listdir()` call to check if the directory is empty.
