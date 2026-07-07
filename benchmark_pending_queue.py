@@ -19,9 +19,20 @@ def benchmark():
     queue = PendingQueue(queue_file="test_queue.json", executor=executor)
 
     # Mock handlers
-    pdf_handler = MagicMock()
-    pdf_handler._cooldown_lock = threading.Lock()
-    pdf_handler._conversion_cooldown = {}
+    class MockPdfHandler:
+        def __init__(self):
+            self._cooldown_lock = threading.Lock()
+            self._conversion_cooldown = {}
+
+        def _schedule_pdf_conversion(self, pdf_path, invert_images, delay_seconds=0):
+            def _convert_task():
+                import ready_jobs_watcher.pdf_dark_mode as pdm
+                pdm.run_dark_mode_conversion(pdf_path, invert_images)
+
+            # Non-blocking delay using threading.Timer to delegate task execution
+            threading.Timer(delay_seconds, lambda: executor.submit(_convert_task)).start()
+
+    pdf_handler = MockPdfHandler()
 
     rename_handler = MagicMock()
     rename_handler._pending_folders_lock = threading.Lock()
@@ -41,8 +52,10 @@ def benchmark():
 
     def mock_convert(specific_file, invert_images):
         # We need a small block to simulate work, but the main block was the sleep
-        time.sleep(0.01)
-        execution_times.append(time.time() - start_time)
+        # Avoid blocking thread pool workers with synchronous sleep
+        def _finish():
+            execution_times.append(time.time() - start_time)
+        threading.Timer(0.01, _finish).start()
 
     with patch('ready_jobs_watcher.pending_queue.os.path.exists', return_value=True):
         # Need to patch the import inside the method
