@@ -438,7 +438,7 @@ def consolidate_cnc_tracker(job_folder: Path):
         if not filename or page is None or not action:
             continue
         key = (filename, page, fingerprint)
-        page_states.setdefault(key, {"latest_action": "", "timestamp": "", "bad_parts": set()})
+        page_states.setdefault(key, {"latest_action": "", "timestamp": "", "bad_parts": set(), "reNested": None})
         state = page_states[key]
         if action == "bad_part" and part is not None:
             state["bad_parts"].add(part)
@@ -448,6 +448,7 @@ def consolidate_cnc_tracker(job_folder: Path):
             if not state["timestamp"] or timestamp > state["timestamp"]:
                 state["latest_action"] = action
                 state["timestamp"] = timestamp
+                state["reNested"] = action_obj.get("reNested")
 
     consolidated_actions = []
     for (filename, page, fingerprint), state in page_states.items():
@@ -455,6 +456,8 @@ def consolidate_cnc_tracker(job_folder: Path):
             act = {"file": filename, "page": page, "action": state["latest_action"], "timestamp": state["timestamp"]}
             if fingerprint:
                 act["fileFingerprint"] = fingerprint
+            if state["reNested"] is not None:
+                act["reNested"] = state["reNested"]
             consolidated_actions.append(act)
         for part in sorted(state["bad_parts"]):
             act = {
