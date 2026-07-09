@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import platform
 import re
+import time
 from math import ceil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import fitz
@@ -393,6 +396,129 @@ def build_board_stock_rows(job_folder: Path, hardwood_index: Optional[Dict[str, 
     return board_stock_rows
 
 
+# CROSS-PROGRAM (METADATA_AUDIT.md H-06): the read-existing-consolidated.json -> merge-in-device-
+# files -> atomic-write -> delete-device-files sequence shared by consolidate_cnc_tracker and
+# consolidate_hardwoods_tracker is internally torn-read-safe (the final write is atomic) but is NOT
+# safe against a second concurrent *writer* -- two Ready Jobs Watcher processes (two hosts, or a
+# future bulk-sweep utility) racing the same job's tracker dir could both read the same starting
+# consolidated.json, merge independently, and the second atomic write would silently clobber the
+# first (a lost update; Syncthing then quarantines the loser as a .sync-conflict copy that
+# sync_conflict_resolver only archives, never merges back in). _tracker_consolidation_lock guards
+# the whole sequence with a per-tracker-dir (i.e. per-job, per-CNC-or-hardwoods) file lock stored
+# inside tracker_dir itself -- on the Syncthing-replicated Y:\ tree, so every host sees the same
+# lock file, not just a local single-instance PID lock like Application.acquire_lock in main.py.
+_CONSOLIDATE_LOCK_FILENAME = ".consolidate.lock"
+_CONSOLIDATE_LOCK_TTL_SECONDS = 120  # generous vs. one consolidation pass; bounds a crashed holder
+
+
+def _acquire_tracker_lock(tracker_dir: Path) -> bool:
+    """Try to atomically create the per-tracker-dir consolidation lock file.
+
+    Uses O_CREAT | O_EXCL, which is an atomic create-if-absent at the filesystem/SMB-protocol
+    level (unlike a read-then-write lock file, there is no window where two processes can both
+    observe "free" and both proceed). If the lock file already exists we treat it as held --
+    unless it is older than _CONSOLIDATE_LOCK_TTL_SECONDS, in which case we assume the prior
+    holder crashed mid-pass and reclaim it, so a dead watcher can never wedge consolidation
+    forever.
+    """
+    lock_path = tracker_dir / _CONSOLIDATE_LOCK_FILENAME
+    stale_reclaim_attempted = False
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, f"{os.getpid()}@{platform.node()} {time.time()}".encode("utf-8"))
+            finally:
+                os.close(fd)
+            return True
+        except FileExistsError:
+            if stale_reclaim_attempted:
+                return False
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                # Lock file vanished between the failed create and our stat -- retry the create.
+                stale_reclaim_attempted = True
+                continue
+            if age <= _CONSOLIDATE_LOCK_TTL_SECONDS:
+                return False
+            try:
+                lock_path.unlink()
+            except OSError:
+                return False
+            stale_reclaim_attempted = True
+            continue
+        except OSError:
+            return False
+
+
+def _release_tracker_lock(tracker_dir: Path) -> None:
+    try:
+        (tracker_dir / _CONSOLIDATE_LOCK_FILENAME).unlink()
+    except OSError:
+        pass
+
+
+def _consolidate_tracker(tracker_dir: Path, merge_actions: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]) -> None:
+    """Shared read-merge-write-delete pipeline for the CNC and hardwoods trackers.
+
+    See the H-06 CROSS-PROGRAM comment above for why this whole sequence is wrapped in a
+    per-tracker-dir lock. If the lock is already held (another process is mid-consolidation for
+    this same job's tracker), this pass is skipped cleanly rather than blocking or raising --
+    consolidation runs on a recurring debounce/poll cycle (Config.metadata_cache_debounce_seconds),
+    so a skipped pass simply retries next cycle.
+    """
+    if not tracker_dir.exists():
+        return
+
+    if not _acquire_tracker_lock(tracker_dir):
+        logging.getLogger(__name__).info(
+            "metadata_cache: skipping consolidation for %s, lock held by another process (H-06)",
+            tracker_dir,
+        )
+        return
+
+    try:
+        actions = []
+        device_files = []
+
+        consolidated_file = tracker_dir / "consolidated.json"
+        if consolidated_file.exists():
+            try:
+                data = _read_json(consolidated_file, {})
+                if isinstance(data, dict) and "actions" in data:
+                    actions.extend(data["actions"])
+            except Exception:
+                pass
+
+        for entry in os.scandir(tracker_dir):
+            if (
+                not entry.is_file()
+                or not entry.name.endswith(".json")
+                or entry.name == "consolidated.json"
+                or ".sync-conflict-" in entry.name.lower()
+            ):
+                continue
+            try:
+                stat = entry.stat()
+                data = _read_json(Path(entry.path), {})
+                if isinstance(data, dict) and "actions" in data:
+                    actions.extend(data["actions"])
+                    device_files.append((Path(entry.path), stat.st_mtime, stat.st_size))
+            except Exception:
+                pass
+
+        # If no new device files exist, do not rewrite or delete anything
+        if not device_files:
+            return
+
+        consolidated_actions = merge_actions(actions)
+        _atomic_write_json(tracker_dir / "consolidated.json", {"tabletId": "consolidated", "actions": consolidated_actions})
+        _delete_unchanged_device_files(device_files)
+    finally:
+        _release_tracker_lock(tracker_dir)
+
+
 def consolidate_cnc_tracker(job_folder: Path):
     # CROSS-PROGRAM: the per-device <tabletId>.json files here are PRODUCED by KKCSheetTracker
     # tablets (ProgressStore.kt) and CONSUMED by this watcher. This function merges them into
@@ -403,40 +529,10 @@ def consolidate_cnc_tracker(job_folder: Path):
     # `bad_part_submitted` are re-emitted into consolidated.json with their own original timestamps
     # (not a shared/fallback timestamp), and `unbad_part` resets the submitted flag, mirroring the
     # reactivation semantics in tracker_bad_parts.py so the alert survives device-file deletion.
-    tracker_dir = job_folder / "CNC" / ".tracker"
-    if not tracker_dir.exists():
-        return
+    _consolidate_tracker(job_folder / "CNC" / ".tracker", _merge_cnc_actions)
 
-    actions = []
-    device_files = []
 
-    # Read existing consolidated actions first
-    consolidated_file = tracker_dir / "consolidated.json"
-    if consolidated_file.exists():
-        try:
-            data = _read_json(consolidated_file, {})
-            if isinstance(data, dict) and "actions" in data:
-                actions.extend(data["actions"])
-        except Exception:
-            pass
-
-    # Scan for new device-specific action files
-    for entry in os.scandir(tracker_dir):
-        if not entry.is_file() or not entry.name.endswith(".json") or entry.name == "consolidated.json" or ".sync-conflict-" in entry.name.lower():
-            continue
-        try:
-            stat = entry.stat()
-            data = _read_json(Path(entry.path), {})
-            if isinstance(data, dict) and "actions" in data:
-                actions.extend(data["actions"])
-                device_files.append((Path(entry.path), stat.st_mtime, stat.st_size))
-        except Exception:
-            pass
-
-    # If no new device files exist, do not rewrite or delete anything
-    if not device_files:
-        return
-
+def _merge_cnc_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     actions.sort(key=lambda a: a.get("timestamp", ""))
     page_states = {}
     for action_obj in actions:
@@ -516,45 +612,14 @@ def consolidate_cnc_tracker(job_folder: Path):
                     submitted_act["fileFingerprint"] = fingerprint
                 consolidated_actions.append(submitted_act)
 
-    _atomic_write_json(tracker_dir / "consolidated.json", {"tabletId": "consolidated", "actions": consolidated_actions})
-    _delete_unchanged_device_files(device_files)
+    return consolidated_actions
 
 
 def consolidate_hardwoods_tracker(job_folder: Path):
-    tracker_dir = job_folder / ".metadata" / "hardwoods" / ".tracker"
-    if not tracker_dir.exists():
-        return
+    _consolidate_tracker(job_folder / ".metadata" / "hardwoods" / ".tracker", _merge_hardwoods_actions)
 
-    actions = []
-    device_files = []
 
-    # Read existing consolidated actions first
-    consolidated_file = tracker_dir / "consolidated.json"
-    if consolidated_file.exists():
-        try:
-            data = _read_json(consolidated_file, {})
-            if isinstance(data, dict) and "actions" in data:
-                actions.extend(data["actions"])
-        except Exception:
-            pass
-
-    # Scan for new device-specific action files
-    for entry in os.scandir(tracker_dir):
-        if not entry.is_file() or not entry.name.endswith(".json") or entry.name == "consolidated.json" or ".sync-conflict-" in entry.name.lower():
-            continue
-        try:
-            stat = entry.stat()
-            data = _read_json(Path(entry.path), {})
-            if isinstance(data, dict) and "actions" in data:
-                actions.extend(data["actions"])
-                device_files.append((Path(entry.path), stat.st_mtime, stat.st_size))
-        except Exception:
-            pass
-
-    # If no new device files exist, do not rewrite or delete anything
-    if not device_files:
-        return
-
+def _merge_hardwoods_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     actions.sort(key=lambda a: a.get("timestamp", ""))
     done_count = {}
     skipped = set()
@@ -587,8 +652,7 @@ def consolidate_hardwoods_tracker(job_folder: Path):
         if key in skipped:
             consolidated_actions.append({"docType": doc_type, "rowId": row_id, "action": "set_skipped", "timestamp": ts})
 
-    _atomic_write_json(tracker_dir / "consolidated.json", {"tabletId": "consolidated", "actions": consolidated_actions})
-    _delete_unchanged_device_files(device_files)
+    return consolidated_actions
 
 
 def _delete_unchanged_device_files(device_files):

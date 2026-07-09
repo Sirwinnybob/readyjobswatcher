@@ -1,6 +1,13 @@
 import json
+import threading
+import time
 
-from ready_jobs_watcher.metadata_cache import consolidate_cnc_tracker, consolidate_hardwoods_tracker
+from ready_jobs_watcher.metadata_cache import (
+    consolidate_cnc_tracker,
+    consolidate_hardwoods_tracker,
+    _acquire_tracker_lock,
+    _release_tracker_lock,
+)
 from ready_jobs_watcher.tracker_action_stream import load_cnc_tracker_actions
 from ready_jobs_watcher.tracker_bad_parts import TrackerBadPartsMonitor
 
@@ -277,6 +284,137 @@ def test_consolidation_resets_submission_on_reactivation(tmp_path):
     cnc_actions = json.loads((tracker_dir / "consolidated.json").read_text(encoding="utf-8"))["actions"]
     assert any(a["action"] == "bad_part" and a["part"] == 5 for a in cnc_actions)
     assert not any(a["action"] == "bad_part_submitted" for a in cnc_actions)
+
+
+def test_tracker_lock_mutual_exclusion(tmp_path):
+    # H-06 regression: the primitive itself must refuse a second acquire while the first
+    # is still held, and allow it again once released.
+    tracker_dir = tmp_path / "CNC" / ".tracker"
+    tracker_dir.mkdir(parents=True)
+
+    assert _acquire_tracker_lock(tracker_dir) is True
+    assert _acquire_tracker_lock(tracker_dir) is False
+
+    _release_tracker_lock(tracker_dir)
+    assert _acquire_tracker_lock(tracker_dir) is True
+    _release_tracker_lock(tracker_dir)
+
+
+def test_tracker_lock_only_one_thread_wins_concurrently(tmp_path):
+    # Two real threads race to create the same lock file at (as close to) the same instant;
+    # exactly one must win. This exercises the O_CREAT|O_EXCL atomicity itself, not just the
+    # logic around it.
+    tracker_dir = tmp_path / "CNC" / ".tracker"
+    tracker_dir.mkdir(parents=True)
+
+    results = []
+    barrier = threading.Barrier(2)
+
+    def attempt():
+        barrier.wait()
+        results.append(_acquire_tracker_lock(tracker_dir))
+
+    threads = [threading.Thread(target=attempt) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(results) == [False, True]
+
+
+def test_concurrent_cnc_consolidation_second_attempt_skips_no_lost_update(tmp_path):
+    # H-06 regression (METADATA_AUDIT.md): simulate a second consolidation attempt (a second
+    # watcher host, or a future bulk-sweep utility) racing an in-progress consolidation for the
+    # same job's CNC tracker. The second attempt must not interleave its own read-merge-write
+    # with the first's in-progress pass -- it should skip cleanly (no exception, no partial
+    # write), leaving the device file untouched so nothing is lost; the next, uncontested pass
+    # then converges to the correct merged state.
+    job = tmp_path / "Ready Jobs" / "123 - Test Job"
+    tracker_dir = job / "CNC" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {
+            "tabletId": "tablet-a",
+            "actions": [
+                {"file": "123 - Maple.pdf", "page": 1, "action": "complete", "timestamp": "2026-06-09T10:00:00Z"},
+                {"file": "123 - Maple.pdf", "page": 1, "action": "bad_part", "part": 5, "timestamp": "2026-06-09T10:01:00Z"},
+            ],
+        },
+    )
+
+    # Simulate process #1 already holding the lock for this tracker dir mid-pass.
+    assert _acquire_tracker_lock(tracker_dir) is True
+    try:
+        consolidate_cnc_tracker(job)  # the "second" concurrent attempt
+
+        # Nothing should have been touched by the skipped attempt.
+        assert (tracker_dir / "tablet-a.json").exists()
+        assert not (tracker_dir / "consolidated.json").exists()
+    finally:
+        _release_tracker_lock(tracker_dir)
+
+    # Next (uncontested) pass converges to the correct merged state -- no lost update.
+    consolidate_cnc_tracker(job)
+    assert not (tracker_dir / "tablet-a.json").exists()
+    cnc_actions = json.loads((tracker_dir / "consolidated.json").read_text(encoding="utf-8"))["actions"]
+    assert {"file": "123 - Maple.pdf", "page": 1, "action": "complete", "timestamp": "2026-06-09T10:00:00Z"} in cnc_actions
+    assert any(a["action"] == "bad_part" and a["part"] == 5 for a in cnc_actions)
+
+
+def test_concurrent_cnc_consolidation_via_real_threads_converges(tmp_path, monkeypatch):
+    # End-to-end version of the above using two real threads racing consolidate_cnc_tracker
+    # itself (rather than manually holding the lock). We slow down the merge step so the
+    # second thread's lock attempt reliably lands while the first still holds it, then assert
+    # both calls complete without raising and the final on-disk state has no lost update.
+    import ready_jobs_watcher.metadata_cache as metadata_cache
+
+    job = tmp_path / "Ready Jobs" / "123 - Test Job"
+    tracker_dir = job / "CNC" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {
+            "tabletId": "tablet-a",
+            "actions": [
+                {"file": "123 - Maple.pdf", "page": 1, "action": "complete", "timestamp": "2026-06-09T10:00:00Z"},
+            ],
+        },
+    )
+
+    original_merge = metadata_cache._merge_cnc_actions
+
+    def slow_merge(actions):
+        time.sleep(0.2)
+        return original_merge(actions)
+
+    monkeypatch.setattr(metadata_cache, "_merge_cnc_actions", slow_merge)
+
+    results = {}
+
+    def run(name):
+        try:
+            metadata_cache.consolidate_cnc_tracker(job)
+            results[name] = "ok"
+        except Exception as exc:  # pragma: no cover - failure path under test
+            results[name] = exc
+
+    t1 = threading.Thread(target=run, args=("t1",))
+    t2 = threading.Thread(target=run, args=("t2",))
+    t1.start()
+    time.sleep(0.05)  # give t1 a head start so it wins the lock first
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Neither call should raise: the loser skips cleanly rather than erroring out.
+    assert results["t1"] == "ok"
+    assert results["t2"] == "ok"
+
+    # No lost update: exactly the winner's merge landed, the device file is gone, and the
+    # action it carried is present in consolidated.json.
+    assert not (tracker_dir / "tablet-a.json").exists()
+    cnc_actions = json.loads((tracker_dir / "consolidated.json").read_text(encoding="utf-8"))["actions"]
+    assert {"file": "123 - Maple.pdf", "page": 1, "action": "complete", "timestamp": "2026-06-09T10:00:00Z"} in cnc_actions
 
 
 def test_consolidation_returns_early_without_device_files(tmp_path):
