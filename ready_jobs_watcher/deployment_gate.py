@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 from typing import Dict, List, Optional
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .refresh_signals import touch_cnc_refresh_signal
 
 main_logger = logging.getLogger("main")
@@ -54,10 +55,7 @@ class DeploymentGateManager:
     @staticmethod
     def _atomic_write_json(path: str, payload: Dict) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        temp_path = f"{path}.tmp"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(temp_path, path)
+        _shared_atomic_write_json(path, payload, indent=2, ensure_ascii=False)
 
     @staticmethod
     def _default_state(job_folder_name: str, deployed: bool = True) -> Dict:

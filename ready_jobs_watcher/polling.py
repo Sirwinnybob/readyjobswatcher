@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .file_handler import JobProcessor, should_ignore_folder
 from .utils import is_hidden
 
@@ -58,11 +59,9 @@ class ReadyJobsPoller:
 
     def _save_snapshot(self) -> None:
         try:
-            self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = self.snapshot_path.with_suffix(self.snapshot_path.suffix + ".tmp")
-            with temp_path.open("w", encoding="utf-8") as f:
-                json.dump(self._snapshot, f, indent=2, sort_keys=True)
-            os.replace(temp_path, self.snapshot_path)
+            _shared_atomic_write_json(
+                self.snapshot_path, self._snapshot, indent=2, sort_keys=True, ensure_ascii=True
+            )
         except Exception as exc:
             main_logger.error("Failed saving polling snapshot %s: %s", self.snapshot_path, exc, exc_info=True)
 

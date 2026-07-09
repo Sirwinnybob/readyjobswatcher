@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .config import BASE_DATA_DIR, Config
 from .file_handler import JobProcessor
 from .tracker_action_stream import load_cnc_tracker_actions
@@ -151,11 +152,8 @@ class TrackerBadPartsMonitor:
 
     def _save_state(self) -> None:
         self.state.updated_at = _now_iso()
-        temp_path = f"{self.state_file}.tmp"
         os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(self.state.to_dict(), f, indent=2, ensure_ascii=False)
-        os.replace(temp_path, self.state_file)
+        _shared_atomic_write_json(self.state_file, self.state.to_dict(), indent=2, ensure_ascii=False)
 
     def _iter_job_folders(self) -> Iterable[Tuple[str, str]]:
         root_dir = self.config.ROOT_DIR

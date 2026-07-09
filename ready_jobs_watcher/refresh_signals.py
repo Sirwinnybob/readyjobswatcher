@@ -7,13 +7,13 @@ tablet apps can detect watcher-originated changes and refresh immediately.
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import os
 import threading
 import time
-import uuid
 from typing import Optional
+
+from .atomic_write import atomic_replace, write_temp_json
 
 
 _CNC_TRACKER_RELATIVE = os.path.join("CNC", ".tracker")
@@ -42,15 +42,18 @@ def _atomic_write_json(path: str, payload: dict) -> None:
     # that all touch this same signal file; without serializing the rename,
     # two concurrent os.replace() calls onto the same destination can race
     # and lose with [WinError 5] Access is denied.
+    #
+    # The temp file itself is written via the shared atomic_write helper
+    # (ready_jobs_watcher.atomic_write.write_temp_json), which already uses a
+    # unique pid+uuid name so concurrent writers never collide on the temp
+    # file either. This function keeps its own per-path lock and retry loop
+    # around the final rename, since that's specific to this module.
     with _lock_for_path(path):
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            temp_path = f"{path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
+            temp_path = write_temp_json(path, payload, indent=2, ensure_ascii=False)
             for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
                 try:
-                    os.replace(temp_path, path)
+                    atomic_replace(temp_path, path)
                     break
                 except OSError:
                     if attempt == _REPLACE_RETRY_ATTEMPTS:

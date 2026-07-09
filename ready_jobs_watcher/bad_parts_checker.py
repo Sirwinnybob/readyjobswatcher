@@ -13,6 +13,7 @@ import threading
 import fitz  # PyMuPDF
 from PIL import Image
 
+from .atomic_write import atomic_replace, write_temp_json
 from .notifications import send_notification
 from .config import BASE_DATA_DIR, Config
 
@@ -209,12 +210,12 @@ def save_to_blacklist_internal() -> None:
     """
     temp_file = None
     try:
-        # Write to temp file first
-        temp_file = BLACKLIST_FILE + '.tmp'
-        with open(temp_file, 'w') as f:
-            json.dump(list(list(item) for item in BLACKLISTED_FILES), f, indent=4)
-
-        os.replace(temp_file, BLACKLIST_FILE)
+        # Write to a unique temp file first (ready_jobs_watcher.atomic_write), then
+        # atomically replace the destination.
+        temp_file = write_temp_json(
+            BLACKLIST_FILE, list(list(item) for item in BLACKLISTED_FILES), indent=4, ensure_ascii=True
+        )
+        atomic_replace(temp_file, BLACKLIST_FILE)
 
     except OSError as e:
         badparts_logger.error(f"OS Error saving blacklist file internally: {e}")
@@ -263,12 +264,15 @@ def save_permanently_ignored_blacklist_internal() -> None:
     """
     temp_file = None
     try:
-        # Write to temp file first
-        temp_file = PERMANENTLY_IGNORED_FILE + '.tmp'
-        with open(temp_file, 'w') as f:
-            json.dump(list(list(item) for item in PERMANENTLY_IGNORED_FILES), f, indent=4)
-
-        os.replace(temp_file, PERMANENTLY_IGNORED_FILE)
+        # Write to a unique temp file first (ready_jobs_watcher.atomic_write), then
+        # atomically replace the destination.
+        temp_file = write_temp_json(
+            PERMANENTLY_IGNORED_FILE,
+            list(list(item) for item in PERMANENTLY_IGNORED_FILES),
+            indent=4,
+            ensure_ascii=True,
+        )
+        atomic_replace(temp_file, PERMANENTLY_IGNORED_FILE)
 
     except OSError as e:
         badparts_logger.error(f"OS Error saving permanently ignored blacklist file internally: {e}")

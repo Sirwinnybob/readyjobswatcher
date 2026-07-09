@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .deployment_gate import DeploymentGateManager
 from .metadata_cache import parse_job_folder_name, refresh_single_job
 
@@ -28,11 +29,7 @@ def _read_json(path: Path) -> Any:
 
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    tmp_path.replace(path)
+    _shared_atomic_write_json(path, payload, indent=2, ensure_ascii=False)
 
 
 def _replace_text(value: str, *, old_name: str, new_name: str, old_job_name: str, new_job_name: str) -> str:

@@ -15,6 +15,7 @@ try:
 except Exception:  # pragma: no cover - dependency is optional for fallback page counts
     fitz = None
 
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .metadata_snapshot import archive_job_metadata
 
 
@@ -36,13 +37,12 @@ def _read_json(path: Path, default=None):
 
 
 def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> bool:
+    # Skip-if-unchanged is extra semantics on top of a plain atomic write, so
+    # that part stays here; the actual temp+replace write is delegated to the
+    # shared helper (ready_jobs_watcher.atomic_write).
     if _read_json(path) == payload:
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".json.tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, path)
+    _shared_atomic_write_json(path, payload, indent=2, ensure_ascii=False)
     return True
 
 

@@ -13,6 +13,7 @@ import os
 import time
 from typing import Dict, List, Optional, Tuple
 
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .config import Config
 from .tracker_action_stream import load_cnc_tracker_actions
 
@@ -44,10 +45,7 @@ def _write_candidates(config: Config, job_folder_name: str, candidates: List[Dic
         pass
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     payload = {"jobFolderName": job_folder_name, "candidates": candidates}
-    temp_path = f"{out_path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    os.replace(temp_path, out_path)
+    _shared_atomic_write_json(out_path, payload, indent=2, ensure_ascii=False)
     return True
 
 

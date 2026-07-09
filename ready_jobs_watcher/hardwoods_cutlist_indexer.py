@@ -16,6 +16,7 @@ from decimal import InvalidOperation
 from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .tracker_action_stream import load_hardwoods_tracker_actions
 from .refresh_signals import touch_hardwoods_refresh_signal
 from .utils import open_pdf_with_retry
@@ -1001,10 +1002,7 @@ def _write_index(job_folder_path: str, payload: Dict) -> Optional[str]:
         except Exception:
             pass
         os.makedirs(metadata_dir, exist_ok=True)
-        temp_path = f"{out_path}.tmp"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(temp_path, out_path)
+        _shared_atomic_write_json(out_path, payload, indent=2, ensure_ascii=False)
         touch_hardwoods_refresh_signal(
             job_folder_path=job_folder_path,
             reason="hardwoods_index_updated",
@@ -1077,12 +1075,10 @@ def _write_revision_state(job_folder_path: str, payload: Dict) -> Optional[str]:
         # FIXED (METADATA_AUDIT.md H-01): this used to be a non-atomic direct write on a
         # read-modify-write path (_upsert_revision_state rewrites the whole file), which let a
         # tablet read a truncated file mid-write and let a concurrent writer lose revisions. Now
-        # routed through the same temp+os.replace atomic pattern _write_index uses, so a reader
-        # will only ever see the fully-written previous version or the fully-written new version.
-        temp_path = f"{out_path}.tmp"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(temp_path, out_path)
+        # routed through the shared atomic_write.atomic_write_json helper (METADATA_AUDIT.md R-04),
+        # so a reader will only ever see the fully-written previous version or the fully-written
+        # new version.
+        _shared_atomic_write_json(out_path, payload, indent=2, ensure_ascii=False)
         touch_hardwoods_refresh_signal(
             job_folder_path=job_folder_path,
             reason="hardwoods_revision_updated",

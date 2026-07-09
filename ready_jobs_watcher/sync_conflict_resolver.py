@@ -8,7 +8,6 @@ the conflict copy into a hidden per-job/root archive with a manifest.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import re
@@ -17,6 +16,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional
+
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 
 
 main_logger = logging.getLogger("main")
@@ -119,9 +120,7 @@ def _write_manifest(
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path = _unique_path(manifest_path)
-    temp = manifest_path.with_name(f"{manifest_path.name}.tmp")
-    temp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(temp, manifest_path)
+    _shared_atomic_write_json(manifest_path, payload, indent=2, ensure_ascii=True, sort_keys=True)
 
 
 def resolve_sync_conflict_file(

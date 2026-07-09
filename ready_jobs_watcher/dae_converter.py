@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import List
 from uuid import uuid4
 
+from .atomic_write import atomic_write_bytes as _shared_atomic_write_bytes
+
 logger = logging.getLogger('main')
 
 _INIT_FROM = re.compile(r'<init_from>([\s\S]*?)</init_from>')
@@ -692,9 +694,7 @@ def _embed_external_images_in_glb(glb_path: Path) -> bool:
     total_length = 12 + sum(len(c) for c in new_chunks)
     rebuilt = struct.pack("<III", 0x46546C67, 2, total_length) + b"".join(new_chunks)
 
-    tmp_out = glb_path.with_suffix(".tmp.glb")
-    tmp_out.write_bytes(rebuilt)
-    os.replace(tmp_out, glb_path)
+    _shared_atomic_write_bytes(glb_path, rebuilt)
     return True
 
 

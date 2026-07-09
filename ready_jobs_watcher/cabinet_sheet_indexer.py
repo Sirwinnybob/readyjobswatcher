@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 import fitz  # PyMuPDF
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .refresh_signals import touch_cnc_refresh_signal
 from .utils import open_pdf_with_retry
 
@@ -768,10 +769,7 @@ def _write_index(job_folder_path: str, payload: Dict) -> bool:
         except Exception:
             pass
         os.makedirs(metadata_dir, exist_ok=True)
-        temp_path = f"{out_path}.tmp"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(temp_path, out_path)
+        _shared_atomic_write_json(out_path, payload, indent=2, ensure_ascii=False)
         return True
     except OSError as exc:
         main_logger.warning("cabinet_sheet_indexer: could not write index for %s: %s", job_folder_path, exc)

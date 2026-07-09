@@ -1502,7 +1502,7 @@ def test_write_revision_state_uses_atomic_temp_then_replace(tmp_path, monkeypatc
 
     def _tracking_replace(src, dst):
         # Confirm the temp file is fully written (valid JSON) *before* the atomic
-        # rename happens, and that it targets the expected out_path/.tmp pair.
+        # rename happens, and that it targets a temp file colocated with out_path.
         with open(src, "r", encoding="utf-8") as f:
             json.load(f)
         calls.append((src, dst))
@@ -1535,11 +1535,18 @@ def test_write_revision_state_uses_atomic_temp_then_replace(tmp_path, monkeypatc
     revision_calls = [c for c in calls if c[1] == out_path]
     assert len(revision_calls) == 1
     src, dst = revision_calls[0]
-    assert src == f"{out_path}.tmp"
+    src_str = str(src)
+    # The shared atomic_write helper uses a unique pid+uuid temp name
+    # (out_path.<pid>.<uuid>.tmp) rather than a bare out_path.tmp, so two
+    # concurrent writers can't collide on the same temp filename. Assert the
+    # observable shape/location of that temp file rather than its exact name.
+    assert src_str.startswith(out_path + ".")
+    assert src_str.endswith(".tmp")
+    assert src_str != out_path
     assert dst == out_path
 
-    # The temp file must be gone (renamed away) and no leftover .tmp file remains.
-    assert not os.path.exists(f"{out_path}.tmp")
+    # The temp file must be gone (renamed away) and no leftover temp file remains.
+    assert not os.path.exists(src_str)
     assert os.path.exists(out_path)
 
     with open(out_path, "r", encoding="utf-8") as f:

@@ -12,6 +12,8 @@ import logging
 import sys
 from typing import Dict, List, Optional
 
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
+
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
     # When running as a PyInstaller executable from 'dist' folder
     # Go up two levels: from dist/ReadyJobsWatcher/ReadyJobsWatcher.exe to project root
@@ -24,10 +26,8 @@ main_logger = logging.getLogger('main')
 
 
 def _atomic_write_json(path: str, payload: Dict, indent: int = 4) -> None:
-    temp_path = f"{path}.tmp"
-    with open(temp_path, 'w') as f:
-        json.dump(payload, f, indent=indent)
-    os.replace(temp_path, path)
+    # ensure_ascii=True (the default) preserves prior behavior of this call site.
+    _shared_atomic_write_json(path, payload, indent=indent, ensure_ascii=True)
 
 
 class Config:

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
+from .atomic_write import atomic_copy as _shared_atomic_copy
+from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .metadata_inventory import OwnershipMode, classify_metadata_path
 
 
@@ -51,17 +53,11 @@ def _sha256(path: Path) -> str:
 
 
 def _atomic_copy(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    tmp = destination.with_name(f"{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    shutil.copy2(source, tmp)
-    os.replace(tmp, destination)
+    _shared_atomic_copy(source, destination)
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    _shared_atomic_write_json(path, payload, indent=2, ensure_ascii=False)
 
 
 def _storage_relative_path(relative_path: str) -> Path:
