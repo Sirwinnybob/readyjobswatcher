@@ -148,6 +148,9 @@ def should_ignore_file(filename: str) -> bool:
     if ext in IGNORED_EXTENSIONS:
         return True
 
+    if ".sync-conflict-" in lower_name:
+        return True
+
     return False
 
 

@@ -219,3 +219,31 @@ def test_application_starts_sync_conflict_thread():
             called_names = [call.kwargs.get("name") for call in mock_thread_class.call_args_list]
             assert "SyncConflictResolverScheduler" in called_names
             assert mock_thread_instance.start.call_count > 0
+
+
+def test_should_ignore_file_sync_conflict():
+    from ready_jobs_watcher.file_handler import should_ignore_file
+    assert should_ignore_file("Plans.sync-conflict-20260622-070801-DRK5N56.pdf") is True
+    assert should_ignore_file("Plans.pdf") is False
+
+
+def test_cabinet_sheet_indexer_collect_pdfs_sync_conflict_exclusion(tmp_path):
+    from ready_jobs_watcher.cabinet_sheet_indexer import _collect_pdf_candidates
+    (tmp_path / "valid.pdf").write_bytes(b"pdf")
+    (tmp_path / "conflict.sync-conflict-20260622-070801-DRK5N56.pdf").write_bytes(b"pdf")
+    
+    candidates = _collect_pdf_candidates(str(tmp_path))
+    filenames = [os.path.basename(c) for c in candidates]
+    assert "valid.pdf" in filenames
+    assert "conflict.sync-conflict-20260622-070801-DRK5N56.pdf" not in filenames
+
+
+def test_hardwoods_cutlist_indexer_collect_pdfs_sync_conflict_exclusion(tmp_path):
+    from ready_jobs_watcher.hardwoods_cutlist_indexer import _collect_pdf_candidates
+    (tmp_path / "valid.pdf").write_bytes(b"pdf")
+    (tmp_path / "conflict.sync-conflict-20260622-070801-DRK5N56.pdf").write_bytes(b"pdf")
+    
+    candidates = _collect_pdf_candidates(str(tmp_path))
+    filenames = [os.path.basename(c) for c in candidates]
+    assert "valid.pdf" in filenames
+    assert "conflict.sync-conflict-20260622-070801-DRK5N56.pdf" not in filenames

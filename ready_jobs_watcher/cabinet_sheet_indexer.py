@@ -497,7 +497,7 @@ def _collect_pdf_candidates(folder_path: str) -> List[str]:
     try:
         with os.scandir(folder_path) as entries:
             for entry in entries:
-                if entry.is_file() and _is_pdf(entry.name):
+                if entry.is_file() and _is_pdf(entry.name) and ".sync-conflict-" not in entry.name.lower():
                     out.append(entry.path)
     except OSError:
         return []
