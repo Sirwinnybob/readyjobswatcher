@@ -1072,8 +1072,17 @@ def _write_revision_state(job_folder_path: str, payload: Dict) -> Optional[str]:
         metadata_dir = os.path.join(job_folder_path, ".metadata", HARDWOODS_METADATA_DIR)
         os.makedirs(metadata_dir, exist_ok=True)
         out_path = _revision_path_for_job(job_folder_path)
-        with open(out_path, "w", encoding="utf-8") as f:
+        # CROSS-PROGRAM: cutlist_revisions.json is CONSUMED read-only by KKCSheetTracker tablets
+        # (FileBackedUnifiedMetadataEngine.loadHardwoodRevisionHistory) over Syncthing.
+        # FIXED (METADATA_AUDIT.md H-01): this used to be a non-atomic direct write on a
+        # read-modify-write path (_upsert_revision_state rewrites the whole file), which let a
+        # tablet read a truncated file mid-write and let a concurrent writer lose revisions. Now
+        # routed through the same temp+os.replace atomic pattern _write_index uses, so a reader
+        # will only ever see the fully-written previous version or the fully-written new version.
+        temp_path = f"{out_path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(temp_path, out_path)
         touch_hardwoods_refresh_signal(
             job_folder_path=job_folder_path,
             reason="hardwoods_revision_updated",

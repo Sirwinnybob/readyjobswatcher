@@ -23,6 +23,7 @@ from .file_handler import JobProcessor
 from .config import Config
 from .remake_candidates_indexer import refresh_unresolved_bad_parts_all
 from .deployment_gate import MODE_UNKNOWN, DeploymentGateManager
+from .sync_conflict_resolver import scan_and_resolve_sync_conflicts
 
 main_logger = logging.getLogger('main')
 
@@ -577,3 +578,21 @@ def pending_autorelease_scheduler(
             break
 
     main_logger.info("Pending auto-release scheduler stopped")
+
+
+def sync_conflict_resolver_scheduler(config: Config, stop_event: threading.Event) -> None:
+    """
+    Background loop that periodically scans and resolves Syncthing conflicts.
+    """
+    main_logger.info("Sync conflict resolver scheduler started")
+    interval = 300  # 5 minutes
+    while not stop_event.is_set():
+        try:
+            scan_and_resolve_sync_conflicts(config.ROOT_DIR)
+        except Exception as exc:
+            main_logger.error("Error in sync conflict resolver scheduler: %s", exc, exc_info=True)
+
+        if stop_event.wait(interval):
+            break
+
+    main_logger.info("Sync conflict resolver scheduler stopped")

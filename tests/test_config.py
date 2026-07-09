@@ -101,7 +101,7 @@ def test_default_new_folder_delay_is_120_seconds(monkeypatch):
 def test_metadata_cache_defaults(monkeypatch):
     monkeypatch.setattr(Config, "load", lambda self: None)
     cfg = Config()
-    assert cfg.metadata_cache_debounce_seconds == 600
+    assert cfg.metadata_cache_debounce_seconds == 180
     assert cfg.metadata_end_of_day_time == "20:00"
     assert cfg.metadata_snapshot_enabled is True
     assert cfg.metadata_snapshot_archive_dir.endswith("metadata_snapshots")

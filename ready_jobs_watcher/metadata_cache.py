@@ -138,6 +138,8 @@ def generate_static_cache(job_folder: Path, folder_name: Optional[str] = None, l
                 continue
             if not entry.name.lower().endswith(".pdf"):
                 continue
+            if ".sync-conflict-" in entry.name.lower():
+                continue
             if "all sheets" in entry.name.lower():
                 continue
             if job_number and not entry.name.startswith(f"{job_number} - "):
@@ -250,7 +252,7 @@ def build_pdf_catalog(job_folder: Path) -> Dict[str, Any]:
     root_pdfs = []
     if job_folder.exists():
         for entry in os.scandir(job_folder):
-            if entry.is_file() and entry.name.lower().endswith(".pdf"):
+            if entry.is_file() and entry.name.lower().endswith(".pdf") and ".sync-conflict-" not in entry.name.lower():
                 root_pdfs.append(entry.name)
     root_pdfs.sort(key=lambda x: x.lower())
 
@@ -392,6 +394,15 @@ def build_board_stock_rows(job_folder: Path, hardwood_index: Optional[Dict[str, 
 
 
 def consolidate_cnc_tracker(job_folder: Path):
+    # CROSS-PROGRAM: the per-device <tabletId>.json files here are PRODUCED by KKCSheetTracker
+    # tablets (ProgressStore.kt) and CONSUMED by this watcher. This function merges them into
+    # consolidated.json and then DELETES the device files (see _delete_unchanged_device_files).
+    # FIXED (METADATA_AUDIT.md C-01/M-06): the merge tracks, per (file, page, fingerprint, part),
+    # whether the part is currently bad and whether it has been submitted for the engineer alert
+    # (tracker_bad_parts.py:448 requires a `bad_part_submitted` action to fire). Both `bad_part` and
+    # `bad_part_submitted` are re-emitted into consolidated.json with their own original timestamps
+    # (not a shared/fallback timestamp), and `unbad_part` resets the submitted flag, mirroring the
+    # reactivation semantics in tracker_bad_parts.py so the alert survives device-file deletion.
     tracker_dir = job_folder / "CNC" / ".tracker"
     if not tracker_dir.exists():
         return
@@ -411,7 +422,7 @@ def consolidate_cnc_tracker(job_folder: Path):
 
     # Scan for new device-specific action files
     for entry in os.scandir(tracker_dir):
-        if not entry.is_file() or not entry.name.endswith(".json") or entry.name == "consolidated.json":
+        if not entry.is_file() or not entry.name.endswith(".json") or entry.name == "consolidated.json" or ".sync-conflict-" in entry.name.lower():
             continue
         try:
             stat = entry.stat()
@@ -438,12 +449,31 @@ def consolidate_cnc_tracker(job_folder: Path):
         if not filename or page is None or not action:
             continue
         key = (filename, page, fingerprint)
-        page_states.setdefault(key, {"latest_action": "", "timestamp": "", "bad_parts": set(), "reNested": None})
+        page_states.setdefault(key, {"latest_action": "", "timestamp": "", "bad_parts": {}, "reNested": None})
         state = page_states[key]
         if action == "bad_part" and part is not None:
-            state["bad_parts"].add(part)
+            part_state = state["bad_parts"].setdefault(
+                part, {"bad": False, "bad_ts": "", "submitted": False, "submitted_ts": ""}
+            )
+            if not part_state["bad"]:
+                # Reactivation (or first flag) resets any prior submission, matching the
+                # reactivated-token handling in tracker_bad_parts.py.
+                part_state["submitted"] = False
+                part_state["submitted_ts"] = ""
+            part_state["bad"] = True
+            part_state["bad_ts"] = timestamp
         elif action == "unbad_part" and part is not None:
-            state["bad_parts"].discard(part)
+            part_state = state["bad_parts"].get(part)
+            if part_state is not None:
+                part_state["bad"] = False
+                part_state["submitted"] = False
+                part_state["submitted_ts"] = ""
+        elif action == "bad_part_submitted" and part is not None:
+            part_state = state["bad_parts"].setdefault(
+                part, {"bad": False, "bad_ts": "", "submitted": False, "submitted_ts": ""}
+            )
+            part_state["submitted"] = True
+            part_state["submitted_ts"] = timestamp
         elif action in ("complete", "skip", "unskip"):
             if not state["timestamp"] or timestamp > state["timestamp"]:
                 state["latest_action"] = action
@@ -460,16 +490,31 @@ def consolidate_cnc_tracker(job_folder: Path):
                 act["reNested"] = state["reNested"]
             consolidated_actions.append(act)
         for part in sorted(state["bad_parts"]):
+            part_state = state["bad_parts"][part]
+            if not part_state["bad"]:
+                continue
+            bad_ts = part_state["bad_ts"] or "2026-01-01T00:00:00Z"
             act = {
                 "file": filename,
                 "page": page,
                 "action": "bad_part",
                 "part": part,
-                "timestamp": state["timestamp"] or "2026-01-01T00:00:00Z",
+                "timestamp": bad_ts,
             }
             if fingerprint:
                 act["fileFingerprint"] = fingerprint
             consolidated_actions.append(act)
+            if part_state["submitted"]:
+                submitted_act = {
+                    "file": filename,
+                    "page": page,
+                    "action": "bad_part_submitted",
+                    "part": part,
+                    "timestamp": part_state["submitted_ts"] or bad_ts,
+                }
+                if fingerprint:
+                    submitted_act["fileFingerprint"] = fingerprint
+                consolidated_actions.append(submitted_act)
 
     _atomic_write_json(tracker_dir / "consolidated.json", {"tabletId": "consolidated", "actions": consolidated_actions})
     _delete_unchanged_device_files(device_files)
@@ -495,7 +540,7 @@ def consolidate_hardwoods_tracker(job_folder: Path):
 
     # Scan for new device-specific action files
     for entry in os.scandir(tracker_dir):
-        if not entry.is_file() or not entry.name.endswith(".json") or entry.name == "consolidated.json":
+        if not entry.is_file() or not entry.name.endswith(".json") or entry.name == "consolidated.json" or ".sync-conflict-" in entry.name.lower():
             continue
         try:
             stat = entry.stat()
@@ -576,7 +621,7 @@ def _iter_staleness_files(job_folder: Path):
         if folder.exists():
             for entry in os.scandir(folder):
                 path = Path(entry.path)
-                if entry.is_file() and predicate(path):
+                if entry.is_file() and predicate(path) and ".sync-conflict-" not in entry.name.lower():
                     yield path
 
 

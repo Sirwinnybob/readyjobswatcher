@@ -76,7 +76,7 @@ class Config:
         self.ready_jobs_file_poll_seconds = 60
         self.ready_jobs_root_poll_seconds = 10
         self.ready_jobs_stable_poll_count = 2
-        self.metadata_cache_debounce_seconds = 600
+        self.metadata_cache_debounce_seconds = 180
         self.metadata_end_of_day_time = "20:00"
         self.metadata_snapshot_enabled = True
         self.metadata_snapshot_retention_days = 30

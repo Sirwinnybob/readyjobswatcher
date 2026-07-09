@@ -212,6 +212,8 @@ def _load_legacy_json_actions(
                 continue
             if name.startswith("."):
                 continue
+            if ".sync-conflict-" in name.lower():
+                continue
             path = os.path.join(tracker_dir, name)
             try:
                 with open(path, "r", encoding="utf-8") as f:

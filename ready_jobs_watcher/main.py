@@ -29,6 +29,7 @@ from .scheduler import (
     pending_autorelease_scheduler,
     pending_reminder_scheduler,
     metadata_end_of_day_scheduler,
+    sync_conflict_resolver_scheduler,
 )
 from PyQt6.QtWidgets import QApplication
 from .gui import SettingsWindow
@@ -146,6 +147,7 @@ class Application:
         self.backup_thread = None
         self.cnc_scan_thread = None
         self.stats_thread = None
+        self.sync_conflict_thread = None
         self.restart_thread = None
         self.pending_autorelease_thread = None
         self.pending_reminder_thread = None
@@ -617,10 +619,10 @@ class Application:
             logging.error("Failed updating legacy bad-parts blacklist after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
 
         try:
-            state = self.deployment_gate.load_state(new_name, create_if_missing=False, default_deployed=False)
-            self.deployment_gate.save_state(new_name, state)
+            from .job_rename import rename_ready_job
+            rename_ready_job(self.config.ROOT_DIR, old_name, new_name)
         except Exception as exc:
-            logging.error("Failed refreshing deployment gate after job rename %s -> %s: %s", old_name, new_name, exc, exc_info=True)
+            logging.error("Failed executing rename_ready_job in rename_job %s -> %s: %s", old_name, new_name, exc, exc_info=True)
 
         self.schedule_metadata_refresh_for_job(new_name, "job_renamed")
         if self.settings_window:
@@ -1003,6 +1005,14 @@ class Application:
 
         self.stats_thread = threading.Thread(target=stats_logger_scheduler, args=(self.stop_event,), daemon=True)
         self.stats_thread.start()
+
+        self.sync_conflict_thread = threading.Thread(
+            target=sync_conflict_resolver_scheduler,
+            args=(self.config, self.stop_event),
+            daemon=True,
+            name="SyncConflictResolverScheduler",
+        )
+        self.sync_conflict_thread.start()
 
         self.restart_thread = threading.Thread(target=daily_restart_scheduler, args=(self.config, self.stop_event, self), daemon=True)
         self.restart_thread.start()

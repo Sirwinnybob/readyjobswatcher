@@ -1491,3 +1491,105 @@ def test_modified_completed_row_sets_changed_pending_recut(tmp_path, monkeypatch
     assert len(state_rows) == 1
     assert state_rows[0]["latestRevision"] == revisions["currentRevision"]
     assert state_rows[0]["changedPendingRecut"] is True
+
+
+def test_write_revision_state_uses_atomic_temp_then_replace(tmp_path, monkeypatch):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+
+    calls = []
+    real_replace = os.replace
+
+    def _tracking_replace(src, dst):
+        # Confirm the temp file is fully written (valid JSON) *before* the atomic
+        # rename happens, and that it targets the expected out_path/.tmp pair.
+        with open(src, "r", encoding="utf-8") as f:
+            json.load(f)
+        calls.append((src, dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(indexer.os, "replace", _tracking_replace)
+
+    payload = {
+        "schemaVersion": 1,
+        "updatedAt": "2026-07-09T00:00:00+00:00",
+        "currentRevision": 1,
+        "revisions": [
+            {
+                "revision": 1,
+                "kind": "SNAPSHOT",
+                "timestamp": "2026-07-09T00:00:00+00:00",
+                "added": [],
+                "removed": [],
+                "modified": [],
+            }
+        ],
+        "currentRowStates": [],
+    }
+
+    out_path = indexer._write_revision_state(str(job_dir), payload)
+
+    assert out_path == indexer._revision_path_for_job(str(job_dir))
+    # touch_hardwoods_refresh_signal also does its own atomic replace on a
+    # separate file, so filter to the replace call for our target file.
+    revision_calls = [c for c in calls if c[1] == out_path]
+    assert len(revision_calls) == 1
+    src, dst = revision_calls[0]
+    assert src == f"{out_path}.tmp"
+    assert dst == out_path
+
+    # The temp file must be gone (renamed away) and no leftover .tmp file remains.
+    assert not os.path.exists(f"{out_path}.tmp")
+    assert os.path.exists(out_path)
+
+    with open(out_path, "r", encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert on_disk == payload
+
+
+def test_write_revision_state_crash_after_temp_write_leaves_original_untouched(tmp_path, monkeypatch):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+
+    original_payload = {
+        "schemaVersion": 1,
+        "updatedAt": "2026-07-08T00:00:00+00:00",
+        "currentRevision": 1,
+        "revisions": [
+            {
+                "revision": 1,
+                "kind": "SNAPSHOT",
+                "timestamp": "2026-07-08T00:00:00+00:00",
+                "added": [],
+                "removed": [],
+                "modified": [],
+            }
+        ],
+        "currentRowStates": [],
+    }
+    out_path = indexer._write_revision_state(str(job_dir), original_payload)
+    assert out_path is not None
+
+    # Simulate a crash that happens *after* the temp file is fully written but
+    # *before* os.replace commits the rename — the canonical file must be
+    # completely untouched by this partial write attempt.
+    def _boom(_src, _dst):
+        raise OSError("simulated crash before rename commit")
+
+    monkeypatch.setattr(indexer.os, "replace", _boom)
+
+    updated_payload = dict(original_payload)
+    updated_payload["currentRevision"] = 2
+
+    result = indexer._write_revision_state(str(job_dir), updated_payload)
+    assert result is None  # OSError is caught and logged, not raised
+
+    # Original file must still be intact and fully valid — never truncated.
+    with open(out_path, "r", encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert on_disk == original_payload
+
+    # The failed attempt's temp file should not linger around as visible litter
+    # beyond what os.replace itself would have cleaned up; at minimum the
+    # canonical file was never touched by the aborted write.
+    assert on_disk["currentRevision"] == 1

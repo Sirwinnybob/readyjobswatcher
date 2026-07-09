@@ -66,6 +66,8 @@ def _collect_tracker_actions(tracker_dir: str) -> List[Dict]:
 def _load_metadata_by_pdf(metadata_dir: str) -> Dict[str, Dict]:
     metadata_by_pdf: Dict[str, Dict] = {}
     for mf in glob.glob(os.path.join(metadata_dir, "*.json")):
+        if ".sync-conflict-" in os.path.basename(mf).lower():
+            continue
         try:
             with open(mf, "r", encoding="utf-8") as f:
                 md = json.load(f)
@@ -241,6 +243,8 @@ def cleanup_orphaned_cnc_metadata_for_job(config: Config, job_folder_name: str) 
     for sidecar_path in glob.glob(os.path.join(metadata_dir, "*.json")):
         name = os.path.basename(sidecar_path)
         if name == REMAKE_CANDIDATES_FILENAME:
+            continue
+        if ".sync-conflict-" in name.lower():
             continue
         try:
             mtime = os.path.getmtime(sidecar_path)

@@ -1,6 +1,7 @@
 import os
 import threading
 import types
+import json
 
 from ready_jobs_watcher.main import Application
 
@@ -45,6 +46,15 @@ def _minimal_app(root, pending_queue=None, pdf_handler=None):
     return app
 
 
+def _write_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _read_json(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_rename_job_retargets_pending_renames_and_pdf_conversions(tmp_path):
     root = tmp_path / "Ready Jobs"
     old_job = root / "123 - OLD"
@@ -77,6 +87,30 @@ def test_rename_job_retargets_pending_renames_and_pdf_conversions(tmp_path):
         )
     }
     assert pdf_handler.mappings == [{os.path.normpath(str(old_pdf)): os.path.normpath(str(new_pdf))}]
+
+
+def test_rename_job_refreshes_metadata_when_folder_already_moved(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    old_name = "123 - OLD"
+    new_name = "123 - NEW"
+    job = root / new_name
+    (job / "CNC").mkdir(parents=True)
+    _write_json(root / "production_order.json", [old_name])
+    _write_json(job / ".metadata" / "deployment_gate.json", {"jobFolderName": old_name, "deployed": True})
+    _write_json(job / ".metadata" / "cache_static.json", {"jobInfo": {"folderName": old_name}})
+
+    app = _minimal_app(root)
+    scheduled = []
+    app.schedule_metadata_refresh_for_job = lambda job, reason: scheduled.append((job, reason))  # type: ignore[method-assign]
+
+    app.rename_job(old_name, new_name)
+
+    assert _read_json(root / "production_order.json") == [new_name]
+    gate = _read_json(job / ".metadata" / "deployment_gate.json")
+    assert gate["jobFolderName"] == new_name
+    cache = _read_json(job / ".metadata" / "cache_static.json")
+    assert cache["jobInfo"]["folderName"] == new_name
+    assert scheduled == [(new_name, "job_renamed")]
 
 
 def test_retry_pending_strips_wrong_existing_prefix_before_adding_new_prefix(tmp_path):
