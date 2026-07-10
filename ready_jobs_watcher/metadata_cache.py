@@ -620,37 +620,125 @@ def consolidate_hardwoods_tracker(job_folder: Path):
 
 
 def _merge_hardwoods_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # CROSS-PROGRAM: consumed by KKCSheetTracker tablet (HardwoodsProgressStore.kt)
+    # and by Hours Tracker backend (job_store.py::read_hardwoods_progress).
+    # FIXED (METADATA_AUDIT.md C-02): Merges all 6 action types written by the tablet
+    # (set_done_count, set_bad_count, set_skipped, clear_skipped, add_totals_rip10_done_count,
+    # set_totals_rip10_done_count) so that bad part tallies and board-stock rip-tally totals
+    # are preserved instead of silently dropped during consolidation.
+    # Actions are processed chronologically to reconstruct final row and totals states.
     actions.sort(key=lambda a: a.get("timestamp", ""))
-    done_count = {}
-    skipped = set()
-    timestamps = {}
+
+    row_states = {}
+    totals_states = {}
+
     for action_obj in actions:
         doc_type = action_obj.get("docType")
-        row_id = action_obj.get("rowId")
+        row_id = action_obj.get("rowId") or ""
         action = action_obj.get("action")
-        val = action_obj.get("value", 0)
         timestamp = action_obj.get("timestamp", "")
-        if not doc_type or not row_id or not action:
+
+        if not doc_type or not action:
             continue
-        key = f"{doc_type}|{row_id}"
-        timestamps[key] = timestamp
-        if action == "set_done_count":
-            done_count[key] = val
-        elif action == "set_skipped":
-            skipped.add(key)
-        elif action == "clear_skipped":
-            skipped.discard(key)
+
+        # Safely coerce value to integer
+        val_raw = action_obj.get("value")
+        if val_raw is None:
+            val = 0
+        else:
+            try:
+                val = int(val_raw)
+            except Exception:
+                try:
+                    val = int(float(val_raw))
+                except Exception:
+                    val = 0
+
+        if action in ("set_done_count", "set_bad_count", "set_skipped", "clear_skipped"):
+            if not row_id:
+                continue
+            key = (doc_type, row_id)
+            state = row_states.setdefault(key, {
+                "done_count": 0,
+                "done_ts": "",
+                "bad_count": 0,
+                "bad_ts": "",
+                "skipped": False,
+                "skipped_ts": ""
+            })
+            if action == "set_done_count":
+                state["done_count"] = val
+                state["done_ts"] = timestamp
+            elif action == "set_bad_count":
+                state["bad_count"] = val
+                state["bad_ts"] = timestamp
+            elif action == "set_skipped":
+                state["skipped"] = True
+                state["skipped_ts"] = timestamp
+            elif action == "clear_skipped":
+                state["skipped"] = False
+                state["skipped_ts"] = timestamp
+
+        elif action in ("add_totals_rip10_done_count", "set_totals_rip10_done_count"):
+            totals_key = action_obj.get("totalsKey") or ""
+            if not totals_key:
+                totals_key = row_id
+            if not totals_key:
+                continue
+
+            state = totals_states.setdefault(totals_key, {
+                "value": 0,
+                "docType": doc_type,
+                "rowId": row_id,
+                "timestamp": ""
+            })
+            state["docType"] = doc_type
+            state["rowId"] = row_id
+            state["timestamp"] = timestamp
+
+            if action == "add_totals_rip10_done_count":
+                state["value"] = max(0, state["value"] + val)
+            elif action == "set_totals_rip10_done_count":
+                state["value"] = max(0, val)
 
     consolidated_actions = []
-    for key, ts in timestamps.items():
-        doc_type, row_id = key.split("|", 1)
-        val = done_count.get(key, 0)
-        if val > 0:
-            consolidated_actions.append(
-                {"docType": doc_type, "rowId": row_id, "action": "set_done_count", "value": val, "timestamp": ts}
-            )
-        if key in skipped:
-            consolidated_actions.append({"docType": doc_type, "rowId": row_id, "action": "set_skipped", "timestamp": ts})
+
+    # Sort for deterministic output structure
+    for (doc_type, row_id), state in sorted(row_states.items()):
+        if state["done_count"] > 0:
+            consolidated_actions.append({
+                "docType": doc_type,
+                "rowId": row_id,
+                "action": "set_done_count",
+                "value": state["done_count"],
+                "timestamp": state["done_ts"] or "2026-01-01T00:00:00Z"
+            })
+        if state["bad_count"] > 0:
+            consolidated_actions.append({
+                "docType": doc_type,
+                "rowId": row_id,
+                "action": "set_bad_count",
+                "value": state["bad_count"],
+                "timestamp": state["bad_ts"] or "2026-01-01T00:00:00Z"
+            })
+        if state["skipped"]:
+            consolidated_actions.append({
+                "docType": doc_type,
+                "rowId": row_id,
+                "action": "set_skipped",
+                "timestamp": state["skipped_ts"] or "2026-01-01T00:00:00Z"
+            })
+
+    for totals_key, state in sorted(totals_states.items()):
+        if state["value"] > 0:
+            consolidated_actions.append({
+                "docType": state["docType"],
+                "rowId": state["rowId"],
+                "totalsKey": totals_key,
+                "action": "set_totals_rip10_done_count",
+                "value": state["value"],
+                "timestamp": state["timestamp"] or "2026-01-01T00:00:00Z"
+            })
 
     return consolidated_actions
 

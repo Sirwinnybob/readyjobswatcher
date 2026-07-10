@@ -437,3 +437,93 @@ def test_consolidation_returns_early_without_device_files(tmp_path):
     
     cnc_actions = json.loads((tracker_dir / "consolidated.json").read_text(encoding="utf-8"))["actions"]
     assert len(cnc_actions) == 1
+
+
+def test_hardwoods_consolidation_preserves_all_action_types(tmp_path):
+    job = tmp_path / "Ready Jobs" / "123 - Test Job"
+    tracker_dir = job / ".metadata" / "hardwoods" / ".tracker"
+    tracker_dir.mkdir(parents=True)
+
+    _write_json(
+        tracker_dir / "tablet-b.json",
+        {
+            "tabletId": "tablet-b",
+            "actions": [
+                # Row 1: set_done_count (val=2), then set_bad_count (val=1)
+                {"docType": "FACE_FRAME_CUT_LIST", "rowId": "row-1", "action": "set_done_count", "value": 2, "timestamp": "2026-06-09T10:00:00Z"},
+                {"docType": "FACE_FRAME_CUT_LIST", "rowId": "row-1", "action": "set_bad_count", "value": 1, "timestamp": "2026-06-09T10:01:00Z"},
+
+                # Row 2: set_skipped (remains skipped)
+                {"docType": "FACE_FRAME_CUT_LIST", "rowId": "row-2", "action": "set_skipped", "timestamp": "2026-06-09T10:02:00Z"},
+
+                # Row 3: set_skipped, then clear_skipped (should result in no set_skipped emitted)
+                {"docType": "FACE_FRAME_CUT_LIST", "rowId": "row-3", "action": "set_skipped", "timestamp": "2026-06-09T10:03:00Z"},
+                {"docType": "FACE_FRAME_CUT_LIST", "rowId": "row-3", "action": "clear_skipped", "timestamp": "2026-06-09T10:04:00Z"},
+
+                # Totals 1: add_totals_rip10_done_count (val=2), then set_totals_rip10_done_count (val=5), then add (val=3) => total 8
+                {"docType": "BOARD_STOCK", "rowId": "", "totalsKey": "tally-1", "action": "add_totals_rip10_done_count", "value": 2, "timestamp": "2026-06-09T10:05:00Z"},
+                {"docType": "BOARD_STOCK", "rowId": "", "totalsKey": "tally-1", "action": "set_totals_rip10_done_count", "value": 5, "timestamp": "2026-06-09T10:06:00Z"},
+                {"docType": "BOARD_STOCK", "rowId": "", "totalsKey": "tally-1", "action": "add_totals_rip10_done_count", "value": 3, "timestamp": "2026-06-09T10:07:00Z"},
+            ],
+        },
+    )
+
+    consolidate_hardwoods_tracker(job)
+
+    # Device file must be deleted after consolidation
+    assert not (tracker_dir / "tablet-b.json").exists()
+
+    hardwood_actions = json.loads(
+        (tracker_dir / "consolidated.json").read_text(encoding="utf-8")
+    )["actions"]
+
+    # Verify set_done_count on Row 1
+    done_action = next(a for a in hardwood_actions if a["rowId"] == "row-1" and a["action"] == "set_done_count")
+    assert done_action["value"] == 2
+    assert done_action["timestamp"] == "2026-06-09T10:00:00Z"
+
+    # Verify set_bad_count on Row 1
+    bad_action = next(a for a in hardwood_actions if a["rowId"] == "row-1" and a["action"] == "set_bad_count")
+    assert bad_action["value"] == 1
+    assert bad_action["timestamp"] == "2026-06-09T10:01:00Z"
+
+    # Verify set_skipped on Row 2
+    skipped_action = next(a for a in hardwood_actions if a["rowId"] == "row-2" and a["action"] == "set_skipped")
+    assert skipped_action["timestamp"] == "2026-06-09T10:02:00Z"
+
+    # Verify Row 3 has no set_skipped
+    assert not any(a["rowId"] == "row-3" and a["action"] == "set_skipped" for a in hardwood_actions)
+
+    # Verify rip10 totals action
+    totals_action = next(a for a in hardwood_actions if a.get("totalsKey") == "tally-1")
+    assert totals_action["action"] == "set_totals_rip10_done_count"
+    assert totals_action["value"] == 8
+    assert totals_action["timestamp"] == "2026-06-09T10:07:00Z"
+
+
+def test_hardwoods_consolidation_uses_row_id_as_totals_key_fallback(tmp_path):
+    job = tmp_path / "Ready Jobs" / "123 - Test Job"
+    tracker_dir = job / ".metadata" / "hardwoods" / ".tracker"
+    tracker_dir.mkdir(parents=True)
+
+    _write_json(
+        tracker_dir / "tablet-b.json",
+        {
+            "tabletId": "tablet-b",
+            "actions": [
+                # Totals 2: totalsKey is missing, rowId is "tally-2"
+                {"docType": "BOARD_STOCK", "rowId": "tally-2", "action": "set_totals_rip10_done_count", "value": 4, "timestamp": "2026-06-09T10:00:00Z"},
+            ],
+        },
+    )
+
+    consolidate_hardwoods_tracker(job)
+
+    hardwood_actions = json.loads(
+        (tracker_dir / "consolidated.json").read_text(encoding="utf-8")
+    )["actions"]
+
+    totals_action = next(a for a in hardwood_actions if a.get("totalsKey") == "tally-2")
+    assert totals_action["action"] == "set_totals_rip10_done_count"
+    assert totals_action["value"] == 4
+    assert totals_action["timestamp"] == "2026-06-09T10:00:00Z"
