@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import threading
+import time
+from pathlib import Path
 from typing import Dict, List, Optional
 from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .refresh_signals import touch_cnc_refresh_signal
@@ -25,10 +27,80 @@ MODE_UNKNOWN = "UNKNOWN"
 MODE_VALUES = {MODE_FACE_FRAME, MODE_FRAMELESS, MODE_BOTH, MODE_UNKNOWN}
 
 
+class DeploymentGateLock:
+    def __init__(self, thread_lock: threading.RLock, lock_path: Path, local_locks: threading.local, job_key: str):
+        self.thread_lock = thread_lock
+        self.lock_path = lock_path
+        self.local_locks = local_locks
+        self.job_key = job_key
+
+    def __enter__(self):
+        if not hasattr(self.local_locks, "depths"):
+            self.local_locks.depths = {}
+        
+        depth = self.local_locks.depths.get(self.job_key, 0)
+        if depth > 0:
+            self.local_locks.depths[self.job_key] = depth + 1
+            return self
+
+        # Acquire thread lock first
+        self.thread_lock.acquire()
+
+        # Try to acquire file lock
+        acquired = False
+        start_time = time.time()
+        try:
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            while time.time() - start_time < 5.0:  # 5 second timeout
+                try:
+                    fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.close(fd)
+                    acquired = True
+                    break
+                except FileExistsError:
+                    # Check for stale lock (older than 10s)
+                    try:
+                        mtime = self.lock_path.stat().st_mtime
+                        if time.time() - mtime > 10.0:
+                            self.lock_path.unlink(missing_ok=True)
+                            continue
+                    except FileNotFoundError:
+                        continue
+                    time.sleep(0.05)
+
+            if not acquired:
+                raise TimeoutError(f"Could not acquire deployment gate lock for {self.lock_path.name}")
+
+            self.local_locks.depths[self.job_key] = 1
+            return self
+        except Exception:
+            self.thread_lock.release()
+            raise
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        depth = self.local_locks.depths.get(self.job_key, 0)
+        if depth > 1:
+            self.local_locks.depths[self.job_key] = depth - 1
+            return
+
+        try:
+            self.lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        finally:
+            self.local_locks.depths[self.job_key] = 0
+            self.thread_lock.release()
+
+
 class DeploymentGateManager:
     def __init__(self, root_dir: str):
         self.root_dir = root_dir
         self._lock = threading.RLock()
+        self._local_locks = threading.local()
+
+    def _job_lock(self, job_folder_name: str) -> DeploymentGateLock:
+        lock_path = Path(self._metadata_path_for_job(job_folder_name)).parent / ".deployment_gate.lock"
+        return DeploymentGateLock(self._lock, lock_path, self._local_locks, job_folder_name)
 
     @staticmethod
     def _now_iso() -> str:
@@ -117,7 +189,7 @@ class DeploymentGateManager:
 
     def load_state(self, job_folder_name: str, *, create_if_missing: bool = False, default_deployed: bool = False) -> Dict:
         path = self._metadata_path_for_job(job_folder_name)
-        with self._lock:
+        with self._job_lock(job_folder_name):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     raw = json.load(f)
@@ -135,7 +207,7 @@ class DeploymentGateManager:
                 return state
 
     def save_state(self, job_folder_name: str, state: Dict) -> Dict:
-        with self._lock:
+        with self._job_lock(job_folder_name):
             coerced = self._coerce_state(job_folder_name, state)
             coerced["updatedAt"] = self._now_iso()
             metadata_path = self._metadata_path_for_job(job_folder_name)
@@ -152,7 +224,7 @@ class DeploymentGateManager:
             return coerced
 
     def update_state(self, job_folder_name: str, operator_action: bool = False, **updates) -> Dict:
-        with self._lock:
+        with self._job_lock(job_folder_name):
             state = self.load_state(job_folder_name, create_if_missing=True, default_deployed=False)
             mode_detection = updates.pop("modeDetection", None)
             timers = updates.pop("timers", None)
@@ -187,29 +259,30 @@ class DeploymentGateManager:
             return self.save_state(job_folder_name, state)
 
     def ensure_pending_for_new_job(self, job_folder_name: str, *, detected_mode: str = MODE_UNKNOWN, detection_source: str = "UNKNOWN") -> Dict:
-        metadata_path = self._metadata_path_for_job(job_folder_name)
-        had_existing_state = os.path.exists(metadata_path)
-        state = self.load_state(job_folder_name, create_if_missing=True, default_deployed=False)
-        was_pending = not bool(state.get("deployed", True))
-        now_dt = datetime.datetime.now(datetime.timezone.utc)
-        current_timers = state.get("timers", {})
+        with self._job_lock(job_folder_name):
+            metadata_path = self._metadata_path_for_job(job_folder_name)
+            had_existing_state = os.path.exists(metadata_path)
+            state = self.load_state(job_folder_name, create_if_missing=True, default_deployed=False)
+            was_pending = not bool(state.get("deployed", True))
+            now_dt = datetime.datetime.now(datetime.timezone.utc)
+            current_timers = state.get("timers", {})
 
-        state["deployed"] = False
-        state["parseReady"] = False
-        state["hiddenFromProduction"] = False
-        state["selectedMode"] = self.normalize_mode(state.get("selectedMode") or MODE_UNKNOWN)
-        state["modeDetection"] = {
-            "candidate": self.normalize_mode(detected_mode),
-            "source": self._mode_source(detection_source),
-            "detectedAt": self._now_iso(),
-        }
+            state["deployed"] = False
+            state["parseReady"] = False
+            state["hiddenFromProduction"] = False
+            state["selectedMode"] = self.normalize_mode(state.get("selectedMode") or MODE_UNKNOWN)
+            state["modeDetection"] = {
+                "candidate": self.normalize_mode(detected_mode),
+                "source": self._mode_source(detection_source),
+                "detectedAt": self._now_iso(),
+            }
 
-        # autoReleaseAt is operator-set only (see schedule_deploy); re-detecting an
-        # already-pending job must never touch it, so any explicit schedule survives.
-        if not had_existing_state or not was_pending or not current_timers.get("lastActionAt"):
-            current_timers["lastActionAt"] = now_dt.isoformat()
-        state["timers"] = current_timers
-        return self.save_state(job_folder_name, state)
+            # autoReleaseAt is operator-set only (see schedule_deploy); re-detecting an
+            # already-pending job must never touch it, so any explicit schedule survives.
+            if not had_existing_state or not was_pending or not current_timers.get("lastActionAt"):
+                current_timers["lastActionAt"] = now_dt.isoformat()
+            state["timers"] = current_timers
+            return self.save_state(job_folder_name, state)
 
     def mark_deployed(self, job_folder_name: str, selected_mode: Optional[str] = None) -> Dict:
         updates = {
@@ -422,38 +495,39 @@ def ensure_hidden_gate_for_folder(root_dir: str, folder_name: str) -> bool:
     if folder_name.startswith("."):
         return False
     manager = DeploymentGateManager(root_dir)
-    gate_path = manager._metadata_path_for_job(folder_name)
-    if os.path.exists(gate_path):
-        return False
-    now = DeploymentGateManager._now_iso()
-    state = {
-        "schemaVersion": 1,
-        "jobFolderName": folder_name,
-        "deployed": False,
-        "parseReady": False,
-        "hiddenFromProduction": False,
-        "selectedMode": MODE_UNKNOWN,
-        "modeDetection": {
-            "candidate": MODE_UNKNOWN,
-            "source": "AUTO_HIDDEN",
-            "detectedAt": now,
-        },
-        "timers": {
-            "retryAt": None,
-            "remindAt": None,
-            "autoReleaseAt": None,
-            "lastActionAt": None,
-        },
-        "createdAt": now,
-        "updatedAt": now,
-    }
-    try:
-        DeploymentGateManager._atomic_write_json(gate_path, state)
-        main_logger.info("Created hidden gate for unrecognized folder: %s", folder_name)
-        return True
-    except Exception as exc:
-        main_logger.warning("Failed to create hidden gate for %s: %s", folder_name, exc)
-        return False
+    with manager._job_lock(folder_name):
+        gate_path = manager._metadata_path_for_job(folder_name)
+        if os.path.exists(gate_path):
+            return False
+        now = DeploymentGateManager._now_iso()
+        state = {
+            "schemaVersion": 1,
+            "jobFolderName": folder_name,
+            "deployed": False,
+            "parseReady": False,
+            "hiddenFromProduction": False,
+            "selectedMode": MODE_UNKNOWN,
+            "modeDetection": {
+                "candidate": MODE_UNKNOWN,
+                "source": "AUTO_HIDDEN",
+                "detectedAt": now,
+            },
+            "timers": {
+                "retryAt": None,
+                "remindAt": None,
+                "autoReleaseAt": None,
+                "lastActionAt": None,
+            },
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        try:
+            manager._atomic_write_json(gate_path, state)
+            main_logger.info("Created hidden gate for unrecognized folder: %s", folder_name)
+            return True
+        except Exception as exc:
+            main_logger.warning("Failed to create hidden gate for %s: %s", folder_name, exc)
+            return False
 
 
 def ensure_hidden_gates_for_all_folders(root_dir: str) -> List[str]:
