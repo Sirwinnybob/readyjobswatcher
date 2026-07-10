@@ -464,6 +464,7 @@ def _consolidate_tracker(
     tracker_dir: Path,
     merge_actions: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]],
     load_tracker_actions: Callable[[Path], List[Dict[str, Any]]],
+    compact: bool = False,
 ) -> None:
     """Shared read-merge-write-delete pipeline for the CNC and hardwoods trackers.
 
@@ -531,11 +532,19 @@ def _consolidate_tracker(
         _atomic_write_json(tracker_dir / "consolidated.json", {"tabletId": "consolidated", "actions": consolidated_actions})
 
         _delete_unchanged_device_files(legacy_device_files)
+
+        if compact:
+            # CROSS-PROGRAM (METADATA_AUDIT.md R-01): safe only because this only runs from the
+            # after-hours end-of-day sweep (see scheduler.py's metadata_end_of_day_scheduler /
+            # process_metadata_end_of_day_once), when no tablet is actively appending. The
+            # mtime/size guard in _delete_unchanged_device_files still protects against a
+            # genuinely-anomalous late writer.
+            _delete_unchanged_device_files(ndjson_device_files)
     finally:
         _release_tracker_lock(tracker_dir)
 
 
-def consolidate_cnc_tracker(job_folder: Path):
+def consolidate_cnc_tracker(job_folder: Path, compact: bool = False):
     # CROSS-PROGRAM: the per-device <tabletId>.json files and events/<tabletId>.ndjson streams
     # here are PRODUCED by KKCSheetTracker tablets (ProgressStore.kt) and CONSUMED by this
     # watcher. This function merges them into consolidated.json. Legacy device files are deleted
@@ -550,6 +559,7 @@ def consolidate_cnc_tracker(job_folder: Path):
         job_folder / "CNC" / ".tracker",
         _merge_cnc_actions,
         lambda tracker_dir: load_cnc_tracker_actions(str(tracker_dir)),
+        compact=compact,
     )
 
 
@@ -636,11 +646,12 @@ def _merge_cnc_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return consolidated_actions
 
 
-def consolidate_hardwoods_tracker(job_folder: Path):
+def consolidate_hardwoods_tracker(job_folder: Path, compact: bool = False):
     _consolidate_tracker(
         job_folder / ".metadata" / "hardwoods" / ".tracker",
         _merge_hardwoods_actions,
         lambda tracker_dir: load_hardwoods_tracker_actions([str(tracker_dir)]),
+        compact=compact,
     )
 
 
@@ -869,6 +880,7 @@ def update_all_jobs_cache(
     archive_max_snapshots_per_job: Optional[int] = None,
     archive_daypart_limit: bool = False,
     force_rebuild: bool = False,
+    compact_tracker_events: bool = False,
 ) -> Dict[str, int]:
     scanned = scan_jobs(base_path)
     lineup_jobs = compute_lineup(base_path, scanned)
@@ -891,8 +903,8 @@ def update_all_jobs_cache(
         summary["processed"] += 1
         try:
             if consolidate_trackers:
-                consolidate_cnc_tracker(job_folder)
-                consolidate_hardwoods_tracker(job_folder)
+                consolidate_cnc_tracker(job_folder, compact=compact_tracker_events)
+                consolidate_hardwoods_tracker(job_folder, compact=compact_tracker_events)
 
             cache_path = job_folder / ".metadata" / "cache_static.json"
             needs_rebuild = force_rebuild or not cache_path.exists()
@@ -931,14 +943,15 @@ def refresh_single_job(
     archive_max_snapshots_per_job: Optional[int] = None,
     archive_daypart_limit: bool = False,
     consolidate_trackers: bool = False,
+    compact_tracker_events: bool = False,
 ) -> Dict[str, Any]:
     if not job_folder.is_dir():
         return {"skipped": "missing_job", "jobFolder": str(job_folder)}
     if not _read_deployed_flag(job_folder):
         return {"skipped": "not_deployed", "jobFolder": str(job_folder)}
     if consolidate_trackers:
-        consolidate_cnc_tracker(job_folder)
-        consolidate_hardwoods_tracker(job_folder)
+        consolidate_cnc_tracker(job_folder, compact=compact_tracker_events)
+        consolidate_hardwoods_tracker(job_folder, compact=compact_tracker_events)
     lineup_positions = {j["folderName"]: j["lineupPosition"] for j in compute_lineup(base_path, scan_jobs(base_path))}
     data = generate_static_cache(job_folder, job_folder.name, lineup_positions.get(job_folder.name))
     archive_result = None

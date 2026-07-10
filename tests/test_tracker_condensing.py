@@ -580,3 +580,103 @@ def test_consolidate_cnc_tracker_detects_uppercase_json_extension(tmp_path):
         a.get("file") == "123 - Maple.pdf" and a.get("page") == 1 and a.get("action") == "complete"
         for a in consolidated["actions"]
     )
+
+
+def test_compact_true_truncates_unchanged_ndjson_after_merge(tmp_path):
+    job = tmp_path / "Ready Jobs" / "123 - Test Job"
+    tracker_dir = job / "CNC" / ".tracker"
+    ndjson = tracker_dir / "events" / "tablet-a.ndjson"
+    ndjson.parent.mkdir(parents=True)
+    ndjson.write_text(
+        json.dumps(
+            {
+                "eventId": "e1",
+                "op": "set_complete_true",
+                "payload": {"file": "123 - Maple.pdf", "page": 1, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:00Z"},
+                "lamport": 1,
+                "wallTime": "2026-07-09T09:00:00Z",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    consolidate_cnc_tracker(job, compact=True)
+
+    consolidated = json.loads((tracker_dir / "consolidated.json").read_text(encoding="utf-8"))
+    assert any(a["action"] == "complete" for a in consolidated["actions"])
+    assert not ndjson.exists()
+
+
+def test_compact_false_never_touches_ndjson(tmp_path):
+    job = tmp_path / "Ready Jobs" / "123 - Test Job"
+    tracker_dir = job / "CNC" / ".tracker"
+    ndjson = tracker_dir / "events" / "tablet-a.ndjson"
+    ndjson.parent.mkdir(parents=True)
+    ndjson.write_text(
+        json.dumps(
+            {
+                "eventId": "e1",
+                "op": "set_complete_true",
+                "payload": {"file": "123 - Maple.pdf", "page": 1, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:00Z"},
+                "lamport": 1,
+                "wallTime": "2026-07-09T09:00:00Z",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    consolidate_cnc_tracker(job)  # compact defaults to False
+
+    assert ndjson.exists()
+
+
+def test_compact_true_skips_ndjson_that_changed_since_read(tmp_path, monkeypatch):
+    job = tmp_path / "Ready Jobs" / "123 - Test Job"
+    tracker_dir = job / "CNC" / ".tracker"
+    ndjson = tracker_dir / "events" / "tablet-a.ndjson"
+    ndjson.parent.mkdir(parents=True)
+    ndjson.write_text(
+        json.dumps(
+            {
+                "eventId": "e1",
+                "op": "set_complete_true",
+                "payload": {"file": "123 - Maple.pdf", "page": 1, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:00Z"},
+                "lamport": 1,
+                "wallTime": "2026-07-09T09:00:00Z",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    import ready_jobs_watcher.metadata_cache as metadata_cache_module
+    real_load = metadata_cache_module.load_cnc_tracker_actions
+
+    def slow_load(tracker_dir_str, **kwargs):
+        # Simulate a tablet appending a new line after this pass already stat'd the file
+        # but before the merge+delete step -- the "unchanged since read" guard must catch it.
+        ndjson.write_text(
+            ndjson.read_text(encoding="utf-8")
+            + json.dumps(
+                {
+                    "eventId": "e2",
+                    "op": "set_complete_true",
+                    "payload": {"file": "123 - Maple.pdf", "page": 2, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:01Z"},
+                    "lamport": 2,
+                    "wallTime": "2026-07-09T09:00:01Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return real_load(tracker_dir_str, **kwargs)
+
+    monkeypatch.setattr(metadata_cache_module, "load_cnc_tracker_actions", slow_load)
+
+    consolidate_cnc_tracker(job, compact=True)
+
+    assert ndjson.exists()
+    remaining = ndjson.read_text(encoding="utf-8")
+    assert "page\": 2" in remaining or '"page": 2' in remaining
