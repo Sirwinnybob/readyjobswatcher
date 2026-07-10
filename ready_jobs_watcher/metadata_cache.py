@@ -17,6 +17,7 @@ except Exception:  # pragma: no cover - dependency is optional for fallback page
 
 from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .metadata_snapshot import archive_job_metadata
+from .tracker_action_stream import load_cnc_tracker_actions, load_hardwoods_tracker_actions
 
 
 EMPTY_PROGRESS = {
@@ -459,7 +460,11 @@ def _release_tracker_lock(tracker_dir: Path) -> None:
         pass
 
 
-def _consolidate_tracker(tracker_dir: Path, merge_actions: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]) -> None:
+def _consolidate_tracker(
+    tracker_dir: Path,
+    merge_actions: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]],
+    load_tracker_actions: Callable[[Path], List[Dict[str, Any]]],
+) -> None:
     """Shared read-merge-write-delete pipeline for the CNC and hardwoods trackers.
 
     See the H-06 CROSS-PROGRAM comment above for why this whole sequence is wrapped in a
@@ -479,18 +484,7 @@ def _consolidate_tracker(tracker_dir: Path, merge_actions: Callable[[List[Dict[s
         return
 
     try:
-        actions = []
-        device_files = []
-
-        consolidated_file = tracker_dir / "consolidated.json"
-        if consolidated_file.exists():
-            try:
-                data = _read_json(consolidated_file, {})
-                if isinstance(data, dict) and "actions" in data:
-                    actions.extend(data["actions"])
-            except Exception:
-                pass
-
+        legacy_device_files: List[tuple] = []
         for entry in os.scandir(tracker_dir):
             if (
                 not entry.is_file()
@@ -501,35 +495,57 @@ def _consolidate_tracker(tracker_dir: Path, merge_actions: Callable[[List[Dict[s
                 continue
             try:
                 stat = entry.stat()
-                data = _read_json(Path(entry.path), {})
-                if isinstance(data, dict) and "actions" in data:
-                    actions.extend(data["actions"])
-                    device_files.append((Path(entry.path), stat.st_mtime, stat.st_size))
-            except Exception:
+                legacy_device_files.append((Path(entry.path), stat.st_mtime, stat.st_size))
+            except OSError:
                 pass
 
-        # If no new device files exist, do not rewrite or delete anything
-        if not device_files:
+        events_dir = tracker_dir / "events"
+        ndjson_device_files: List[tuple] = []
+        if events_dir.is_dir():
+            for entry in os.scandir(events_dir):
+                if not entry.is_file() or not entry.name.lower().endswith(".ndjson") or ".sync-conflict-" in entry.name.lower():
+                    continue
+                try:
+                    stat = entry.stat()
+                    ndjson_device_files.append((Path(entry.path), stat.st_mtime, stat.st_size))
+                except OSError:
+                    pass
+
+        # CROSS-PROGRAM (METADATA_AUDIT.md R-01): merge input comes from the same union reader
+        # tracker_bad_parts.py/remake_candidates_indexer.py already use (ndjson events + legacy
+        # <tabletId>.json + consolidated.json itself, since consolidated.json is just one more
+        # *.json file with an "actions" key). Only legacy device files are deleted here; ndjson
+        # event files are only ever deleted by the after-hours compaction pass (added in a later
+        # task) because each ndjson file has exactly one writer (the owning tablet) and truncating
+        # it mid-day would race that tablet's live append.
+        if not legacy_device_files and not ndjson_device_files:
             return
 
+        actions = load_tracker_actions(tracker_dir)
         consolidated_actions = merge_actions(actions)
         _atomic_write_json(tracker_dir / "consolidated.json", {"tabletId": "consolidated", "actions": consolidated_actions})
-        _delete_unchanged_device_files(device_files)
+
+        _delete_unchanged_device_files(legacy_device_files)
     finally:
         _release_tracker_lock(tracker_dir)
 
 
 def consolidate_cnc_tracker(job_folder: Path):
-    # CROSS-PROGRAM: the per-device <tabletId>.json files here are PRODUCED by KKCSheetTracker
-    # tablets (ProgressStore.kt) and CONSUMED by this watcher. This function merges them into
-    # consolidated.json and then DELETES the device files (see _delete_unchanged_device_files).
+    # CROSS-PROGRAM: the per-device <tabletId>.json files and events/<tabletId>.ndjson streams
+    # here are PRODUCED by KKCSheetTracker tablets (ProgressStore.kt) and CONSUMED by this
+    # watcher. This function merges them into consolidated.json. Legacy device files are deleted
+    # after a successful merge; ndjson event files are left alone (compaction added in a later task).
     # FIXED (METADATA_AUDIT.md C-01/M-06): the merge tracks, per (file, page, fingerprint, part),
     # whether the part is currently bad and whether it has been submitted for the engineer alert
     # (tracker_bad_parts.py:448 requires a `bad_part_submitted` action to fire). Both `bad_part` and
     # `bad_part_submitted` are re-emitted into consolidated.json with their own original timestamps
     # (not a shared/fallback timestamp), and `unbad_part` resets the submitted flag, mirroring the
     # reactivation semantics in tracker_bad_parts.py so the alert survives device-file deletion.
-    _consolidate_tracker(job_folder / "CNC" / ".tracker", _merge_cnc_actions)
+    _consolidate_tracker(
+        job_folder / "CNC" / ".tracker",
+        _merge_cnc_actions,
+        lambda tracker_dir: load_cnc_tracker_actions(str(tracker_dir)),
+    )
 
 
 def _merge_cnc_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -616,7 +632,11 @@ def _merge_cnc_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def consolidate_hardwoods_tracker(job_folder: Path):
-    _consolidate_tracker(job_folder / ".metadata" / "hardwoods" / ".tracker", _merge_hardwoods_actions)
+    _consolidate_tracker(
+        job_folder / ".metadata" / "hardwoods" / ".tracker",
+        _merge_hardwoods_actions,
+        lambda tracker_dir: load_hardwoods_tracker_actions([str(tracker_dir)]),
+    )
 
 
 def _merge_hardwoods_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -527,3 +527,30 @@ def test_hardwoods_consolidation_uses_row_id_as_totals_key_fallback(tmp_path):
     assert totals_action["action"] == "set_totals_rip10_done_count"
     assert totals_action["value"] == 4
     assert totals_action["timestamp"] == "2026-06-09T10:00:00Z"
+
+
+def test_consolidate_cnc_tracker_merges_ndjson_events(tmp_path):
+    job = tmp_path / "Ready Jobs" / "123 - Test Job"
+    tracker_dir = job / "CNC" / ".tracker"
+    ndjson = tracker_dir / "events" / "tablet-a.ndjson"
+    ndjson.parent.mkdir(parents=True)
+    ndjson.write_text(
+        json.dumps(
+            {
+                "eventId": "e1",
+                "op": "set_complete_true",
+                "payload": {"file": "123 - Maple.pdf", "page": 1, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:00Z"},
+                "lamport": 1,
+                "wallTime": "2026-07-09T09:00:00Z",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    consolidate_cnc_tracker(job)
+
+    consolidated = json.loads((tracker_dir / "consolidated.json").read_text(encoding="utf-8"))
+    assert {"file": "123 - Maple.pdf", "page": 1, "action": "complete", "timestamp": "2026-07-09T09:00:00Z", "fileFingerprint": "fp1"} in consolidated["actions"]
+    # ndjson source file must survive the daytime pass (no compaction in this task)
+    assert ndjson.exists()
