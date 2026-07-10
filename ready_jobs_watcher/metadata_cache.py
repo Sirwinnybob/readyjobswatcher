@@ -521,9 +521,9 @@ def _consolidate_tracker(
         # tracker_bad_parts.py/remake_candidates_indexer.py already use (ndjson events + legacy
         # <tabletId>.json + consolidated.json itself, since consolidated.json is just one more
         # *.json file with an "actions" key). Only legacy device files are deleted here; ndjson
-        # event files are only ever deleted by the after-hours compaction pass (added in a later
-        # task) because each ndjson file has exactly one writer (the owning tablet) and truncating
-        # it mid-day would race that tablet's live append.
+        # event files are only deleted when compact=True (the after-hours compaction pass, which
+        # the end-of-day sweep enables -- wired in Task 4) because each ndjson file has exactly one
+        # writer (the owning tablet) and truncating it mid-day would race that tablet's live append.
         if not legacy_device_files and not ndjson_device_files:
             return
 
@@ -548,7 +548,8 @@ def consolidate_cnc_tracker(job_folder: Path, compact: bool = False):
     # CROSS-PROGRAM: the per-device <tabletId>.json files and events/<tabletId>.ndjson streams
     # here are PRODUCED by KKCSheetTracker tablets (ProgressStore.kt) and CONSUMED by this
     # watcher. This function merges them into consolidated.json. Legacy device files are deleted
-    # after a successful merge; ndjson event files are left alone (compaction added in a later task).
+    # after a successful merge; ndjson event files are left alone unless compact=True (only the
+    # after-hours sweep passes that, wired in Task 4).
     # FIXED (METADATA_AUDIT.md C-01/M-06): the merge tracks, per (file, page, fingerprint, part),
     # whether the part is currently bad and whether it has been submitted for the engineer alert
     # (tracker_bad_parts.py:448 requires a `bad_part_submitted` action to fire). Both `bad_part` and
