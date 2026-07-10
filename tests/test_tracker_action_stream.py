@@ -136,3 +136,45 @@ def test_load_cnc_tracker_actions_merges_migrated_and_legacy_sources(tmp_path):
 
     assert len(actions) == 2
     assert [action["file"] for action in actions] == ["A.pdf", "B.pdf"]
+
+
+def test_load_cnc_tracker_actions_maps_bad_part_submitted_and_view_and_renested(tmp_path):
+    tracker_dir = tmp_path / "job" / "CNC" / ".tracker"
+    ndjson = tracker_dir / "events" / "tablet-a.ndjson"
+    rows = [
+        {
+            "eventId": "e1",
+            "op": "view",
+            "payload": {"file": "A.pdf", "page": 1, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:00Z"},
+            "lamport": 1,
+            "wallTime": "2026-07-09T09:00:00Z",
+        },
+        {
+            "eventId": "e2",
+            "op": "set_bad_part_true",
+            "payload": {"file": "A.pdf", "page": 1, "part": 3, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:01Z"},
+            "lamport": 2,
+            "wallTime": "2026-07-09T09:00:01Z",
+        },
+        {
+            "eventId": "e3",
+            "op": "bad_part_submitted",
+            "payload": {"file": "A.pdf", "page": 1, "part": 3, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:02Z"},
+            "lamport": 3,
+            "wallTime": "2026-07-09T09:00:02Z",
+        },
+        {
+            "eventId": "e4",
+            "op": "set_skipped_true",
+            "payload": {"file": "A.pdf", "page": 5, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:03Z", "reNested": True},
+            "lamport": 4,
+            "wallTime": "2026-07-09T09:00:03Z",
+        },
+    ]
+    _write(ndjson, "\n".join(json.dumps(row) for row in rows) + "\n")
+
+    actions = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert [a["action"] for a in actions] == ["view", "bad_part", "bad_part_submitted", "skip"]
+    assert actions[2]["part"] == 3
+    assert actions[3]["reNested"] is True

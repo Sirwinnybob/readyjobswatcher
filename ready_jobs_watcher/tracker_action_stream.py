@@ -19,6 +19,8 @@ _CNC_OP_MAP = {
     "set_skipped_false": "unskip",
     "set_bad_part_true": "bad_part",
     "set_bad_part_false": "unbad_part",
+    "bad_part_submitted": "bad_part_submitted",
+    "view": "view",
 }
 
 _HARDWOODS_OPS = {
@@ -254,6 +256,7 @@ def _map_cnc_event_to_action(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     timestamp = str(payload.get("timestamp", "") or "")
     if not timestamp:
         timestamp = str(event.get("wallTime", "") or "")
+    re_nested = payload.get("reNested")
 
     if not pdf or page is None:
         return None
@@ -269,6 +272,8 @@ def _map_cnc_event_to_action(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
     if part is not None:
         out["part"] = part
+    if isinstance(re_nested, bool):
+        out["reNested"] = re_nested
     return out
 
 
