@@ -484,12 +484,17 @@ def _consolidate_tracker(
         return
 
     try:
+        # Filter MUST match _load_legacy_json_actions in tracker_action_stream.py exactly:
+        # only detect/delete files the loader would actually read, or we get silent data loss
+        # (delete a file the loader skipped) or missed consolidation (loader reads a file this
+        # scan can't see). Case-insensitive .json, skip dotfiles, consolidated.json, sync-conflicts.
         legacy_device_files: List[tuple] = []
         for entry in os.scandir(tracker_dir):
             if (
                 not entry.is_file()
-                or not entry.name.endswith(".json")
-                or entry.name == "consolidated.json"
+                or not entry.name.lower().endswith(".json")
+                or entry.name.startswith(".")
+                or entry.name.lower() == "consolidated.json"
                 or ".sync-conflict-" in entry.name.lower()
             ):
                 continue

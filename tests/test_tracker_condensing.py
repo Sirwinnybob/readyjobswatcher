@@ -554,3 +554,29 @@ def test_consolidate_cnc_tracker_merges_ndjson_events(tmp_path):
     assert {"file": "123 - Maple.pdf", "page": 1, "action": "complete", "timestamp": "2026-07-09T09:00:00Z", "fileFingerprint": "fp1"} in consolidated["actions"]
     # ndjson source file must survive the daytime pass (no compaction in this task)
     assert ndjson.exists()
+
+
+def test_consolidate_cnc_tracker_detects_uppercase_json_extension(tmp_path):
+    # The detect/delete scan must use the SAME filter as the loader (_load_legacy_json_actions,
+    # case-insensitive .json). An uppercase-extension file is read+merged by the loader; if the
+    # scan were case-sensitive it would be invisible and, as the only device file, trigger the
+    # early-return so its actions never reach consolidated.json.
+    job = tmp_path / "Ready Jobs" / "123 - Test Job"
+    tracker_dir = job / "CNC" / ".tracker"
+    _write_json(
+        tracker_dir / "tabletUP.JSON",
+        {
+            "tabletId": "tabletUP",
+            "actions": [
+                {"file": "123 - Maple.pdf", "page": 1, "action": "complete", "timestamp": "2026-06-09T10:00:00Z"},
+            ],
+        },
+    )
+
+    consolidate_cnc_tracker(job)
+
+    consolidated = json.loads((tracker_dir / "consolidated.json").read_text(encoding="utf-8"))
+    assert any(
+        a.get("file") == "123 - Maple.pdf" and a.get("page") == 1 and a.get("action") == "complete"
+        for a in consolidated["actions"]
+    )
