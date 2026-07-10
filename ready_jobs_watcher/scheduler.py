@@ -292,8 +292,10 @@ def stats_logger_scheduler(stop_event: threading.Event) -> None:
 
 
 def process_metadata_end_of_day_once(metadata_refresh_service: "MetadataRefreshService") -> dict:
-    """Run the metadata cache/archive daily sweep once."""
-    return metadata_refresh_service.run_scheduled_sweep(consolidate_trackers=True)
+    """Run the metadata cache/archive daily sweep once. Also compacts tablet ndjson tracker-event
+    streams now that it's safe to do so (after hours, no tablet actively writing) -- see
+    METADATA_AUDIT.md R-01."""
+    return metadata_refresh_service.run_scheduled_sweep(consolidate_trackers=True, compact_tracker_events=True)
 
 
 def metadata_end_of_day_scheduler(config: Config, stop_event: threading.Event, metadata_refresh_service: "MetadataRefreshService") -> None:

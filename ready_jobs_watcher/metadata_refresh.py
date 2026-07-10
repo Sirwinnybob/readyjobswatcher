@@ -170,10 +170,11 @@ class MetadataRefreshService:
         self._prune_orphan_archives()
         return summary
 
-    def run_scheduled_sweep(self, *, consolidate_trackers: bool = True) -> dict:
+    def run_scheduled_sweep(self, *, consolidate_trackers: bool = True, compact_tracker_events: bool = False) -> dict:
         summary = update_all_jobs_cache(
             self.root_dir,
             consolidate_trackers=consolidate_trackers,
+            compact_tracker_events=compact_tracker_events,
             archive=True,
             archive_root=self.archive_root,
             archive_retention_days=self.archive_retention_days,

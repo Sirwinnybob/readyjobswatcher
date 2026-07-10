@@ -5,8 +5,8 @@ class FakeMetadataRefreshService:
     def __init__(self):
         self.calls = []
 
-    def run_scheduled_sweep(self, *, consolidate_trackers=True):
-        self.calls.append(consolidate_trackers)
+    def run_scheduled_sweep(self, *, consolidate_trackers=True, compact_tracker_events=False):
+        self.calls.append((consolidate_trackers, compact_tracker_events))
         return {"processed": 2, "rebuilt": 1, "archived": 2, "errors": 0}
 
 
@@ -15,5 +15,5 @@ def test_process_metadata_end_of_day_once_runs_condensing_sweep():
 
     result = process_metadata_end_of_day_once(service)
 
-    assert service.calls == [True]
+    assert service.calls == [(True, True)]
     assert result["rebuilt"] == 1

@@ -106,3 +106,61 @@ def test_tracker_reason_refresh_consolidates_trackers(monkeypatch, tmp_path):
 
     assert calls
     assert calls[0][2]["consolidate_trackers"] is True
+
+
+def test_process_metadata_end_of_day_once_compacts_tracker_events(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_update_all_jobs_cache(base_path, **kwargs):
+        calls.append(kwargs)
+        return {"processed": 0, "rebuilt": 0, "archived": 0, "errors": 0}
+
+    monkeypatch.setattr("ready_jobs_watcher.metadata_refresh.update_all_jobs_cache", fake_update_all_jobs_cache)
+    config = type(
+        "Config",
+        (),
+        {
+            "ROOT_DIR": str(tmp_path),
+            "metadata_snapshot_enabled": False,
+            "metadata_snapshot_retention_days": 30,
+            "metadata_snapshot_max_per_job": 3,
+            "metadata_snapshot_daypart_limit": True,
+            "metadata_cache_debounce_seconds": 0,
+        },
+    )()
+    service = MetadataRefreshService(config)
+
+    from ready_jobs_watcher.scheduler import process_metadata_end_of_day_once
+    process_metadata_end_of_day_once(service)
+
+    assert calls
+    assert calls[0]["consolidate_trackers"] is True
+    assert calls[0]["compact_tracker_events"] is True
+
+
+def test_run_scheduled_sweep_defaults_compact_to_false(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_update_all_jobs_cache(base_path, **kwargs):
+        calls.append(kwargs)
+        return {"processed": 0, "rebuilt": 0, "archived": 0, "errors": 0}
+
+    monkeypatch.setattr("ready_jobs_watcher.metadata_refresh.update_all_jobs_cache", fake_update_all_jobs_cache)
+    config = type(
+        "Config",
+        (),
+        {
+            "ROOT_DIR": str(tmp_path),
+            "metadata_snapshot_enabled": False,
+            "metadata_snapshot_retention_days": 30,
+            "metadata_snapshot_max_per_job": 3,
+            "metadata_snapshot_daypart_limit": True,
+            "metadata_cache_debounce_seconds": 0,
+        },
+    )()
+    service = MetadataRefreshService(config)
+
+    service.run_scheduled_sweep(consolidate_trackers=True)
+
+    assert calls
+    assert calls[0]["compact_tracker_events"] is False
