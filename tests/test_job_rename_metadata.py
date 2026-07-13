@@ -1,6 +1,19 @@
 import json
 
 from ready_jobs_watcher.job_rename import rename_ready_job
+from ready_jobs_watcher.job_rename import apply_job_number_prefix
+
+
+def test_apply_job_number_prefix_swaps_leading_number():
+    assert apply_job_number_prefix("456", "123 - Assembly Sheets.pdf") == "456 - Assembly Sheets.pdf"
+
+
+def test_apply_job_number_prefix_prepends_when_no_separator():
+    assert apply_job_number_prefix("456", "Assembly Sheets.pdf") == "456 - Assembly Sheets.pdf"
+
+
+def test_apply_job_number_prefix_is_noop_when_already_correct():
+    assert apply_job_number_prefix("456", "456 - Assembly Sheets.pdf") == "456 - Assembly Sheets.pdf"
 
 
 def _write_json(path, payload):

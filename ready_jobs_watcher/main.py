@@ -631,12 +631,8 @@ class Application:
 
     @staticmethod
     def _target_filename_for_job(job_num: str, original_name: str) -> str:
-        if " - " in original_name:
-            prefix, rest = original_name.split(" - ", 1)
-            if prefix == job_num:
-                return original_name
-            return job_num + " - " + rest
-        return job_num + " - " + original_name
+        from .job_rename import apply_job_number_prefix
+        return apply_job_number_prefix(job_num, original_name)
 
     @staticmethod
     def _retarget_path_for_job_rename(

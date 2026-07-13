@@ -14,6 +14,19 @@ JOB_NUMBER_KEYS = {"jobNumber", "job_number", "jobNum", "job_num"}
 ROOT_METADATA_FILES = ("production_order.json", "job_board.json")
 
 
+def apply_job_number_prefix(job_num: str, original_name: str) -> str:
+    """Return `original_name` with its leading "<num> - " prefix swapped for `job_num`.
+
+    If `original_name` has no " - " separator, `job_num` is prepended instead.
+    """
+    if " - " in original_name:
+        prefix, rest = original_name.split(" - ", 1)
+        if prefix == job_num:
+            return original_name
+        return job_num + " - " + rest
+    return job_num + " - " + original_name
+
+
 @dataclass(frozen=True)
 class JobRenameResult:
     old_name: str
