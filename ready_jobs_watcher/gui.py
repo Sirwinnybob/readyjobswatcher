@@ -805,6 +805,7 @@ class SettingsWindow(QWidget):
             "PENDING": (QColor("#FEF3C7"), QColor("#92400E")),
             "PARSING": (QColor("#DBEAFE"), QColor("#1E40AF")),
             "ACTIVE":  (QColor("#D1FAE5"), QColor("#065F46")),
+            "DUPLICATE": (QColor("#FEE2E2"), QColor("#991B1B")),
         }
         hidden_style = (QColor("#E2E8F0"), QColor("#334155"))
 
@@ -812,14 +813,21 @@ class SettingsWindow(QWidget):
         for row_index, row in enumerate(rows):
             mode_detection = row.get("modeDetection", {}) if isinstance(row.get("modeDetection"), dict) else {}
             timers = row.get("timers", {}) if isinstance(row.get("timers"), dict) else {}
-            state_name = derive_state(row)
-            is_hidden_from_production = bool(row.get("hiddenFromProduction", False))
-            if is_hidden_from_production:
-                bg, fg = hidden_style
-                display_state = f"{state_name} (Hidden)"
+            duplicate_marker = row.get("duplicateSuspect")
+            if isinstance(duplicate_marker, dict):
+                state_name = "DUPLICATE"
+                collided_with = str(duplicate_marker.get("suspectedDuplicateOf") or "?")
+                display_state = f"DUPLICATE (of {collided_with})"
+                bg, fg = state_styles["DUPLICATE"]
             else:
-                bg, fg = state_styles.get(state_name, (None, None))
-                display_state = state_name
+                state_name = derive_state(row)
+                is_hidden_from_production = bool(row.get("hiddenFromProduction", False))
+                if is_hidden_from_production:
+                    bg, fg = hidden_style
+                    display_state = f"{state_name} (Hidden)"
+                else:
+                    bg, fg = state_styles.get(state_name, (None, None))
+                    display_state = state_name
 
             values = [
                 str(row.get("jobFolderName", "")),

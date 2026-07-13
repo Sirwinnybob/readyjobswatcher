@@ -364,7 +364,17 @@ class Application:
                 )
 
     def get_jobs_dashboard_rows(self):
-        return self.deployment_gate.list_job_states()
+        from .duplicate_job_guard import read_duplicate_suspect_marker
+
+        rows = self.deployment_gate.list_job_states()
+        for row in rows:
+            job_folder_name = str(row.get("jobFolderName", "")).strip()
+            if not job_folder_name:
+                continue
+            marker = read_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name)
+            if marker is not None:
+                row["duplicateSuspect"] = marker
+        return rows
 
     def deploy_pending_job(self, job_folder_name: str, selected_mode: str):
         self.deployment_gate.mark_deployed(job_folder_name, selected_mode=selected_mode)

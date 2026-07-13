@@ -102,3 +102,26 @@ def test_new_job_folder_without_collision_is_adopted_normally(tmp_path):
     assert (job / ".metadata" / "deployment_gate.json").exists()
     assert read_duplicate_suspect_marker(str(root), job.name) is None
     assert app._pending_job_prompts == [job.name]
+
+
+def test_get_jobs_dashboard_rows_tags_duplicate_suspects(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    existing = root / "502 - HARTFORD McCASLIN REFACE"
+    duplicate = root / "502 - HARTFORD MCCASLIN REFACE COPY"
+    app = _minimal_app(root)
+
+    # existing must be adopted (gate created) before duplicate appears on disk,
+    # matching real watcher chronology. find_job_number_collision scans whatever
+    # is on disk at call time with no notion of order, so if both folders already
+    # existed when `existing` were processed, it would itself be flagged as a
+    # collision of `duplicate` (symmetric false positive) -- not the behavior
+    # under test here.
+    existing.mkdir(parents=True)
+    app.on_new_job_folder_detected(str(existing))
+
+    duplicate.mkdir(parents=True)
+    app.on_new_job_folder_detected(str(duplicate))
+
+    rows = {row["jobFolderName"]: row for row in app.get_jobs_dashboard_rows()}
+    assert "duplicateSuspect" not in rows[existing.name]
+    assert rows[duplicate.name]["duplicateSuspect"]["suspectedDuplicateOf"] == existing.name
