@@ -200,7 +200,6 @@ class JobProcessor:
         Returns:
             Optional[str]: The extracted job number if matched, otherwise None.
         """
-        logging.debug(f"Extracting job number from {folder_name}")
         match = re.match(r"^(\d+-\d+|\d+[a-zA-Z]?)", folder_name)
         if match:
             return match.group(1)
@@ -219,7 +218,6 @@ class JobProcessor:
         """
         folder_name = os.path.basename(folder_path)
         job_num = JobProcessor.extract_job_number(folder_name)
-        logging.debug(f"Checking folder: {folder_path}, job_num: {job_num}")
         return job_num is not None
 
     def process_file(self, file_path: str, job_num: str, dir_path: str):

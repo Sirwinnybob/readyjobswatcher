@@ -61,7 +61,6 @@ def is_hidden(folder_path):
     Returns:
         bool: True if the hidden attribute is set, False otherwise.
     """
-    logging.debug(f"Checking if hidden: {folder_path}")
     try:
         attrs = ctypes.windll.kernel32.GetFileAttributesW(folder_path)
         return attrs != -1 and (attrs & 0x2) != 0

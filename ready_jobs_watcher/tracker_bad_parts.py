@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .config import BASE_DATA_DIR, Config
-from .file_handler import JobProcessor
+from .file_handler import JobProcessor, should_ignore_folder
 from .tracker_action_stream import load_cnc_tracker_actions
 
 badparts_logger = logging.getLogger("badparts")
@@ -165,6 +165,8 @@ class TrackerBadPartsMonitor:
             with os.scandir(root_dir) as it:
                 for entry in it:
                     if not entry.is_dir():
+                        continue
+                    if entry.name.startswith(".") or should_ignore_folder(entry.name):
                         continue
                     job_folder_path = entry.path
                     if JobProcessor.is_job_folder(job_folder_path):
