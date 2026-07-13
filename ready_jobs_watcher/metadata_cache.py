@@ -5,6 +5,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import time
 from math import ceil
 from pathlib import Path
@@ -506,40 +507,65 @@ def _consolidate_tracker(
                 pass
 
         events_dir = tracker_dir / "events"
-        ndjson_device_files: List[tuple] = []
+        ndjson_paths: List[Path] = []
         if events_dir.is_dir():
             for entry in os.scandir(events_dir):
                 if not entry.is_file() or not entry.name.lower().endswith(".ndjson") or ".sync-conflict-" in entry.name.lower():
                     continue
-                try:
-                    stat = entry.stat()
-                    ndjson_device_files.append((Path(entry.path), stat.st_mtime, stat.st_size))
-                except OSError:
-                    pass
+                ndjson_paths.append(Path(entry.path))
 
         # CROSS-PROGRAM (METADATA_AUDIT.md R-01): merge input comes from the same union reader
         # tracker_bad_parts.py/remake_candidates_indexer.py already use (ndjson events + legacy
         # <tabletId>.json + consolidated.json itself, since consolidated.json is just one more
         # *.json file with an "actions" key). Only legacy device files are deleted here; ndjson
-        # event files are only deleted when compact=True (the after-hours compaction pass, which
-        # the end-of-day sweep enables -- wired in Task 4) because each ndjson file has exactly one
-        # writer (the owning tablet) and truncating it mid-day would race that tablet's live append.
-        if not legacy_device_files and not ndjson_device_files:
+        # event files are only rotated+removed when compact=True (the after-hours compaction pass,
+        # wired via the end-of-day sweep).
+        if not legacy_device_files and not ndjson_paths:
             return
 
-        actions = load_tracker_actions(tracker_dir)
-        consolidated_actions = merge_actions(actions)
-        _atomic_write_json(tracker_dir / "consolidated.json", {"tabletId": "consolidated", "actions": consolidated_actions})
+        # AUD-04: fix the late-append deletion race. The old path stat()'d each ndjson stream then
+        # unlink()'d it — a tablet append landing between the stat and the unlink (or between the
+        # earlier read and the unlink) was deleted without ever being consolidated. Instead, when
+        # compacting we ATOMICALLY ROTATE each active stream into a hidden sibling dir BEFORE
+        # reading, consolidate the rotated snapshot, and only then drop it. Any append after the
+        # rotation lands in a fresh events/<tablet>.ndjson (the rotated inode/name is gone), so it
+        # survives and is consolidated on the next pass — it can never be silently deleted.
+        rotated_dir: Optional[Path] = None
+        if compact and ndjson_paths:
+            rotated_dir = tracker_dir / f".compacting-{os.getpid()}-{time.time_ns()}"
+            (rotated_dir / "events").mkdir(parents=True, exist_ok=True)
+            for src in ndjson_paths:
+                dest = rotated_dir / "events" / src.name
+                try:
+                    os.replace(src, dest)  # atomic within the tracker filesystem
+                except OSError:
+                    # Could not rotate this stream (e.g. held open) — leave it in place. It is
+                    # still read via the tracker_dir load below and simply not dropped this pass.
+                    pass
 
-        _delete_unchanged_device_files(legacy_device_files)
+        try:
+            # tracker_dir load excludes the hidden rotated dir (dot-prefixed, skipped by the
+            # active-file predicate); add the rotated snapshot back so the merged input equals
+            # exactly what a single pre-rotation read would have seen.
+            actions = load_tracker_actions(tracker_dir)
+            if rotated_dir is not None:
+                actions = actions + load_tracker_actions(rotated_dir)
 
-        if compact:
-            # CROSS-PROGRAM (METADATA_AUDIT.md R-01): safe only because this only runs from the
-            # after-hours end-of-day sweep (see scheduler.py's metadata_end_of_day_scheduler /
-            # process_metadata_end_of_day_once), when no tablet is actively appending. The
-            # mtime/size guard in _delete_unchanged_device_files still protects against a
-            # genuinely-anomalous late writer.
-            _delete_unchanged_device_files(ndjson_device_files)
+            consolidated_actions = merge_actions(actions)
+            _atomic_write_json(tracker_dir / "consolidated.json", {"tabletId": "consolidated", "actions": consolidated_actions})
+
+            _delete_unchanged_device_files(legacy_device_files)
+
+            if rotated_dir is not None:
+                # The rotated events are now durably captured in consolidated.json — drop them.
+                shutil.rmtree(rotated_dir, ignore_errors=True)
+                rotated_dir = None
+        finally:
+            if rotated_dir is not None:
+                # Consolidation failed before the rotated snapshot was persisted — move the
+                # streams back so no event is orphaned/lost, then remove the temp dir.
+                _restore_rotated_streams(rotated_dir, events_dir)
+                shutil.rmtree(rotated_dir, ignore_errors=True)
     finally:
         _release_tracker_lock(tracker_dir)
 
@@ -787,6 +813,36 @@ def _delete_unchanged_device_files(device_files):
                 stat = path.stat()
                 if stat.st_mtime == mtime and stat.st_size == size:
                     path.unlink()
+        except Exception:
+            pass
+
+
+def _restore_rotated_streams(rotated_dir: Path, events_dir: Path) -> None:
+    """AUD-04: move rotated ndjson streams back into events/ if consolidation failed before the
+    rotated snapshot was persisted, so no event is orphaned in the temp dir. If a stream with the
+    same name was recreated by a late append, append the rotated lines onto it rather than
+    clobbering the newer file."""
+    rotated_events = rotated_dir / "events"
+    if not rotated_events.is_dir():
+        return
+    events_dir.mkdir(parents=True, exist_ok=True)
+    for entry in os.scandir(rotated_events):
+        if not entry.is_file():
+            continue
+        src = Path(entry.path)
+        dest = events_dir / src.name
+        try:
+            if not dest.exists():
+                os.replace(src, dest)
+            else:
+                # A fresh stream was created after rotation — merge the rotated lines back in.
+                with open(src, "r", encoding="utf-8") as rf:
+                    rotated_text = rf.read()
+                with open(dest, "a", encoding="utf-8") as df:
+                    if rotated_text and not rotated_text.startswith("\n"):
+                        df.write("\n")
+                    df.write(rotated_text)
+                src.unlink()
         except Exception:
             pass
 

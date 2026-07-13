@@ -632,7 +632,11 @@ def test_compact_false_never_touches_ndjson(tmp_path):
     assert ndjson.exists()
 
 
-def test_compact_true_skips_ndjson_that_changed_since_read(tmp_path, monkeypatch):
+def test_compact_true_late_append_survives_rotation(tmp_path, monkeypatch):
+    # AUD-04: an append landing DURING compaction (after the stream is atomically rotated for
+    # consolidation) must not be lost. The old stat-then-unlink path could delete it; the
+    # rotation path sends the late append to a fresh events/<tablet>.ndjson that survives and is
+    # consolidated exactly once.
     job = tmp_path / "Ready Jobs" / "123 - Test Job"
     tracker_dir = job / "CNC" / ".tracker"
     ndjson = tracker_dir / "events" / "tablet-a.ndjson"
@@ -653,30 +657,39 @@ def test_compact_true_skips_ndjson_that_changed_since_read(tmp_path, monkeypatch
 
     import ready_jobs_watcher.metadata_cache as metadata_cache_module
     real_load = metadata_cache_module.load_cnc_tracker_actions
+    injected = {"done": False}
 
     def slow_load(tracker_dir_str, **kwargs):
-        # Simulate a tablet appending a new line after this pass already stat'd the file
-        # but before the merge+delete step -- the "unchanged since read" guard must catch it.
-        ndjson.write_text(
-            ndjson.read_text(encoding="utf-8")
-            + json.dumps(
-                {
-                    "eventId": "e2",
-                    "op": "set_complete_true",
-                    "payload": {"file": "123 - Maple.pdf", "page": 2, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:01Z"},
-                    "lamport": 2,
-                    "wallTime": "2026-07-09T09:00:01Z",
-                }
+        # First call is the tracker_dir read (after rotation). Simulate the owning tablet
+        # appending a NEW event to a fresh stream at the original path — exactly what happens
+        # when the rotated inode/name is gone and append-mode recreates the file.
+        if not injected["done"]:
+            injected["done"] = True
+            ndjson.parent.mkdir(parents=True, exist_ok=True)
+            ndjson.write_text(
+                json.dumps(
+                    {
+                        "eventId": "e2",
+                        "op": "set_complete_true",
+                        "payload": {"file": "123 - Maple.pdf", "page": 2, "fileFingerprint": "fp1", "timestamp": "2026-07-09T09:00:01Z"},
+                        "lamport": 2,
+                        "wallTime": "2026-07-09T09:00:01Z",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
         return real_load(tracker_dir_str, **kwargs)
 
     monkeypatch.setattr(metadata_cache_module, "load_cnc_tracker_actions", slow_load)
 
     consolidate_cnc_tracker(job, compact=True)
 
+    consolidated = json.loads((tracker_dir / "consolidated.json").read_text(encoding="utf-8"))
+    complete_pages = [a.get("page") for a in consolidated["actions"] if a.get("action") == "complete"]
+    # Both the rotated event (page 1) and the late append (page 2) survive, each exactly once.
+    assert sorted(complete_pages) == [1, 2]
+    # The late-append stream is retained (not deleted) for the next pass.
     assert ndjson.exists()
-    remaining = ndjson.read_text(encoding="utf-8")
-    assert "page\": 2" in remaining or '"page": 2' in remaining
+    # The rotation temp dir is cleaned up.
+    assert not any(p.name.startswith(".compacting-") for p in tracker_dir.iterdir())
