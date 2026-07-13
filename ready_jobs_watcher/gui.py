@@ -864,6 +864,11 @@ class SettingsWindow(QWidget):
         job_folder_name = self._selected_job_folder_name()
         if not job_folder_name:
             return
+        from .duplicate_job_guard import read_duplicate_suspect_marker
+        marker = read_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name)
+        if marker is not None:
+            self._show_duplicate_job_dialog(job_folder_name, marker)
+            return
         self._show_pending_job_prompt_dialog(job_folder_name)
 
     def _get_job_row_by_name(self, job_folder_name: str) -> Optional[Dict]:
@@ -873,6 +878,76 @@ class SettingsWindow(QWidget):
         if not name:
             return None
         return self.app_instance.deployment_gate.load_state(name)
+
+    def _show_duplicate_job_dialog(self, job_folder_name: str, marker: dict):
+        collided_with = str(marker.get("suspectedDuplicateOf") or "unknown job")
+        detected_at = str(marker.get("detectedAt") or "unknown time")
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Suspected Duplicate: {job_folder_name}")
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            f"'{job_folder_name}' shares a job number with existing job '{collided_with}'.\n"
+            f"Detected at {detected_at}.\n\n"
+            "This usually happens when a stale copy of a renamed job's folder gets synced\n"
+            "back from another device. It has not been adopted as a live job."
+        ))
+
+        action_row = QHBoxLayout()
+        not_duplicate_btn = QPushButton("Not a duplicate — track normally")
+        delete_btn = QPushButton("This is a duplicate — delete folder")
+        cancel_btn = QPushButton("Cancel")
+
+        def _track_normally():
+            from .duplicate_job_guard import clear_duplicate_suspect_marker
+            import os
+            import threading
+            clear_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name)
+            job_path = os.path.join(self.config.ROOT_DIR, job_folder_name)
+            if self.app_instance and hasattr(self.app_instance, "on_new_job_folder_detected"):
+                threading.Thread(
+                    target=self.app_instance.on_new_job_folder_detected,
+                    args=(job_path,),
+                    daemon=True,
+                ).start()
+            self.refresh_jobs_dashboard()
+            dialog.accept()
+
+        def _delete_folder():
+            reply = QMessageBox.question(
+                dialog,
+                "Delete Duplicate Folder",
+                f"Permanently delete '{job_folder_name}' and everything in it?\n\n"
+                "This cannot be undone. If another device still has an un-renamed copy, "
+                "this folder may reappear and get flagged again.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            import os
+            import shutil
+            job_path = os.path.join(self.config.ROOT_DIR, job_folder_name)
+            try:
+                shutil.rmtree(job_path)
+            except Exception as exc:
+                QMessageBox.critical(dialog, "Delete Failed", f"Failed to delete folder:\n{exc}")
+                return
+            self.refresh_jobs_dashboard()
+            dialog.accept()
+
+        not_duplicate_btn.clicked.connect(_track_normally)
+        delete_btn.clicked.connect(_delete_folder)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        action_row.addWidget(not_duplicate_btn)
+        action_row.addWidget(delete_btn)
+        action_row.addStretch()
+        action_row.addWidget(cancel_btn)
+        layout.addLayout(action_row)
+
+        dialog.exec()
 
     def _show_pending_job_prompt_dialog(self, job_folder_name: str):
         if not self.app_instance:
