@@ -194,21 +194,19 @@ In `ready_jobs_watcher/job_rename.py`, add this near the other module-level help
 `_iter_root_metadata_json`, before `_normalize_deployment_gate`):
 
 ```python
-# Tablet-authored live tracker files are named by tablet ID, never by job number,
-# so they'd never match the old-prefix check below anyway — excluded explicitly
-# as a safety fence rather than relying on that.
-DERIVED_RENAME_SKIP_DIRS = (
-    ("CNC", ".tracker"),
-    (".metadata", "hardwoods", ".tracker"),
-)
-
-
+# Any ".metadata" directory (job-root .metadata, CNC\.metadata, .metadata\hardwoods, etc.)
+# is skipped entirely: JSON sidecars in there already have their *content* rewritten by
+# the _iter_job_metadata_json step above, and their filenames are corrected separately by
+# the normal PDF-reprocessing pipeline that runs right after a rename - renaming them here
+# too would collide with that. Any ".tracker" directory (CNC\.tracker,
+# .metadata\hardwoods\.tracker) is also skipped: those hold live tablet-authored files
+# named by tablet ID, never by job number.
 def _iter_renamable_files(job_folder: Path):
-    skip_dirs = [job_folder.joinpath(*parts) for parts in DERIVED_RENAME_SKIP_DIRS]
     for path in job_folder.rglob("*"):
         if not path.is_file():
             continue
-        if any(path.is_relative_to(skip_dir) for skip_dir in skip_dirs):
+        parts = path.relative_to(job_folder).parts
+        if ".metadata" in parts or ".tracker" in parts:
             continue
         yield path
 
