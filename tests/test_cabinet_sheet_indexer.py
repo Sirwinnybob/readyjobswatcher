@@ -162,17 +162,38 @@ class TestParsePlansTable(unittest.TestCase):
         self.assertEqual(result["10"], "Base Cabinet")
 
     def test_stops_at_pipe_line_after_data(self):
-        # After data rows, a pipe line terminates extraction
+        # The unit table ends at the first pipe line after the data rows; a real
+        # cabinet row placed after that terminator must NOT be parsed.
         text = (
             self.HEADER
             + "7\nStd Tall\n30\n95.5\n26\n0\n0\n"
             + "| Room #1 - (KITCHEN) |\n"
-            + "8\nStd Upper\n50\n41\n12\n0.5\n0\n"  # should not be parsed
+            + "8\nStd Upper\n50\n41\n12\n0.5\n0\n"  # after terminator → excluded
         )
         result = _parse_plans_table(self._lines(text))
-        self.assertIn("7", result)
-        # Cabinet 8 appears after a pipe line — parser already consumed 7 lines for cab 7
-        # and then hits "| Room #1 - |" which is not a digit, so stops
+        self.assertEqual(set(result.keys()), {"7"})
+
+    def test_elevation_dimension_callouts_not_phantom_cabinets(self):
+        # Regression for phantom cabinets: the elevation drawing after the unit
+        # table emits fraction tokens ("1.5" -> "1"/"."/"5") and single-letter
+        # face-frame labels ("F"), which the positional heuristic used to misread
+        # as cabinets "1" (named ".") and "145" (named "F"). Mirrors real job 616b
+        # Plans & Elevations page 2. Only the true unit rows may survive.
+        text = (
+            self.HEADER
+            + "5\nBase Cabinet\n25.5\n35.25\n24\n0\n0.5\n"
+            + "6\nBase Cabinet\n32.25\n35.25\n24\n0.5\n0\n"
+            + "| Room #2 -  (KITCHEN) |\n"   # table terminator
+            # --- elevation dimension callouts (must all be ignored) ---
+            + "145\nF\n1.25\n"
+            + "1\n.\n5\n2.5\n2\n22\n5\n1.5\n"
+            + "28\nF\n2.25\n"
+        )
+        result = _parse_plans_table(self._lines(text))
+        self.assertEqual(set(result.keys()), {"5", "6"})
+        self.assertNotIn("1", result)
+        self.assertNotIn("145", result)
+        self.assertNotIn("28", result)
 
     def test_real_world_wall3_page(self):
         # Mimics actual Plans & Elevations Wall #3 page

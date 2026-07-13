@@ -405,6 +405,16 @@ def _parse_plans_table(lines: List[str]) -> Dict[str, str]:
     while data_start < len(lines) and "|" in lines[data_start]:
         data_start += 1
 
+    # Bound the table: real cabinet rows never contain a pipe, so the first
+    # pipe-delimited line after the data block (e.g. "| Room #2 - (KITCHEN) |")
+    # terminates the unit table. Everything past it is the elevation drawing's
+    # dimension callouts, where a fraction like "1.5" extracts as three tokens
+    # ("1" / "." / "5") and single-letter face-frame labels ("F") — these otherwise
+    # get misread as phantom cabinets ("1" named ".", "145" named "F", etc.).
+    data_end = data_start
+    while data_end < len(lines) and "|" not in lines[data_end]:
+        data_end += 1
+
     # Identify cabinet row start positions: a line that is a plain integer followed
     # by a non-numeric, non-pipe line (the unit name).  This handles variable row
     # lengths (some cabinet types emit 6 lines, others 7) without any stride assumption.
@@ -416,7 +426,7 @@ def _parse_plans_table(lines: List[str]) -> Dict[str, str]:
             return False
 
     cab_positions: List[int] = []
-    for j in range(data_start, len(lines) - 2):
+    for j in range(data_start, data_end - 2):
         line = lines[j]
         next_line = lines[j + 1]
         width_line = lines[j + 2]
