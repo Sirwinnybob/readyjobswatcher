@@ -904,11 +904,13 @@ class SettingsWindow(QWidget):
             import os
             import threading
             clear_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name)
+            logging.info("Operator marked %s as not a duplicate; re-adopting.", job_folder_name)
             job_path = os.path.join(self.config.ROOT_DIR, job_folder_name)
             if self.app_instance and hasattr(self.app_instance, "on_new_job_folder_detected"):
                 threading.Thread(
                     target=self.app_instance.on_new_job_folder_detected,
                     args=(job_path,),
+                    kwargs={"skip_collision_check": True},
                     daemon=True,
                 ).start()
             self.refresh_jobs_dashboard()
@@ -928,12 +930,26 @@ class SettingsWindow(QWidget):
                 return
             import os
             import shutil
+            import threading
             job_path = os.path.join(self.config.ROOT_DIR, job_folder_name)
-            try:
-                shutil.rmtree(job_path)
-            except Exception as exc:
-                QMessageBox.critical(dialog, "Delete Failed", f"Failed to delete folder:\n{exc}")
-                return
+
+            def _worker():
+                try:
+                    shutil.rmtree(job_path)
+                    logging.warning(
+                        "Deleted suspected-duplicate job folder %s (operator-confirmed). "
+                        "If another device still has an un-renamed copy, it may reappear.",
+                        job_folder_name,
+                    )
+                except Exception as exc:
+                    logging.error("Failed to delete suspected-duplicate job folder %s: %s", job_folder_name, exc)
+
+            threading.Thread(target=_worker, daemon=True).start()
+            QMessageBox.information(
+                dialog,
+                "Delete Duplicate Folder",
+                f"Deleting '{job_folder_name}' in the background.",
+            )
             self.refresh_jobs_dashboard()
             dialog.accept()
 

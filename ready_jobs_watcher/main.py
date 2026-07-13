@@ -224,7 +224,7 @@ class Application:
         for job in jobs:
             self.settings_window.emit_auto_release_notice(job)
 
-    def on_new_job_folder_detected(self, folder_path: str):
+    def on_new_job_folder_detected(self, folder_path: str, *, skip_collision_check: bool = False):
         root_norm = os.path.normcase(os.path.normpath(self.config.ROOT_DIR))
         parent_norm = os.path.normcase(os.path.normpath(os.path.dirname(folder_path)))
         if parent_norm != root_norm or not JobProcessor.is_job_folder(folder_path):
@@ -232,18 +232,19 @@ class Application:
             return
         job_folder_name = os.path.basename(os.path.normpath(folder_path))
 
-        job_num = JobProcessor.extract_job_number(job_folder_name) or ""
-        collided_with = find_job_number_collision(self.config.ROOT_DIR, job_folder_name, job_num)
-        if collided_with:
-            write_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name, collided_with)
-            logging.warning(
-                "Suspected duplicate job folder: %s shares job number %s with existing job %s; "
-                "not adopting as a new job (see .metadata/duplicate_suspect.json).",
-                job_folder_name,
-                job_num,
-                collided_with,
-            )
-            return
+        if not skip_collision_check:
+            job_num = JobProcessor.extract_job_number(job_folder_name) or ""
+            collided_with = find_job_number_collision(self.config.ROOT_DIR, job_folder_name, job_num)
+            if collided_with:
+                write_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name, collided_with)
+                logging.warning(
+                    "Suspected duplicate job folder: %s shares job number %s with existing job %s; "
+                    "not adopting as a new job (see .metadata/duplicate_suspect.json).",
+                    job_folder_name,
+                    job_num,
+                    collided_with,
+                )
+                return
 
         detected_mode = "UNKNOWN"
         detection_source = "UNKNOWN"
