@@ -1,9 +1,24 @@
+import threading
+import types
+
 from ready_jobs_watcher.duplicate_job_guard import (
     clear_duplicate_suspect_marker,
     find_job_number_collision,
     read_duplicate_suspect_marker,
     write_duplicate_suspect_marker,
 )
+from ready_jobs_watcher.main import Application
+from ready_jobs_watcher.deployment_gate import DeploymentGateManager
+
+
+def _minimal_app(root):
+    app = Application.__new__(Application)
+    app.config = types.SimpleNamespace(ROOT_DIR=str(root))
+    app.deployment_gate = DeploymentGateManager(str(root))
+    app.settings_window = None
+    app._pending_job_prompts = []
+    app._pending_job_prompt_lock = threading.Lock()
+    return app
 
 
 def test_find_job_number_collision_detects_shared_number(tmp_path):
@@ -57,3 +72,33 @@ def test_clear_duplicate_suspect_marker_removes_file(tmp_path):
     assert read_duplicate_suspect_marker(str(root), job.name) is None
     # Clearing an already-absent marker must not raise.
     clear_duplicate_suspect_marker(str(root), job.name)
+
+
+def test_new_job_folder_with_colliding_job_number_is_quarantined(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    existing = root / "502 - HARTFORD McCASLIN REFACE"
+    duplicate = root / "502 - HARTFORD MCCASLIN REFACE COPY"
+    existing.mkdir(parents=True)
+    duplicate.mkdir(parents=True)
+    app = _minimal_app(root)
+
+    app.on_new_job_folder_detected(str(duplicate))
+
+    assert not (duplicate / ".metadata" / "deployment_gate.json").exists()
+    marker = read_duplicate_suspect_marker(str(root), duplicate.name)
+    assert marker is not None
+    assert marker["suspectedDuplicateOf"] == existing.name
+    assert app._pending_job_prompts == []
+
+
+def test_new_job_folder_without_collision_is_adopted_normally(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    job = root / "649 - HARTFORD McCASLIN REFACE"
+    job.mkdir(parents=True)
+    app = _minimal_app(root)
+
+    app.on_new_job_folder_detected(str(job))
+
+    assert (job / ".metadata" / "deployment_gate.json").exists()
+    assert read_duplicate_suspect_marker(str(root), job.name) is None
+    assert app._pending_job_prompts == [job.name]

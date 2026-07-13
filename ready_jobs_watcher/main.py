@@ -41,6 +41,7 @@ from .cabinet_sheet_indexer import (
     detect_mode_for_job,
     detect_mode_template_mismatch_for_job,
 )
+from .duplicate_job_guard import find_job_number_collision, write_duplicate_suspect_marker
 from .hardwoods_cutlist_indexer import build_hardwoods_cutlist_index_for_job
 from .dae_converter import convert_3d_models_for_job, scan_root_for_missing_glbs
 from .deployment_gate import DeploymentGateManager
@@ -230,6 +231,20 @@ class Application:
             logging.debug("Ignoring pending gate creation for non-root/non-job folder: %s", folder_path)
             return
         job_folder_name = os.path.basename(os.path.normpath(folder_path))
+
+        job_num = JobProcessor.extract_job_number(job_folder_name) or ""
+        collided_with = find_job_number_collision(self.config.ROOT_DIR, job_folder_name, job_num)
+        if collided_with:
+            write_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name, collided_with)
+            logging.warning(
+                "Suspected duplicate job folder: %s shares job number %s with existing job %s; "
+                "not adopting as a new job (see .metadata/duplicate_suspect.json).",
+                job_folder_name,
+                job_num,
+                collided_with,
+            )
+            return
+
         detected_mode = "UNKNOWN"
         detection_source = "UNKNOWN"
         try:
