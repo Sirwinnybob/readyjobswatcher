@@ -130,3 +130,35 @@ def test_rename_ready_job_rejects_duplicate_destination(tmp_path):
         pass
     else:
         raise AssertionError("Expected duplicate destination to be rejected")
+
+
+def test_rename_ready_job_renames_orphaned_derived_files(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    old_name = "123 - OLD CUSTOMER"
+    new_name = "456 - NEW CUSTOMER"
+    job = root / old_name
+    dark_mode = job / "DARK MODE"
+    dark_mode.mkdir(parents=True)
+    (dark_mode / "123 - ASSEMBLY SHEETS.pdf").write_bytes(b"pdf")
+    (dark_mode / "123 - DELIVERY SHEETS.pdf").write_bytes(b"pdf")
+    # Already-correct-prefix file must be left alone (no rename attempted, no error).
+    (dark_mode / "456 - ALREADY CORRECT.pdf").write_bytes(b"pdf")
+    # A tablet-authored tracker file must never be touched even if its name happens
+    # to start with the old job number.
+    tracker_dir = job / "CNC" / ".tracker"
+    tracker_dir.mkdir(parents=True)
+    (tracker_dir / "123 - tablet-07.json").write_text("{}", encoding="utf-8")
+
+    result = rename_ready_job(root, old_name, new_name, archive_root=None)
+
+    new_dark_mode = root / new_name / "DARK MODE"
+    assert (new_dark_mode / "456 - ASSEMBLY SHEETS.pdf").exists()
+    assert (new_dark_mode / "456 - DELIVERY SHEETS.pdf").exists()
+    assert (new_dark_mode / "456 - ALREADY CORRECT.pdf").exists()
+    assert not (new_dark_mode / "123 - ASSEMBLY SHEETS.pdf").exists()
+
+    new_tracker_dir = root / new_name / "CNC" / ".tracker"
+    assert (new_tracker_dir / "123 - tablet-07.json").exists()
+
+    renamed_names = {p.name for p in result.renamed_derived_files}
+    assert renamed_names == {"456 - ASSEMBLY SHEETS.pdf", "456 - DELIVERY SHEETS.pdf"}

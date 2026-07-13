@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -8,6 +9,8 @@ from typing import Any, Optional
 from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .deployment_gate import DeploymentGateManager
 from .metadata_cache import parse_job_folder_name, refresh_single_job
+
+main_logger = logging.getLogger("main")
 
 
 JOB_NUMBER_KEYS = {"jobNumber", "job_number", "jobNum", "job_num"}
@@ -34,6 +37,7 @@ class JobRenameResult:
     renamed_folder: bool
     rewritten_files: tuple[Path, ...]
     cache_refreshed: bool
+    renamed_derived_files: tuple[Path, ...] = tuple()
 
 
 def _read_json(path: Path) -> Any:
@@ -173,6 +177,43 @@ def _iter_root_metadata_json(root: Path):
     yield from (path for path in metadata_root.rglob("*.json") if path.is_file())
 
 
+# Any ".metadata" directory (job-root .metadata, CNC\.metadata, .metadata\hardwoods, etc.)
+# is skipped entirely: JSON sidecars in there already have their *content* rewritten by
+# the _iter_job_metadata_json step above, and their filenames are corrected separately by
+# the normal PDF-reprocessing pipeline that runs right after a rename - renaming them here
+# too would collide with that. Any ".tracker" directory (CNC\.tracker,
+# .metadata\hardwoods\.tracker) is also skipped: those hold live tablet-authored files
+# named by tablet ID, never by job number.
+def _iter_renamable_files(job_folder: Path):
+    for path in job_folder.rglob("*"):
+        if not path.is_file():
+            continue
+        parts = path.relative_to(job_folder).parts
+        if ".metadata" in parts or ".tracker" in parts:
+            continue
+        yield path
+
+
+def _rename_derived_files(job_folder: Path, *, old_num: str, new_num: str) -> tuple[Path, ...]:
+    if not old_num or not new_num or old_num == new_num:
+        return tuple()
+    old_prefix = f"{old_num} - "
+    renamed: list[Path] = []
+    for path in _iter_renamable_files(job_folder):
+        if not path.name.startswith(old_prefix):
+            continue
+        new_name = apply_job_number_prefix(new_num, path.name)
+        new_path = path.with_name(new_name)
+        if new_path.exists():
+            continue
+        try:
+            path.rename(new_path)
+            renamed.append(new_path)
+        except OSError as exc:
+            main_logger.warning("Could not rename derived file %s during job rename: %s", path, exc)
+    return tuple(renamed)
+
+
 def _normalize_deployment_gate(root: Path, job_name: str) -> None:
     gate = DeploymentGateManager(str(root))
     state = gate.load_state(job_name, create_if_missing=True, default_deployed=True)
@@ -248,6 +289,8 @@ def rename_ready_job(
         ):
             rewritten_files.append(path)
 
+    renamed_derived_files = _rename_derived_files(new_path, old_num=old_num, new_num=new_num)
+
     _normalize_deployment_gate(root, new_name)
     cache_result = refresh_single_job(
         root,
@@ -264,4 +307,5 @@ def rename_ready_job(
         renamed_folder=renamed_folder,
         rewritten_files=tuple(rewritten_files),
         cache_refreshed=cache_refreshed,
+        renamed_derived_files=renamed_derived_files,
     )
