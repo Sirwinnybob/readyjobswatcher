@@ -178,3 +178,54 @@ def test_load_cnc_tracker_actions_maps_bad_part_submitted_and_view_and_renested(
     assert [a["action"] for a in actions] == ["view", "bad_part", "bad_part_submitted", "skip"]
     assert actions[2]["part"] == 3
     assert actions[3]["reNested"] is True
+
+
+def test_aud05_excludes_flat_sync_conflict_ndjson(tmp_path):
+    tracker_dir = tmp_path / "job" / "CNC" / ".tracker"
+    events = tracker_dir / "events"
+    active = events / "tablet-a.ndjson"
+    _write(active, json.dumps({
+        "eventId": "e1", "op": "set_complete_true",
+        "payload": {"file": "A.pdf", "page": 1, "fileFingerprint": "fp1"},
+        "lamport": 1, "wallTime": "2026-05-12T10:00:00Z",
+    }))
+    # A Syncthing conflict copy that would otherwise resurrect a stale/divergent action.
+    conflict = events / "tablet-a.sync-conflict-20260512-100000-ABCDEF.ndjson"
+    _write(conflict, json.dumps({
+        "eventId": "eX", "op": "set_bad_part_true",
+        "payload": {"file": "A.pdf", "page": 1, "part": 9, "fileFingerprint": "fp1"},
+        "lamport": 99, "wallTime": "2026-05-12T09:00:00Z",
+    }))
+
+    actions = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert len(actions) == 1
+    assert actions[0]["action"] == "complete"
+    assert all(a.get("part") != 9 for a in actions)
+
+
+def test_aud05_excludes_nested_sync_conflict_ndjson(tmp_path):
+    tracker_dir = tmp_path / "job" / "CNC" / ".tracker"
+    events = tracker_dir / "events"
+    _write(events / "tablet-a.ndjson", json.dumps({
+        "eventId": "e1", "op": "set_complete_true",
+        "payload": {"file": "A.pdf", "page": 1, "fileFingerprint": "fp1"},
+        "lamport": 1, "wallTime": "2026-05-12T10:00:00Z",
+    }))
+    # Conflict copy nested one directory deep, and inside a conflicted sub-directory.
+    _write(events / "sub" / "tablet-b.sync-conflict-20260512-100000-ABCDEF.ndjson", json.dumps({
+        "eventId": "eY", "op": "set_bad_part_true",
+        "payload": {"file": "A.pdf", "page": 1, "part": 7, "fileFingerprint": "fp1"},
+        "lamport": 50, "wallTime": "2026-05-12T09:00:00Z",
+    }))
+    _write(events / ".sync-conflict-dir" / "tablet-c.ndjson", json.dumps({
+        "eventId": "eZ", "op": "set_bad_part_true",
+        "payload": {"file": "A.pdf", "page": 1, "part": 8, "fileFingerprint": "fp1"},
+        "lamport": 60, "wallTime": "2026-05-12T09:00:00Z",
+    }))
+
+    actions = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert len(actions) == 1
+    assert actions[0]["action"] == "complete"
+    assert all(a.get("part") not in (7, 8) for a in actions)

@@ -82,17 +82,33 @@ def _sort_combined_actions(actions: Sequence[Dict[str, Any]]) -> List[Dict[str, 
     )
 
 
+def _is_active_stream_file(name: str) -> bool:
+    """AUD-05: single active-file predicate shared by the legacy JSON and NDJSON loaders.
+    Excludes Syncthing conflict copies ('<name>.sync-conflict-<...>') and hidden/dot files
+    case-insensitively. Replaying a conflict stream can resurrect stale CNC/hardwood progress
+    or bad-part actions into consolidated state."""
+    lowered = name.lower()
+    if lowered.startswith("."):
+        return False
+    if ".sync-conflict-" in lowered:
+        return False
+    return True
+
+
 def _collect_ndjson_files(tracker_dirs: Sequence[str]) -> List[str]:
     files: List[str] = []
     for tracker_dir in tracker_dirs:
         events_dir = os.path.join(tracker_dir, "events")
         if not os.path.isdir(events_dir):
             continue
-        files.extend(
-            path
-            for path in sorted(glob.glob(os.path.join(events_dir, "**", "*.ndjson"), recursive=True))
-            if os.path.isfile(path)
-        )
+        for path in sorted(glob.glob(os.path.join(events_dir, "**", "*.ndjson"), recursive=True)):
+            if not os.path.isfile(path):
+                continue
+            # Apply the predicate to every path segment below events/ so a nested conflict
+            # file OR a conflicted sub-directory is excluded, not just a flat filename.
+            rel_parts = os.path.relpath(path, events_dir).replace("\\", "/").split("/")
+            if all(_is_active_stream_file(part) for part in rel_parts):
+                files.append(path)
     return files
 
 
@@ -212,9 +228,7 @@ def _load_legacy_json_actions(
         for name in sorted(os.listdir(tracker_dir)):
             if not name.lower().endswith(".json"):
                 continue
-            if name.startswith("."):
-                continue
-            if ".sync-conflict-" in name.lower():
+            if not _is_active_stream_file(name):
                 continue
             path = os.path.join(tracker_dir, name)
             try:
