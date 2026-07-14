@@ -55,7 +55,9 @@ def _read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_rename_job_retargets_pending_renames_and_pdf_conversions(tmp_path):
+def test_rename_job_retargets_pending_renames_and_pdf_conversions(tmp_path, monkeypatch):
+    from ready_jobs_watcher import rename_history
+    monkeypatch.setattr(rename_history, "RENAME_HISTORY_FILE", tmp_path / "rename_history.json")
     root = tmp_path / "Ready Jobs"
     old_job = root / "123 - OLD"
     new_job = root / "999 - NEW"
@@ -89,7 +91,9 @@ def test_rename_job_retargets_pending_renames_and_pdf_conversions(tmp_path):
     assert pdf_handler.mappings == [{os.path.normpath(str(old_pdf)): os.path.normpath(str(new_pdf))}]
 
 
-def test_rename_job_refreshes_metadata_when_folder_already_moved(tmp_path):
+def test_rename_job_refreshes_metadata_when_folder_already_moved(tmp_path, monkeypatch):
+    from ready_jobs_watcher import rename_history
+    monkeypatch.setattr(rename_history, "RENAME_HISTORY_FILE", tmp_path / "rename_history.json")
     root = tmp_path / "Ready Jobs"
     old_name = "123 - OLD"
     new_name = "123 - NEW"

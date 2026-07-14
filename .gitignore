@@ -45,6 +45,7 @@ pending_queue.json.backup
 polling_snapshot.json
 polling_snapshot.json.tmp
 tracker_bad_parts_state.json
+rename_history.json
 metadata_snapshots/
 
 # Backup directories
