@@ -90,6 +90,11 @@ def test_rename_job_retargets_pending_renames_and_pdf_conversions(tmp_path, monk
     }
     assert pdf_handler.mappings == [{os.path.normpath(str(old_pdf)): os.path.normpath(str(new_pdf))}]
 
+    from ready_jobs_watcher.rename_history import find_recent_rename_source
+    entry = find_recent_rename_source("123 - OLD", history_file=tmp_path / "rename_history.json")
+    assert entry is not None
+    assert entry["newName"] == "999 - NEW"
+
 
 def test_rename_job_refreshes_metadata_when_folder_already_moved(tmp_path, monkeypatch):
     from ready_jobs_watcher import rename_history

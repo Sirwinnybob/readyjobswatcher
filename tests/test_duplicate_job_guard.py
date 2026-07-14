@@ -129,6 +129,7 @@ def test_resurrected_old_name_is_quarantined_even_after_number_changed(tmp_path,
     marker = read_duplicate_suspect_marker(str(root), ghost.name)
     assert marker is not None
     assert marker["suspectedDuplicateOf"] == "649 - HARTFORD McCASLIN REFACE"
+    assert marker["reason"] == "rename_history_match"
     assert app._pending_job_prompts == []
 
 

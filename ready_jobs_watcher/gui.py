@@ -882,17 +882,27 @@ class SettingsWindow(QWidget):
     def _show_duplicate_job_dialog(self, job_folder_name: str, marker: dict):
         collided_with = str(marker.get("suspectedDuplicateOf") or "unknown job")
         detected_at = str(marker.get("detectedAt") or "unknown time")
+        reason = str(marker.get("reason") or "job_number_collision")
+        if reason == "rename_history_match":
+            explanation = (
+                f"'{job_folder_name}' was recently renamed to '{collided_with}'.\n"
+                f"Detected at {detected_at}.\n\n"
+                "This usually happens when a stale copy of the OLD job folder gets synced\n"
+                "back from another device after the rename. It has not been adopted as a live job."
+            )
+        else:
+            explanation = (
+                f"'{job_folder_name}' shares a job number with existing job '{collided_with}'.\n"
+                f"Detected at {detected_at}.\n\n"
+                "This usually happens when a stale copy of a renamed job's folder gets synced\n"
+                "back from another device. It has not been adopted as a live job."
+            )
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Suspected Duplicate: {job_folder_name}")
         dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel(
-            f"'{job_folder_name}' shares a job number with existing job '{collided_with}'.\n"
-            f"Detected at {detected_at}.\n\n"
-            "This usually happens when a stale copy of a renamed job's folder gets synced\n"
-            "back from another device. It has not been adopted as a live job."
-        ))
+        layout.addWidget(QLabel(explanation))
 
         action_row = QHBoxLayout()
         not_duplicate_btn = QPushButton("Not a duplicate — track normally")

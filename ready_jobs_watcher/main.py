@@ -241,16 +241,20 @@ class Application:
                 rename_source = find_recent_rename_source(job_folder_name)
             if collided_with or rename_source:
                 suspected_of = collided_with or rename_source["newName"]
-                write_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name, suspected_of)
                 if collided_with:
-                    reason = f"shares job number {job_num} with existing job {collided_with}"
+                    marker_reason = "job_number_collision"
+                    log_reason = f"shares job number {job_num} with existing job {collided_with}"
                 else:
-                    reason = f"was recently renamed to {suspected_of}"
+                    marker_reason = "rename_history_match"
+                    log_reason = f"was recently renamed to {suspected_of}"
+                write_duplicate_suspect_marker(
+                    self.config.ROOT_DIR, job_folder_name, suspected_of, reason=marker_reason
+                )
                 logging.warning(
                     "Suspected duplicate job folder: %s %s; not adopting as a new job "
                     "(see .metadata/duplicate_suspect.json).",
                     job_folder_name,
-                    reason,
+                    log_reason,
                 )
                 return
 
@@ -622,6 +626,13 @@ class Application:
 
         old_num = JobProcessor.extract_job_number(old_name) or ""
         new_num = JobProcessor.extract_job_number(new_name) or ""
+
+        try:
+            from .rename_history import record_rename
+            record_rename(old_name, new_name)
+        except Exception as exc:
+            logging.error("Failed recording rename history for %s -> %s: %s", old_name, new_name, exc, exc_info=True)
+
         pending_pdf_path_map = {}
         try:
             if self.pending_queue is not None and hasattr(self.pending_queue, "rename_job_folder"):

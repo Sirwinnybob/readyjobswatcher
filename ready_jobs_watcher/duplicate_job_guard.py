@@ -54,13 +54,15 @@ def find_job_number_collision(root_dir: str, job_folder_name: str, job_num: str)
     return None
 
 
-def write_duplicate_suspect_marker(root_dir: str, job_folder_name: str, collided_with: str) -> None:
+def write_duplicate_suspect_marker(
+    root_dir: str, job_folder_name: str, collided_with: str, *, reason: str = "job_number_collision"
+) -> None:
     path = _marker_path(root_dir, job_folder_name)
     payload = {
         "schemaVersion": 1,
         "suspectedDuplicateOf": collided_with,
         "detectedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "reason": "job_number_collision",
+        "reason": reason,
     }
     atomic_write_json(path, payload, indent=2, ensure_ascii=False)
 
