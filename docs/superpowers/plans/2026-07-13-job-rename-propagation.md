@@ -872,6 +872,408 @@ git commit -m "feat: add resolve actions for suspected duplicate jobs"
 
 ---
 
+## Task 7: Catch a resurrected old name after the number itself changed
+
+**Files:**
+- Create: `ready_jobs_watcher/rename_history.py`
+- Test: `tests/test_rename_history.py`
+- Modify: `ready_jobs_watcher/job_rename.py` (`rename_ready_job`)
+- Modify: `tests/test_job_rename_metadata.py` (3 existing call sites)
+- Modify: `ready_jobs_watcher/main.py` (`on_new_job_folder_detected`)
+- Test: `tests/test_duplicate_job_guard.py`
+
+**Why this task exists:** a final whole-implementation review (after Tasks 1-6 all individually
+passed their own reviews) found that `find_job_number_collision` (Tasks 3-4) only catches two
+folders sharing the same *current* job number - it does not catch the actual incident that
+motivated this entire plan. In that incident, the rename changed the job number itself
+(`502 - HARTFORD McCASLIN REFACE` -> `649 - HARTFORD McCASLIN REFACE`). By the time a Syncthing
+peer resurrected a stale copy under the old name `502 - HARTFORD McCASLIN REFACE`, nothing else on
+disk carried job number `502` anymore (the live job was `649`) - so the collision check found
+nothing, and the ghost was silently adopted as a brand-new job, reproducing the original bug
+exactly. This task closes that gap: it remembers "this exact folder name used to be a job, until
+it was renamed to X" for a bounded window, independent of whatever job numbers currently exist.
+
+- [ ] **Step 1: Write the failing tests for the new module**
+
+Create `tests/test_rename_history.py`:
+
+```python
+import datetime
+
+from ready_jobs_watcher.rename_history import (
+    RENAME_HISTORY_RETENTION_DAYS,
+    find_recent_rename_source,
+    record_rename,
+)
+
+
+def test_record_and_find_recent_rename_source(tmp_path):
+    history_file = tmp_path / "rename_history.json"
+
+    record_rename(
+        "502 - HARTFORD McCASLIN REFACE",
+        "649 - HARTFORD McCASLIN REFACE",
+        history_file=history_file,
+    )
+
+    entry = find_recent_rename_source("502 - HARTFORD McCASLIN REFACE", history_file=history_file)
+    assert entry is not None
+    assert entry["newName"] == "649 - HARTFORD McCASLIN REFACE"
+
+
+def test_find_recent_rename_source_returns_none_when_no_match(tmp_path):
+    history_file = tmp_path / "rename_history.json"
+
+    record_rename("111 - SOMEONE", "222 - SOMEONE", history_file=history_file)
+
+    assert find_recent_rename_source("999 - NOBODY", history_file=history_file) is None
+
+
+def test_find_recent_rename_source_ignores_stale_entries(tmp_path):
+    history_file = tmp_path / "rename_history.json"
+    stale_at = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(days=RENAME_HISTORY_RETENTION_DAYS + 1)
+    ).isoformat()
+    history_file.write_text(
+        '[{"oldName": "502 - OLD", "newName": "649 - OLD", "renamedAt": "%s"}]' % stale_at,
+        encoding="utf-8",
+    )
+
+    assert find_recent_rename_source("502 - OLD", history_file=history_file) is None
+
+
+def test_find_recent_rename_source_returns_most_recent_match(tmp_path):
+    history_file = tmp_path / "rename_history.json"
+
+    record_rename("502 - X", "600 - X", history_file=history_file)
+    record_rename("502 - X", "649 - X", history_file=history_file)
+
+    entry = find_recent_rename_source("502 - X", history_file=history_file)
+    assert entry["newName"] == "649 - X"
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `python -m pytest tests/test_rename_history.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'ready_jobs_watcher.rename_history'`
+
+- [ ] **Step 3: Create the module**
+
+Create `ready_jobs_watcher/rename_history.py`:
+
+```python
+"""
+Records job-folder rename history so a resurrected old name can be recognized
+even after the job's number itself changed.
+
+find_job_number_collision (duplicate_job_guard.py) only catches two folders
+sharing the same CURRENT job number - it cannot catch the actual incident that
+motivated this plan: a rename that also changes the job number (e.g. 502 ->
+649), after which a Syncthing peer resurrects a stale copy under the OLD name.
+By the time that ghost reappears, nothing else on disk carries the old number
+anymore, so the collision check alone finds nothing. This module closes that
+gap by remembering "this exact folder name used to be a job, until it was
+renamed to X" for a bounded window, independent of current job numbers.
+
+History lives in local app state (BASE_DATA_DIR), not on the shared Ready Jobs
+root, matching the existing convention for this kind of bookkeeping (see
+tracker_bad_parts_state.json / pending_queue.json).
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import logging
+from pathlib import Path
+from typing import Optional
+
+from .atomic_write import atomic_write_json
+from .config import BASE_DATA_DIR
+
+main_logger = logging.getLogger("main")
+
+RENAME_HISTORY_FILE = Path(BASE_DATA_DIR) / "rename_history.json"
+RENAME_HISTORY_RETENTION_DAYS = 30
+
+
+def _now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _load_entries(history_file: Path) -> list:
+    try:
+        with history_file.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        main_logger.error("Failed reading rename history %s: %s", history_file, exc)
+        return []
+
+
+def _prune(entries: list) -> list:
+    cutoff = _now() - datetime.timedelta(days=RENAME_HISTORY_RETENTION_DAYS)
+    kept = []
+    for entry in entries:
+        try:
+            renamed_at = datetime.datetime.fromisoformat(str(entry.get("renamedAt", "")))
+        except ValueError:
+            continue
+        if renamed_at >= cutoff:
+            kept.append(entry)
+    return kept
+
+
+def record_rename(old_name: str, new_name: str, *, history_file: Optional[Path] = None) -> None:
+    path = Path(history_file) if history_file is not None else RENAME_HISTORY_FILE
+    entries = _prune(_load_entries(path))
+    entries.append({
+        "oldName": old_name,
+        "newName": new_name,
+        "renamedAt": _now().isoformat(),
+    })
+    atomic_write_json(path, entries, indent=2, ensure_ascii=False)
+
+
+def find_recent_rename_source(job_folder_name: str, *, history_file: Optional[Path] = None) -> Optional[dict]:
+    """Return the most recent still-fresh rename entry whose old name is `job_folder_name`, if any."""
+    path = Path(history_file) if history_file is not None else RENAME_HISTORY_FILE
+    matches = [e for e in _prune(_load_entries(path)) if e.get("oldName") == job_folder_name]
+    if not matches:
+        return None
+    return max(matches, key=lambda e: e.get("renamedAt", ""))
+```
+
+Note: `history_file` defaults to `None`, and the real default (`RENAME_HISTORY_FILE`) is looked up
+*inside* the function body, not baked into the parameter's default value. This matters for
+testability in Step 7 below (a `monkeypatch.setattr(rename_history, "RENAME_HISTORY_FILE", ...)`
+in a test only works if the function re-reads the module attribute at call time).
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python -m pytest tests/test_rename_history.py -v`
+Expected: all PASS (4 passed)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ready_jobs_watcher/rename_history.py tests/test_rename_history.py
+git commit -m "feat: add rename-history tracking module"
+```
+
+- [ ] **Step 6: Record every successful rename, with a test-injectable history file**
+
+In `ready_jobs_watcher/job_rename.py`, change the `rename_ready_job` signature (currently):
+
+```python
+def rename_ready_job(
+    root_dir: str | Path,
+    old_name: str,
+    new_name: str,
+    *,
+    archive_root: str | Path | None = None,
+) -> JobRenameResult:
+```
+
+to:
+
+```python
+def rename_ready_job(
+    root_dir: str | Path,
+    old_name: str,
+    new_name: str,
+    *,
+    archive_root: str | Path | None = None,
+    rename_history_file: str | Path | None = None,
+) -> JobRenameResult:
+```
+
+Then, right after the folder-rename block:
+
+```python
+    old_path = root / old_name
+    new_path = root / new_name
+    renamed_folder = False
+    if old_path.exists():
+        if new_path.exists():
+            raise FileExistsError(f"Destination job already exists: {new_path}")
+        old_path.rename(new_path)
+        renamed_folder = True
+    elif not new_path.exists():
+        raise FileNotFoundError(f"Job folder does not exist: {old_path}")
+```
+
+add:
+
+```python
+    if renamed_folder:
+        from .rename_history import record_rename
+        record_rename(
+            old_name,
+            new_name,
+            history_file=Path(rename_history_file) if rename_history_file is not None else None,
+        )
+```
+
+(Only record when a folder rename genuinely happened - not the "old_name == new_name" early-return
+case above this block, and not the case where the folder was already renamed by an external
+caller before `rename_ready_job` ran.)
+
+- [ ] **Step 7: Update the 3 existing job_rename tests to use a scratch history file**
+
+Without this step, every existing `rename_ready_job(...)` call in the test suite would write to
+the *real* `C:\Scripts\Ready Jobs Watcher\rename_history.json` on whatever machine runs the tests -
+never do that. In `tests/test_job_rename_metadata.py`, update all 3 call sites:
+
+```python
+    result = rename_ready_job(root, old_name, new_name, archive_root=None)
+```
+(appears twice, at what are currently lines 87 and 152) becomes:
+```python
+    result = rename_ready_job(
+        root, old_name, new_name, archive_root=None, rename_history_file=tmp_path / "rename_history.json"
+    )
+```
+
+and:
+```python
+        rename_ready_job(root, "123 - OLD", "456 - NEW")
+```
+(currently line 128, inside `test_rename_ready_job_rejects_duplicate_destination`) becomes:
+```python
+        rename_ready_job(
+            root, "123 - OLD", "456 - NEW", rename_history_file=tmp_path / "rename_history.json"
+        )
+```
+
+- [ ] **Step 8: Run the job_rename test suite to confirm no regression**
+
+Run: `python -m pytest tests/test_job_rename_metadata.py -v`
+Expected: all PASS (9 passed)
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add ready_jobs_watcher/job_rename.py tests/test_job_rename_metadata.py
+git commit -m "fix: record rename history on every successful job rename"
+```
+
+- [ ] **Step 10: Write the failing test for the guard wiring**
+
+Add to `tests/test_duplicate_job_guard.py`:
+
+```python
+def test_resurrected_old_name_is_quarantined_even_after_number_changed(tmp_path, monkeypatch):
+    from ready_jobs_watcher import rename_history
+
+    root = tmp_path / "Ready Jobs"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(rename_history, "RENAME_HISTORY_FILE", tmp_path / "rename_history.json")
+
+    # The real job was already renamed 502 -> 649 at some point in the past; only 649
+    # exists on disk now, matching the actual production incident this guard exists for.
+    rename_history.record_rename("502 - HARTFORD McCASLIN REFACE", "649 - HARTFORD McCASLIN REFACE")
+    live_job = root / "649 - HARTFORD McCASLIN REFACE"
+    live_job.mkdir(parents=True)
+
+    # A Syncthing peer resurrects a stale copy under the OLD name. No other folder on disk
+    # currently carries job number "502" - find_job_number_collision alone would miss this.
+    ghost = root / "502 - HARTFORD McCASLIN REFACE"
+    ghost.mkdir(parents=True)
+
+    app = _minimal_app(root)
+    app.on_new_job_folder_detected(str(ghost))
+
+    assert not (ghost / ".metadata" / "deployment_gate.json").exists()
+    marker = read_duplicate_suspect_marker(str(root), ghost.name)
+    assert marker is not None
+    assert marker["suspectedDuplicateOf"] == "649 - HARTFORD McCASLIN REFACE"
+    assert app._pending_job_prompts == []
+```
+
+- [ ] **Step 11: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_duplicate_job_guard.py -k resurrected_old_name -v`
+Expected: FAIL - the ghost gets a real `deployment_gate.json` (no history-based check exists yet)
+
+- [ ] **Step 12: Wire find_recent_rename_source into on_new_job_folder_detected**
+
+In `ready_jobs_watcher/main.py`, add to the existing import line (currently):
+
+```python
+from .duplicate_job_guard import find_job_number_collision, write_duplicate_suspect_marker
+```
+
+a new import right after it:
+
+```python
+from .rename_history import find_recent_rename_source
+```
+
+Then replace the collision-check block inside `on_new_job_folder_detected` (currently):
+
+```python
+        if not skip_collision_check:
+            job_num = JobProcessor.extract_job_number(job_folder_name) or ""
+            collided_with = find_job_number_collision(self.config.ROOT_DIR, job_folder_name, job_num)
+            if collided_with:
+                write_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name, collided_with)
+                logging.warning(
+                    "Suspected duplicate job folder: %s shares job number %s with existing job %s; "
+                    "not adopting as a new job (see .metadata/duplicate_suspect.json).",
+                    job_folder_name,
+                    job_num,
+                    collided_with,
+                )
+                return
+```
+
+with:
+
+```python
+        if not skip_collision_check:
+            job_num = JobProcessor.extract_job_number(job_folder_name) or ""
+            collided_with = find_job_number_collision(self.config.ROOT_DIR, job_folder_name, job_num)
+            rename_source = None
+            if not collided_with:
+                rename_source = find_recent_rename_source(job_folder_name)
+            if collided_with or rename_source:
+                suspected_of = collided_with or rename_source["newName"]
+                write_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name, suspected_of)
+                if collided_with:
+                    reason = f"shares job number {job_num} with existing job {collided_with}"
+                else:
+                    reason = f"was recently renamed to {suspected_of}"
+                logging.warning(
+                    "Suspected duplicate job folder: %s %s; not adopting as a new job "
+                    "(see .metadata/duplicate_suspect.json).",
+                    job_folder_name,
+                    reason,
+                )
+                return
+```
+
+- [ ] **Step 13: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_duplicate_job_guard.py -v`
+Expected: all PASS (9 passed)
+
+- [ ] **Step 14: Run the full test suite to confirm no regression**
+
+Run: `python -m pytest tests/ -v`
+Expected: all PASS (same baseline count as before this task, plus the new tests)
+
+- [ ] **Step 15: Commit**
+
+```bash
+git add ready_jobs_watcher/main.py tests/test_duplicate_job_guard.py
+git commit -m "fix: quarantine a resurrected old job name even after its number changed"
+```
+
+---
+
 ## Self-Review Notes
 
 - **Spec coverage:** Fix A (spec section "Fix A") is covered by Tasks 1-2. Fix B (spec section
@@ -885,3 +1287,19 @@ git commit -m "feat: add resolve actions for suspected duplicate jobs"
   `_rename_derived_files`. `duplicate_suspect.json` / `DUPLICATE_SUSPECT_FILENAME` /
   `find_job_number_collision` / `write_duplicate_suspect_marker` / `read_duplicate_suspect_marker`
   / `clear_duplicate_suspect_marker` are the same names across Tasks 3-6.
+- **Task 7 exists because Tasks 3-6 alone don't close the actual incident:** a whole-implementation
+  review after Task 6 shipped found that `find_job_number_collision` only catches two folders
+  sharing the same *current* job number - it cannot catch the real 2026-07-13 incident, where the
+  rename itself changed the job number (502 -> 649) before the ghost resurrected under the old
+  number, by which point nothing else on disk carried "502" anymore. Task 7's rename-history check
+  is independent of current job numbers entirely, closing that gap. `duplicate_suspect.json`'s
+  `suspectedDuplicateOf` field can now point at either a same-number collision or a rename-history
+  match - both write through the same `write_duplicate_suspect_marker` call, so downstream
+  consumers (dashboard tagging in Task 5, the resolve dialog in Task 6) need no changes.
+- **Known remaining gap, intentionally out of scope:** `find_job_number_collision` can still
+  symmetrically misidentify which of two *simultaneously ungated* colliding folders is the
+  "real" one during a bulk startup rescan (`Application._bootstrap_new_job_folders`) - found during
+  Task 5's review, not fixed here. Narrower than the incident Task 7 closes (requires two
+  never-before-adopted folders sharing a number to coexist across an app restart) and would need
+  its own design (e.g. preferring the older folder by creation time) - tracked as a follow-up, not
+  blocking this plan.
