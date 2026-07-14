@@ -582,15 +582,45 @@ def consolidate_cnc_tracker(job_folder: Path, compact: bool = False):
     # `bad_part_submitted` are re-emitted into consolidated.json with their own original timestamps
     # (not a shared/fallback timestamp), and `unbad_part` resets the submitted flag, mirroring the
     # reactivation semantics in tracker_bad_parts.py so the alert survives device-file deletion.
+    fingerprint_map = _build_cnc_fingerprint_map(job_folder)
     _consolidate_tracker(
         job_folder / "CNC" / ".tracker",
-        _merge_cnc_actions,
+        lambda actions: _merge_cnc_actions(actions, fingerprint_to_current_filename=fingerprint_map),
         lambda tracker_dir: load_cnc_tracker_actions(str(tracker_dir)),
         compact=compact,
     )
 
 
-def _merge_cnc_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _build_cnc_fingerprint_map(job_folder: Path) -> Dict[str, str]:
+    """Map each current CNC PDF's fingerprint to its current filename.
+
+    Used to reconcile progress actions recorded under a PDF's OLD filename (before that PDF
+    got renamed along with its job) back onto the CURRENT filename - a plain OS rename changes
+    neither a file's size nor its mtime, so the fingerprint is a reliable link across the rename
+    even though the filename in the historical action record is stale.
+    """
+    cnc_dir = job_folder / "CNC"
+    mapping: Dict[str, str] = {}
+    if not cnc_dir.is_dir():
+        return mapping
+    for entry in os.scandir(cnc_dir):
+        if not entry.is_file() or not entry.name.lower().endswith(".pdf"):
+            continue
+        try:
+            stat = entry.stat()
+        except OSError:
+            continue
+        fingerprint = f"{stat.st_size}_{int(stat.st_mtime * 1000)}"
+        mapping[fingerprint] = entry.name
+    return mapping
+
+
+def _merge_cnc_actions(
+    actions: List[Dict[str, Any]],
+    *,
+    fingerprint_to_current_filename: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    fingerprint_to_current_filename = fingerprint_to_current_filename or {}
     actions.sort(key=lambda a: a.get("timestamp", ""))
     page_states = {}
     for action_obj in actions:
@@ -602,6 +632,9 @@ def _merge_cnc_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         fingerprint = action_obj.get("fileFingerprint")
         if not filename or page is None or not action:
             continue
+        current_filename = fingerprint_to_current_filename.get(fingerprint)
+        if current_filename:
+            filename = current_filename
         key = (filename, page, fingerprint)
         page_states.setdefault(key, {"latest_action": "", "timestamp": "", "bad_parts": {}, "reNested": None})
         state = page_states[key]

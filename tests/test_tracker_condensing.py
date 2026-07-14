@@ -383,9 +383,9 @@ def test_concurrent_cnc_consolidation_via_real_threads_converges(tmp_path, monke
 
     original_merge = metadata_cache._merge_cnc_actions
 
-    def slow_merge(actions):
+    def slow_merge(actions, **kwargs):
         time.sleep(0.2)
-        return original_merge(actions)
+        return original_merge(actions, **kwargs)
 
     monkeypatch.setattr(metadata_cache, "_merge_cnc_actions", slow_merge)
 
@@ -415,6 +415,48 @@ def test_concurrent_cnc_consolidation_via_real_threads_converges(tmp_path, monke
     assert not (tracker_dir / "tablet-a.json").exists()
     cnc_actions = json.loads((tracker_dir / "consolidated.json").read_text(encoding="utf-8"))["actions"]
     assert {"file": "123 - Maple.pdf", "page": 1, "action": "complete", "timestamp": "2026-06-09T10:00:00Z"} in cnc_actions
+
+
+def test_cnc_consolidation_reconciles_stale_filename_via_fingerprint(tmp_path):
+    job = tmp_path / "Ready Jobs" / "649 - Test Job"
+    cnc_dir = job / "CNC"
+    cnc_dir.mkdir(parents=True)
+    pdf_path = cnc_dir / "649 - Maple.pdf"
+    pdf_path.write_bytes(b"pdf-bytes")
+    stat = pdf_path.stat()
+    fingerprint = f"{stat.st_size}_{int(stat.st_mtime * 1000)}"
+
+    _write_json(
+        job / "CNC" / ".tracker" / "tablet-a.json",
+        {
+            "tabletId": "tablet-a",
+            "actions": [
+                {
+                    # Recorded before the job was renamed 502 -> 649 - the tablet wrote the
+                    # PDF's name as it was at the time, which this repo's rename code never
+                    # goes back and rewrites inside historical tracker records.
+                    "file": "502 - Maple.pdf",
+                    "page": 1,
+                    "action": "complete",
+                    "timestamp": "2026-06-09T10:00:00Z",
+                    "fileFingerprint": fingerprint,
+                },
+            ],
+        },
+    )
+
+    consolidate_cnc_tracker(job)
+
+    cnc_actions = json.loads((job / "CNC" / ".tracker" / "consolidated.json").read_text(encoding="utf-8"))["actions"]
+    assert cnc_actions == [
+        {
+            "file": "649 - Maple.pdf",
+            "page": 1,
+            "action": "complete",
+            "timestamp": "2026-06-09T10:00:00Z",
+            "fileFingerprint": fingerprint,
+        }
+    ]
 
 
 def test_consolidation_returns_early_without_device_files(tmp_path):
