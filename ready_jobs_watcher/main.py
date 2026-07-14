@@ -42,6 +42,7 @@ from .cabinet_sheet_indexer import (
     detect_mode_template_mismatch_for_job,
 )
 from .duplicate_job_guard import find_job_number_collision, write_duplicate_suspect_marker
+from .rename_history import find_recent_rename_source
 from .hardwoods_cutlist_indexer import build_hardwoods_cutlist_index_for_job
 from .dae_converter import convert_3d_models_for_job, scan_root_for_missing_glbs
 from .deployment_gate import DeploymentGateManager
@@ -235,14 +236,21 @@ class Application:
         if not skip_collision_check:
             job_num = JobProcessor.extract_job_number(job_folder_name) or ""
             collided_with = find_job_number_collision(self.config.ROOT_DIR, job_folder_name, job_num)
-            if collided_with:
-                write_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name, collided_with)
+            rename_source = None
+            if not collided_with:
+                rename_source = find_recent_rename_source(job_folder_name)
+            if collided_with or rename_source:
+                suspected_of = collided_with or rename_source["newName"]
+                write_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name, suspected_of)
+                if collided_with:
+                    reason = f"shares job number {job_num} with existing job {collided_with}"
+                else:
+                    reason = f"was recently renamed to {suspected_of}"
                 logging.warning(
-                    "Suspected duplicate job folder: %s shares job number %s with existing job %s; "
-                    "not adopting as a new job (see .metadata/duplicate_suspect.json).",
+                    "Suspected duplicate job folder: %s %s; not adopting as a new job "
+                    "(see .metadata/duplicate_suspect.json).",
                     job_folder_name,
-                    job_num,
-                    collided_with,
+                    reason,
                 )
                 return
 

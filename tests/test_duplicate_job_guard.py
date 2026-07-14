@@ -104,6 +104,34 @@ def test_new_job_folder_without_collision_is_adopted_normally(tmp_path):
     assert app._pending_job_prompts == [job.name]
 
 
+def test_resurrected_old_name_is_quarantined_even_after_number_changed(tmp_path, monkeypatch):
+    from ready_jobs_watcher import rename_history
+
+    root = tmp_path / "Ready Jobs"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(rename_history, "RENAME_HISTORY_FILE", tmp_path / "rename_history.json")
+
+    # The real job was already renamed 502 -> 649 at some point in the past; only 649
+    # exists on disk now, matching the actual production incident this guard exists for.
+    rename_history.record_rename("502 - HARTFORD McCASLIN REFACE", "649 - HARTFORD McCASLIN REFACE")
+    live_job = root / "649 - HARTFORD McCASLIN REFACE"
+    live_job.mkdir(parents=True)
+
+    # A Syncthing peer resurrects a stale copy under the OLD name. No other folder on disk
+    # currently carries job number "502" - find_job_number_collision alone would miss this.
+    ghost = root / "502 - HARTFORD McCASLIN REFACE"
+    ghost.mkdir(parents=True)
+
+    app = _minimal_app(root)
+    app.on_new_job_folder_detected(str(ghost))
+
+    assert not (ghost / ".metadata" / "deployment_gate.json").exists()
+    marker = read_duplicate_suspect_marker(str(root), ghost.name)
+    assert marker is not None
+    assert marker["suspectedDuplicateOf"] == "649 - HARTFORD McCASLIN REFACE"
+    assert app._pending_job_prompts == []
+
+
 def test_get_jobs_dashboard_rows_tags_duplicate_suspects(tmp_path):
     root = tmp_path / "Ready Jobs"
     existing = root / "502 - HARTFORD McCASLIN REFACE"
