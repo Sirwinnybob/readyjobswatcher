@@ -62,30 +62,37 @@ def _replace_text(value: str, *, old_name: str, new_name: str, old_job_name: str
 def _job_record_scope(item: Any, *, old_name: str, old_num: str) -> Optional[bool]:
     """Determine whether a list item is a per-job record belonging to the job being renamed.
 
-    Returns False when `item` is a dict carrying a recognizable job-identity key (folder name
-    or job number) whose value does NOT match - this is a DIFFERENT job's record and must not
-    be touched, even if some other unrelated field happens to contain a matching substring
-    (this is exactly what let a rename corrupt an unrelated job's `construction_method` field
-    in job_board.json - a blanket substring replace has no concept of "which record"). Returns
-    True when the identity key matches (this job's own record - rewrite normally). Returns
-    None when `item` has no such key at all (not recognizably a job record), so the caller
-    falls back to the original blanket-recursive rewrite for anything not covered by this
-    heuristic (this is the safe default - it never makes existing behavior more restrictive
-    for structures this function doesn't recognize).
+    Returns True as soon as ANY identity key (folder name or job number) positively matches -
+    job_number is the more authoritative signal (unique per job), so a record whose folder_name
+    happens to be stale/wrong but whose job_number correctly matches must still be recognized as
+    this job's own record, not skipped. Returns False only when at least one identity key had a
+    usable (non-empty) value and NONE of them matched - this is a DIFFERENT job's record and must
+    not be touched, even if some other unrelated field happens to contain a matching substring
+    (this is exactly what let a rename corrupt an unrelated job's `construction_method` field in
+    job_board.json - a blanket substring replace has no concept of "which record"). Returns None
+    when `item` has no usable identity value at all (not recognizably a job record), so the
+    caller falls back to the original blanket-recursive rewrite for anything not covered by this
+    heuristic (the safe default - it never makes existing behavior more restrictive for
+    structures this function doesn't recognize).
     """
     if not isinstance(item, dict):
         return None
+    saw_value = False
     for key in JOB_FOLDER_NAME_KEYS:
         if key in item:
             value = str(item.get(key) or "")
             if value:
-                return value == old_name
+                saw_value = True
+                if value == old_name:
+                    return True
     for key in JOB_NUMBER_KEYS:
         if key in item:
             value = str(item.get(key) or "")
             if value:
-                return value == old_num
-    return None
+                saw_value = True
+                if value == old_num:
+                    return True
+    return False if saw_value else None
 
 
 def _rewrite_json_value(

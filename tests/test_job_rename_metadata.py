@@ -246,3 +246,38 @@ def test_rename_ready_job_falls_through_empty_folder_name_to_job_number(tmp_path
     entry = job_board["jobs"][0]
 
     assert entry["job_number"] == "649"
+
+
+def test_rename_ready_job_uses_job_number_when_folder_name_is_stale(tmp_path):
+    # A record whose folder_name is present but WRONG (e.g. drifted out of sync with Hours
+    # Tracker's own copy) must still be recognized as the renamed job's own record when its
+    # job_number correctly matches - job_number is unique per job and more authoritative than
+    # a mirrored display string. Getting this wrong would silently skip rewriting the job's own
+    # record, entrenching stale data instead of self-healing on the next rename.
+    root = tmp_path / "Ready Jobs"
+    old_name = "502 - HARTFORD MCCASLIN REFACE"
+    new_name = "649 - HARTFORD MCCASLIN REFACE"
+    (root / old_name).mkdir(parents=True)
+
+    _write_json(
+        root / "job_board.json",
+        {
+            "jobs": [
+                {
+                    "folder_name": "502 - SOME STALE MIRRORED NAME",
+                    "job_number": "502",
+                    "job_name": "HARTFORD MCCASLIN REFACE",
+                    "construction_method": "FACE-FRAME",
+                },
+            ]
+        },
+    )
+
+    rename_ready_job(
+        root, old_name, new_name, archive_root=None, rename_history_file=tmp_path / "rename_history.json"
+    )
+
+    job_board = _read_json(root / "job_board.json")
+    entry = job_board["jobs"][0]
+
+    assert entry["job_number"] == "649"
