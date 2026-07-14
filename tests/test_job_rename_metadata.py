@@ -168,3 +168,48 @@ def test_rename_ready_job_renames_orphaned_derived_files(tmp_path):
 
     renamed_names = {p.name for p in result.renamed_derived_files}
     assert renamed_names == {"456 - ASSEMBLY SHEETS.pdf", "456 - DELIVERY SHEETS.pdf"}
+
+
+def test_rename_ready_job_does_not_corrupt_unrelated_job_records(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    old_name = "502 - HARTFORD MCCASLIN REFACE"
+    new_name = "649 - HARTFORD MCCASLIN REFACE"
+    (root / old_name).mkdir(parents=True)
+
+    _write_json(
+        root / "job_board.json",
+        {
+            "jobs": [
+                {
+                    "folder_name": old_name,
+                    "job_number": "502",
+                    "job_name": "HARTFORD MCCASLIN REFACE",
+                    "construction_method": "FACE-FRAME",
+                },
+                {
+                    "folder_name": "999 - UNRELATED JOB",
+                    "job_number": "999",
+                    "job_name": "UNRELATED JOB",
+                    # This unrelated job's construction_method happens to already contain
+                    # the renamed job's old name as a value (a real, separate, pre-existing
+                    # Hours Tracker data bug) - a blanket substring replace would corrupt it
+                    # even though this record belongs to a completely different job.
+                    "construction_method": old_name,
+                },
+            ]
+        },
+    )
+
+    rename_ready_job(
+        root, old_name, new_name, archive_root=None, rename_history_file=tmp_path / "rename_history.json"
+    )
+
+    job_board = _read_json(root / "job_board.json")
+    renamed_entry = job_board["jobs"][0]
+    unrelated_entry = job_board["jobs"][1]
+
+    assert renamed_entry["folder_name"] == new_name
+    assert renamed_entry["job_number"] == "649"
+    assert unrelated_entry["folder_name"] == "999 - UNRELATED JOB"
+    assert unrelated_entry["job_number"] == "999"
+    assert unrelated_entry["construction_method"] == old_name  # untouched - not this job's record

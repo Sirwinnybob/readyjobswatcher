@@ -14,6 +14,7 @@ main_logger = logging.getLogger("main")
 
 
 JOB_NUMBER_KEYS = {"jobNumber", "job_number", "jobNum", "job_num"}
+JOB_FOLDER_NAME_KEYS = {"folder_name", "folderName", "jobFolderName"}
 ROOT_METADATA_FILES = ("production_order.json", "job_board.json")
 
 
@@ -56,6 +57,31 @@ def _replace_text(value: str, *, old_name: str, new_name: str, old_job_name: str
     if old_job_name:
         updated = updated.replace(old_job_name, new_job_name)
     return updated
+
+
+def _job_record_scope(item: Any, *, old_name: str, old_num: str) -> Optional[bool]:
+    """Determine whether a list item is a per-job record belonging to the job being renamed.
+
+    Returns False when `item` is a dict carrying a recognizable job-identity key (folder name
+    or job number) whose value does NOT match - this is a DIFFERENT job's record and must not
+    be touched, even if some other unrelated field happens to contain a matching substring
+    (this is exactly what let a rename corrupt an unrelated job's `construction_method` field
+    in job_board.json - a blanket substring replace has no concept of "which record"). Returns
+    True when the identity key matches (this job's own record - rewrite normally). Returns
+    None when `item` has no such key at all (not recognizably a job record), so the caller
+    falls back to the original blanket-recursive rewrite for anything not covered by this
+    heuristic (this is the safe default - it never makes existing behavior more restrictive
+    for structures this function doesn't recognize).
+    """
+    if not isinstance(item, dict):
+        return None
+    for key in JOB_FOLDER_NAME_KEYS:
+        if key in item:
+            return str(item.get(key) or "") == old_name
+    for key in JOB_NUMBER_KEYS:
+        if key in item:
+            return str(item.get(key) or "") == old_num
+    return None
 
 
 def _rewrite_json_value(
@@ -103,6 +129,9 @@ def _rewrite_json_value(
         changed = False
         rewritten_items = []
         for item in value:
+            if _job_record_scope(item, old_name=old_name, old_num=old_num) is False:
+                rewritten_items.append(item)
+                continue
             rewritten_item, item_changed = _rewrite_json_value(
                 item,
                 key=key,
