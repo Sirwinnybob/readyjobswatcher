@@ -213,3 +213,36 @@ def test_rename_ready_job_does_not_corrupt_unrelated_job_records(tmp_path):
     assert unrelated_entry["folder_name"] == "999 - UNRELATED JOB"
     assert unrelated_entry["job_number"] == "999"
     assert unrelated_entry["construction_method"] == old_name  # untouched - not this job's record
+
+
+def test_rename_ready_job_falls_through_empty_folder_name_to_job_number(tmp_path):
+    # A record with a present-but-empty/null folder_name must not be treated as a definite
+    # mismatch on that tier alone - it should fall through to the job_number tier, which can
+    # still positively identify it as the renamed job's own record.
+    root = tmp_path / "Ready Jobs"
+    old_name = "502 - HARTFORD MCCASLIN REFACE"
+    new_name = "649 - HARTFORD MCCASLIN REFACE"
+    (root / old_name).mkdir(parents=True)
+
+    _write_json(
+        root / "job_board.json",
+        {
+            "jobs": [
+                {
+                    "folder_name": None,
+                    "job_number": "502",
+                    "job_name": "HARTFORD MCCASLIN REFACE",
+                    "construction_method": "FACE-FRAME",
+                },
+            ]
+        },
+    )
+
+    rename_ready_job(
+        root, old_name, new_name, archive_root=None, rename_history_file=tmp_path / "rename_history.json"
+    )
+
+    job_board = _read_json(root / "job_board.json")
+    entry = job_board["jobs"][0]
+
+    assert entry["job_number"] == "649"

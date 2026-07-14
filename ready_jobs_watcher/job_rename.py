@@ -77,10 +77,14 @@ def _job_record_scope(item: Any, *, old_name: str, old_num: str) -> Optional[boo
         return None
     for key in JOB_FOLDER_NAME_KEYS:
         if key in item:
-            return str(item.get(key) or "") == old_name
+            value = str(item.get(key) or "")
+            if value:
+                return value == old_name
     for key in JOB_NUMBER_KEYS:
         if key in item:
-            return str(item.get(key) or "") == old_num
+            value = str(item.get(key) or "")
+            if value:
+                return value == old_num
     return None
 
 
