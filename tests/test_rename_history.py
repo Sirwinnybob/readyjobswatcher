@@ -1,4 +1,5 @@
 import datetime
+import json
 
 from ready_jobs_watcher.rename_history import (
     RENAME_HISTORY_RETENTION_DAYS,
@@ -51,3 +52,16 @@ def test_find_recent_rename_source_returns_most_recent_match(tmp_path):
 
     entry = find_recent_rename_source("502 - X", history_file=history_file)
     assert entry["newName"] == "649 - X"
+
+
+def test_record_rename_deduplicates_rapid_repeat_of_same_rename(tmp_path):
+    # A single logical rename can dispatch record_rename twice in quick succession
+    # (the GUI's own os.rename, then the file-watcher observing that same move a
+    # moment later) - this must not double up in the history file.
+    history_file = tmp_path / "rename_history.json"
+
+    record_rename("502 - HARTFORD McCASLIN REFACE", "649 - HARTFORD McCASLIN REFACE", history_file=history_file)
+    record_rename("502 - HARTFORD McCASLIN REFACE", "649 - HARTFORD McCASLIN REFACE", history_file=history_file)
+
+    entries = json.loads(history_file.read_text(encoding="utf-8"))
+    assert len(entries) == 1

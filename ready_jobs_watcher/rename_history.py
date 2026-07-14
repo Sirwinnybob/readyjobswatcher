@@ -61,13 +61,31 @@ def _prune(entries: list) -> list:
     return kept
 
 
+# A single logical rename can dispatch Application.rename_job twice in quick
+# succession (the GUI's own os.rename call, then the file-watcher observing
+# that same move a moment later) - this window collapses those into one entry
+# instead of recording near-duplicate history for every GUI-triggered rename.
+DUPLICATE_RECORD_WINDOW_SECONDS = 30
+
+
 def record_rename(old_name: str, new_name: str, *, history_file: Optional[Path] = None) -> None:
     path = Path(history_file) if history_file is not None else RENAME_HISTORY_FILE
     entries = _prune(_load_entries(path))
+    now = _now()
+    for entry in reversed(entries):
+        if entry.get("oldName") != old_name or entry.get("newName") != new_name:
+            continue
+        try:
+            recorded_at = datetime.datetime.fromisoformat(str(entry.get("renamedAt", "")))
+        except ValueError:
+            break
+        if (now - recorded_at).total_seconds() <= DUPLICATE_RECORD_WINDOW_SECONDS:
+            return
+        break
     entries.append({
         "oldName": old_name,
         "newName": new_name,
-        "renamedAt": _now().isoformat(),
+        "renamedAt": now.isoformat(),
     })
     atomic_write_json(path, entries, indent=2, ensure_ascii=False)
 
