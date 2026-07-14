@@ -598,20 +598,34 @@ def _build_cnc_fingerprint_map(job_folder: Path) -> Dict[str, str]:
     got renamed along with its job) back onto the CURRENT filename - a plain OS rename changes
     neither a file's size nor its mtime, so the fingerprint is a reliable link across the rename
     even though the filename in the historical action record is stale.
+
+    If two different filenames collide on the same fingerprint (identical size+mtime - possible
+    for sheets exported in the same batch, or a Syncthing conflict copy), that fingerprint is
+    dropped from the map entirely rather than picking one arbitrarily: silently reconciling a
+    historical action onto the WRONG physical file would misattribute progress to the wrong
+    sheet, which is worse than leaving it unreconciled (today's pre-fix behavior for that file).
     """
     cnc_dir = job_folder / "CNC"
     mapping: Dict[str, str] = {}
+    ambiguous_fingerprints: set = set()
     if not cnc_dir.is_dir():
         return mapping
     for entry in os.scandir(cnc_dir):
         if not entry.is_file() or not entry.name.lower().endswith(".pdf"):
+            continue
+        if ".sync-conflict-" in entry.name.lower():
             continue
         try:
             stat = entry.stat()
         except OSError:
             continue
         fingerprint = f"{stat.st_size}_{int(stat.st_mtime * 1000)}"
+        if fingerprint in mapping and mapping[fingerprint] != entry.name:
+            ambiguous_fingerprints.add(fingerprint)
+            continue
         mapping[fingerprint] = entry.name
+    for fingerprint in ambiguous_fingerprints:
+        mapping.pop(fingerprint, None)
     return mapping
 
 

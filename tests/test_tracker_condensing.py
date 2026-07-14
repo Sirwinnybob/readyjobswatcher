@@ -459,6 +459,55 @@ def test_cnc_consolidation_reconciles_stale_filename_via_fingerprint(tmp_path):
     ]
 
 
+def test_cnc_consolidation_leaves_ambiguous_fingerprint_unreconciled(tmp_path):
+    # Two different PDFs that happen to share the same size+mtime (e.g. exported in the same
+    # batch run) must not be collapsed into one fingerprint->filename mapping - silently picking
+    # one would misattribute a historical action onto the WRONG physical file, which is worse
+    # than leaving it unreconciled under its original stale name.
+    import os
+
+    job = tmp_path / "Ready Jobs" / "649 - Test Job"
+    cnc_dir = job / "CNC"
+    cnc_dir.mkdir(parents=True)
+    pdf_a = cnc_dir / "649 - Maple.pdf"
+    pdf_b = cnc_dir / "649 - Oak.pdf"
+    pdf_a.write_bytes(b"same-size-content")
+    pdf_b.write_bytes(b"same-size-content")
+    shared_mtime = pdf_a.stat().st_mtime
+    os.utime(pdf_b, (shared_mtime, shared_mtime))
+    stat = pdf_a.stat()
+    fingerprint = f"{stat.st_size}_{int(stat.st_mtime * 1000)}"
+
+    _write_json(
+        job / "CNC" / ".tracker" / "tablet-a.json",
+        {
+            "tabletId": "tablet-a",
+            "actions": [
+                {
+                    "file": "502 - Maple.pdf",
+                    "page": 1,
+                    "action": "complete",
+                    "timestamp": "2026-06-09T10:00:00Z",
+                    "fileFingerprint": fingerprint,
+                },
+            ],
+        },
+    )
+
+    consolidate_cnc_tracker(job)
+
+    cnc_actions = json.loads((job / "CNC" / ".tracker" / "consolidated.json").read_text(encoding="utf-8"))["actions"]
+    assert cnc_actions == [
+        {
+            "file": "502 - Maple.pdf",
+            "page": 1,
+            "action": "complete",
+            "timestamp": "2026-06-09T10:00:00Z",
+            "fileFingerprint": fingerprint,
+        }
+    ]
+
+
 def test_consolidation_returns_early_without_device_files(tmp_path):
     job = tmp_path / "Ready Jobs" / "123 - Test Job"
     tracker_dir = job / "CNC" / ".tracker"
