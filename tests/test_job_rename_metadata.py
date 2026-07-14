@@ -84,7 +84,9 @@ def test_rename_ready_job_updates_folder_and_metadata_references(tmp_path):
         },
     )
 
-    result = rename_ready_job(root, old_name, new_name, archive_root=None)
+    result = rename_ready_job(
+        root, old_name, new_name, archive_root=None, rename_history_file=tmp_path / "rename_history.json"
+    )
 
     assert result.old_name == old_name
     assert result.new_name == new_name
@@ -125,7 +127,9 @@ def test_rename_ready_job_rejects_duplicate_destination(tmp_path):
     (root / "456 - NEW").mkdir(parents=True)
 
     try:
-        rename_ready_job(root, "123 - OLD", "456 - NEW")
+        rename_ready_job(
+            root, "123 - OLD", "456 - NEW", rename_history_file=tmp_path / "rename_history.json"
+        )
     except FileExistsError:
         pass
     else:
@@ -149,7 +153,9 @@ def test_rename_ready_job_renames_orphaned_derived_files(tmp_path):
     tracker_dir.mkdir(parents=True)
     (tracker_dir / "123 - tablet-07.json").write_text("{}", encoding="utf-8")
 
-    result = rename_ready_job(root, old_name, new_name, archive_root=None)
+    result = rename_ready_job(
+        root, old_name, new_name, archive_root=None, rename_history_file=tmp_path / "rename_history.json"
+    )
 
     new_dark_mode = root / new_name / "DARK MODE"
     assert (new_dark_mode / "456 - ASSEMBLY SHEETS.pdf").exists()

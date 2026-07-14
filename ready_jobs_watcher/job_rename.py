@@ -226,6 +226,7 @@ def rename_ready_job(
     new_name: str,
     *,
     archive_root: str | Path | None = None,
+    rename_history_file: str | Path | None = None,
 ) -> JobRenameResult:
     root = Path(root_dir)
     old_name = str(old_name or "").strip()
@@ -247,6 +248,14 @@ def rename_ready_job(
         renamed_folder = True
     elif not new_path.exists():
         raise FileNotFoundError(f"Job folder does not exist: {old_path}")
+
+    if renamed_folder:
+        from .rename_history import record_rename
+        record_rename(
+            old_name,
+            new_name,
+            history_file=Path(rename_history_file) if rename_history_file is not None else None,
+        )
 
     old_num, old_job_name = parse_job_folder_name(old_name)
     new_num, new_job_name = parse_job_folder_name(new_name)
