@@ -47,12 +47,18 @@ why only 2 of the sources below get a task in this plan.
 *every* string in the entire JSON document and replaces any occurrence of the old job's folder
 name, with no concept of "which job's record this string belongs to." `job_board.json` holds an
 array of per-job dicts (`folder_name`, `job_number`, `job_name`, `construction_method`, etc.) — one
-entry per job on the board. When job `502 - HARTFORD McCASLIN REFACE` was renamed to
-`649 - HARTFORD McCASLIN REFACE` this morning, 8 *other, unrelated* jobs' `construction_method`
-fields — which should hold `"FACE-FRAME"` / `"FRAMELESS"` / `"Both"` — got overwritten to the
-literal string `"649 - HARTFORD McCASLIN REFACE"`, because those fields already happened to
-contain the old job's name as their (buggy, pre-existing, Hours-Tracker-side) value, and the
-rewrite doesn't know those fields belong to a different job's record.
+entry per job on the board. `construction_method` mirrors RJW's own delivery-sheet mode detection
+(`detect_mode_for_job` in `cabinet_sheet_indexer.py`, stored per-job in `deployment_gate.json`'s
+`selectedMode`/`modeDetection`) — confirmed by checking job `587 - BLANKENSHIP 38984 DEXTER`'s own
+`deployment_gate.json` directly: `"selectedMode": "FACE-FRAME"`, `"modeDetection": {"source":
+"DELIVERY_SHEET"}` — RJW's own detection is correct and uncorrupted. It's Hours Tracker's *mirrored
+copy* of that value in `job_board.json` that got clobbered: when job `502 - HARTFORD McCASLIN
+REFACE` was renamed to `649 - HARTFORD McCASLIN REFACE` this morning, 8 *other, unrelated* jobs'
+`construction_method` fields in `job_board.json` got overwritten to the literal string
+`"649 - HARTFORD McCASLIN REFACE"`, because those fields already contained the old job's name as
+their value before the rename, and the rewrite doesn't know those fields belong to a different
+job's record — it's a straightforward consequence of this repo's own blind substring replace, not
+a Hours Tracker bug or a bad detection anywhere.
 
 - [ ] **Step 1: Write the failing test**
 
