@@ -25,6 +25,12 @@ Use this skill to answer: "Which system owns this metadata file, where is the so
 > `C:\Scripts\Hours Tracker\METADATA_AUDIT.md`. When this map and the code disagree, trust the code,
 > fix the code, then update BOTH this skill and that audit doc (rules are in the audit's §1.4).
 
+> **Mirror sync:** the six per-repo `.claude`/`.agents` copies of this skill (Hours Tracker,
+> Ready Jobs Watcher, KKCSheetTracker) are kept byte-identical to this file automatically by
+> `sync-kkc-metadata-map.ps1`, triggered on every edit here via a PostToolUse hook in the global
+> Claude Code settings. Edit only this canonical copy — the mirrors are overwritten and
+> auto-committed, so manual edits to a mirror will be silently replaced.
+
 ## System Boundaries
 
 | System | Role | First Path |
