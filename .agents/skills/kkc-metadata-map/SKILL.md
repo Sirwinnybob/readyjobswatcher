@@ -44,7 +44,7 @@ Cabinet Vision (external CAD database, not one of the five programs above) is th
 | `Y:\Ready Jobs\<job>\.metadata\hardwoods\.tracker\.board_stock_*_<tablet>.json` | KKCSheetTracker tablets | Hardwood board-stock migration markers |
 | `Y:\Ready Jobs\<job>\.metadata\hardwoods\.tracker\watcher_refresh_watcher.json` | Ready Jobs Watcher | Hardwood refresh heartbeat |
 | `Y:\Ready Jobs\<job>\.metadata\cabinet_sheet_index.json` | Ready Jobs Watcher | Check `cabinet_sheet_indexer.py` and root PDF mtimes |
-| `Y:\Ready Jobs\.metadata\moldings\{Crown,Scribe,Base}\<profileId>.xml` | Ready Jobs Watcher (pulls from Cabinet Vision `Profile`/`Shape` tables, deletes obsolete profile files); Hours Tracker reads only | Geometry cached by (mtime, size); check `moldings_sync.py`, Cabinet Vision DB connectivity, then HT's molding library page |
+| `Y:\Ready Jobs\.metadata\moldings\{Crown,Scribe,Base}\<profileId>.xml` | Ready Jobs Watcher (pulls from Cabinet Vision `Profile`/`Shape` tables, deletes obsolete profile files); Hours Tracker reads only | HT's molding library page caches parsed geometry by (mtime, size); check `moldings_sync.py` (skips rewrite when bytes match, not time-based), then Cabinet Vision DB connectivity |
 | `Y:\Ready Jobs\<job>\.metadata\pdf_markup\.tracker\<tablet>.markup.json` | KKCSheetTracker tablets | Root/reference PDF markup |
 | `Y:\Ready Jobs\<job>\.metadata\pdf_markup\.tracker\<tablet>.json` | KKCSheetTracker tablets | Legacy PDF markup fallback |
 | `Y:\Ready Jobs\.metadata\crashes\*.json` | KKCSheetTracker Android | Read latest crash JSON, then match app version and route/screen |
