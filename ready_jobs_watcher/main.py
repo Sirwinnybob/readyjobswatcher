@@ -6,6 +6,7 @@ file watchers, background tasks, GUI elements, and the system tray icon.
 """
 import os
 import sys
+import subprocess
 import threading
 import logging
 import time
@@ -53,6 +54,59 @@ from .metadata_refresh import MetadataRefreshService
 from .polling import ReadyJobsPoller
 
 ROOT_RECONNECT_POLL_SECONDS = 30
+
+
+def _win32_quote_arg(arg: str) -> str:
+    """Quote a single argv element for a Windows os.execv() relaunch.
+
+    CPython's os.execv() on Windows has no real execve(); it emulates one via
+    _wspawnv(P_OVERLAY, ...), which builds the replacement process's Win32
+    command line by joining the given argv elements with a single bare space
+    -- unlike subprocess, which runs the whole argv list through
+    subprocess.list2cmdline() before handing it to CreateProcess. Any element
+    containing whitespace (virtually guaranteed here: the dev interpreter
+    lives under "C:\\Program Files\\Python313\\python.exe" and/or a repo path
+    like "C:\\Scripts\\Ready Jobs Watcher\\...") gets silently split into
+    multiple argv entries by the OS, and the relaunched process fails to
+    start with no exception raised in the parent (see restart()).
+
+    subprocess.list2cmdline() implements the MS C runtime argument-quoting
+    rules for exactly one argument. Quoting each element individually here
+    before execv's naive space-join reconstructs a command line whose parts
+    the child process's own argv parsing recovers correctly.
+    """
+    return subprocess.list2cmdline([arg])
+
+
+def _win32_quote_argv(args):
+    """Quote every element of an execv() argv list (see _win32_quote_arg).
+
+    No-op on non-Windows platforms, where os.execv() is a real execve() and
+    does not go through this space-joining command-line construction.
+    """
+    if os.name != 'nt':
+        return list(args)
+    return [_win32_quote_arg(arg) for arg in args]
+
+
+def _restart_exec_args():
+    """Build the argv list Application.restart() passes to os.execv().
+
+    Mirrors the frozen-vs-script executable/argument distinction the old
+    subprocess.Popen-based restart() used (see git history): a PyInstaller
+    build's sys.argv is already just [exe_path], so appending sys.argv to
+    [sys.executable] would duplicate the executable path as a bogus CLI
+    argument. Running as a script, sys.argv is the real invocation to
+    reproduce.
+
+    The result is then quoted per-element for Windows (see _win32_quote_argv)
+    so os.execv's unquoted space-join doesn't split paths containing spaces.
+    """
+    if getattr(sys, 'frozen', False):
+        raw_args = [sys.executable]
+    else:
+        raw_args = [sys.executable, *sys.argv]
+    return _win32_quote_argv(raw_args)
 
 
 # --- Logging Setup ---
@@ -883,11 +937,14 @@ class Application:
         Safely restarts the application in place.
 
         Stops observers and worker threads, hides tray/Qt state, releases the
-        single-instance lock, then replaces the current process image via
-        os.execv -- the old process never keeps running as a separate process
-        alongside a spawned child, it becomes the new one. This removes the
-        parent/child overlap the previous subprocess.Popen-based restart could
-        produce.
+        single-instance lock, then replaces the current process via os.execv.
+        On Windows, CPython emulates execv via spawn+exit rather than a true
+        same-PID execve: the new process gets a new PID, but the calling PID
+        exits promptly instead of lingering alongside a spawned child. This
+        still removes the parent/child overlap the previous
+        subprocess.Popen-based restart could produce -- just not by literally
+        keeping the same process identity, so don't assume PID continuity
+        across a restart() call.
         """
         logging.info("Initiating safe in-place application restart...")
 
@@ -962,8 +1019,13 @@ class Application:
 
         # Replace the current process image in place.
         try:
-            logging.info("Replacing process image to restart in place (PID %s).", os.getpid())
-            os.execv(sys.executable, [sys.executable, *sys.argv])
+            exec_args = _restart_exec_args()
+            logging.info(
+                "Replacing process image to restart in place (PID %s): %s",
+                os.getpid(),
+                exec_args,
+            )
+            os.execv(sys.executable, exec_args)
 
         except Exception as e:
             logging.error(f"Failed to replace process image during restart: {e}")
