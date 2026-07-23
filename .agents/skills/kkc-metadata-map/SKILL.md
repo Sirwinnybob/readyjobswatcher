@@ -164,6 +164,7 @@ Second caveat: if a Cabinet Vision molding profile is renamed or removed, Ready 
 | `C:\Scripts\Hours Tracker\backend\checklist_rules.json`, `%DATA_DIR%\checklist_rules.json` | Hours Tracker | Global checklist automation rules |
 | `C:\Scripts\Hours Tracker\backend\board_stock_materials.json`, `%DATA_DIR%\board_stock_materials.json` | Hours Tracker | Remembered board-stock material names |
 | `C:\Scripts\Hours Tracker\backend\molding_dimensions.json`, `%DATA_DIR%\molding_dimensions.json` | Hours Tracker | User-assigned molding dimension overrides (segment/overall/manual), keyed by `moldingId` (e.g. `"Crown:105"`); lives outside `Y:\Ready Jobs`, never touched by Ready Jobs Watcher (audit SK-06) |
+| `C:\Scripts\Hours Tracker\backend\molding_frame_style.json`, `%DATA_DIR%\molding_frame_style.json` | Hours Tracker | Crown-only Face Frame/Frameless tag, keyed by `moldingId`; same HT-local sidecar pattern as `molding_dimensions.json` above, but unlike dimensions this DOES flow into the published tablet cache — see the `moldings_cache` Ownership Map row (audit SK-07) |
 | `C:\Scripts\timeclock-hub\data\timeclock.db` | timeclock-hub | SQLite source of truth for RTC punch-clock employees/punches |
 | `C:\Scripts\timeclock-hub\data\timeclock.db.backup_*` | timeclock-hub cleanup/admin workflow | Backup before duplicate/local punch cleanup |
 | `C:\Scripts\timeclock-hub\downloaded-timeclock.db` | timeclock-hub admin/debug workflow | Local copy from `/api/db/download` |
