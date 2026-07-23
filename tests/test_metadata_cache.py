@@ -123,6 +123,35 @@ def test_update_all_jobs_cache_respects_production_order_but_does_not_rewrite_it
     assert order.read_text(encoding="utf-8") == before
 
 
+def test_static_cache_accepts_base_job_number_for_lettered_job_cnc_sheets(tmp_path):
+    # Split/lettered jobs (e.g. "530a") sometimes get CNC remake sheets exported
+    # under the base numeric job number ("530 - 001 REMAKE - ...") instead of the
+    # lettered folder number ("530a - ..."). Those must still be picked up.
+    job = tmp_path / "Ready Jobs" / "530a - Test Job"
+    cnc = job / "CNC"
+    cnc.mkdir(parents=True)
+    (cnc / "530a - Maple.pdf").write_bytes(b"not a real pdf")
+    (cnc / "530 - 001 REMAKE - Maple.pdf").write_bytes(b"not a real pdf")
+    _write_json(job / ".metadata" / "deployment_gate.json", {"deployed": True, "hiddenFromProduction": False})
+
+    cache = generate_static_cache(job, "530a - Test Job")
+
+    material_names = {m["materialName"] for m in cache["cncJob"]["materials"]}
+    assert material_names == {"Maple", "001 REMAKE - Maple"}
+
+
+def test_static_cache_still_rejects_unrelated_job_number_prefix(tmp_path):
+    job = tmp_path / "Ready Jobs" / "530a - Test Job"
+    cnc = job / "CNC"
+    cnc.mkdir(parents=True)
+    (cnc / "999 - Other Job Sheet.pdf").write_bytes(b"not a real pdf")
+    _write_json(job / ".metadata" / "deployment_gate.json", {"deployed": True, "hiddenFromProduction": False})
+
+    cache = generate_static_cache(job, "530a - Test Job")
+
+    assert cache["cncJob"]["materials"] == []
+
+
 def test_refresh_single_job_does_not_recreate_deleted_job_folder(tmp_path):
     root = tmp_path / "Ready Jobs"
     job = root / "123 - Deleted Job"

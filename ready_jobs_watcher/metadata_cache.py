@@ -137,6 +137,10 @@ def generate_static_cache(job_folder: Path, folder_name: Optional[str] = None, l
     materials = []
     cnc_issues = []
     cnc_dir = job_folder / "CNC"
+    # Split/lettered jobs (e.g. "530a") sometimes get CNC remake sheets exported
+    # under the base numeric job number ("530 - 001 REMAKE - ...") instead of the
+    # lettered folder number. Accept either prefix so those aren't silently dropped.
+    job_base_number = re.sub(r"[A-Za-z]+$", "", job_number) if job_number else ""
     if cnc_dir.exists():
         for entry in os.scandir(cnc_dir):
             if not entry.is_file():
@@ -147,11 +151,17 @@ def generate_static_cache(job_folder: Path, folder_name: Optional[str] = None, l
                 continue
             if "all sheets" in entry.name.lower():
                 continue
-            if job_number and not entry.name.startswith(f"{job_number} - "):
-                continue
+            matched_prefix = None
+            if job_number:
+                if entry.name.startswith(f"{job_number} - "):
+                    matched_prefix = job_number
+                elif job_base_number and job_base_number != job_number and entry.name.startswith(f"{job_base_number} - "):
+                    matched_prefix = job_base_number
+                if matched_prefix is None:
+                    continue
 
             pdf_path = Path(entry.path)
-            material_name = pdf_path.stem.replace(f"{job_number} - ", "", 1) if job_number else pdf_path.stem
+            material_name = pdf_path.stem.replace(f"{matched_prefix} - ", "", 1) if matched_prefix else pdf_path.stem
             stat = pdf_path.stat()
             metadata_file = cnc_dir / ".metadata" / f"{pdf_path.stem}.json"
             metadata = None
@@ -1034,6 +1044,9 @@ def update_all_jobs_cache(
                     summary["errors"] += 1
         except Exception:
             summary["errors"] += 1
+            logging.getLogger(__name__).error(
+                "Failed to refresh metadata cache for %s", folder_name, exc_info=True
+            )
     return summary
 
 
