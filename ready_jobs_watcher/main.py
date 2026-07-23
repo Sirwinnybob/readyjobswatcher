@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .config import Config, BASE_DATA_DIR
 from .file_handler import JobProcessor, is_retryable_os_error
+from .single_instance import SingleInstanceGuard
 from .utils import clear_old_logs, is_hidden
 from .bad_parts_checker import load_blacklist, load_permanently_ignored_blacklist
 from .watchers import RenameHandler, PdfChangeHandler
@@ -118,6 +119,7 @@ class Application:
         self.stop_event = threading.Event()
 
         self.PAUSE_PROCESSING = False
+        self._single_instance_guard = None
         self.PENDING_RENAMES = {}
         self.pending_renames_lock = threading.Lock()  # Lock for thread-safe access to PENDING_RENAMES
         self.LAST_BACKUP_TIME = None
@@ -930,102 +932,39 @@ class Application:
             )
             os._exit(1)
 
-    def _is_process_running(self, pid):
-        """
-        Check if a process with given PID is running and is a python process.
-
-        Args:
-            pid (int): The process ID to check.
-
-        Returns:
-            bool: True if running, False otherwise.
-        """
-        try:
-            # On Windows, try to open the process and check its image name
-            import ctypes
-            from ctypes import wintypes
-            kernel32 = ctypes.windll.kernel32
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-            if handle:
-                size = wintypes.DWORD(1024)
-                buf = ctypes.create_unicode_buffer(1024)
-                res = kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
-                kernel32.CloseHandle(handle)
-                if res:
-                    exe_name = buf.value.lower()
-                    return 'python' in exe_name
-            return False
-        except Exception:
-            # If we can't check, assume it's not running
-            return False
-
     def acquire_lock(self):
         """
-        Acquires a single-instance lock using PID-based locking.
-        This is more robust than file locking and survives crashes.
+        Acquires the single-instance lock.
+
+        Compatibility wrapper around SingleInstanceGuard: delegates the actual
+        singleton decision to a kernel-owned Win32 named mutex (the sole
+        ownership authority) and keeps ready_jobs_watcher.lock as a
+        diagnostic-only PID file that is written after the mutex is owned and
+        is never used to decide ownership.
 
         Returns:
             bool: True if lock was acquired, False if another instance exists.
         """
         lock_file = os.path.join(BASE_DATA_DIR, "ready_jobs_watcher.lock")
-        current_pid = os.getpid()
+        self._single_instance_guard = SingleInstanceGuard(diagnostic_path=lock_file)
 
-        try:
-            try:
-                with open(lock_file, 'r') as f:
-                    existing_pid = int(f.read().strip())
-                if self._is_process_running(existing_pid):
-                    logging.warning(f"Another instance is already running (PID: {existing_pid}). Exiting.")
-                    return False
-                logging.info(f"Found stale lock file from PID {existing_pid}, removing it.")
-                os.remove(lock_file)
-            except FileNotFoundError:
-                pass
-            except (ValueError, IOError) as e:
-                logging.warning(f"Invalid or unreadable lock file, removing it: {e}")
-                try:
-                    os.remove(lock_file)
-                except Exception:
-                    pass
-
-            # Write our PID to the lock file
-            with open(lock_file, 'w') as f:
-                f.write(str(current_pid))
-
-            # Register cleanup handler
-            atexit.register(self.release_lock)
-
-            logging.info(f"Acquired single instance lock (PID: {current_pid}).")
-            return True
-
-        except Exception as e:
-            logging.error(f"Failed to acquire lock: {e}")
+        if not self._single_instance_guard.acquire():
+            logging.warning("Another instance is already running. Exiting.")
             return False
 
+        # Register cleanup handler
+        atexit.register(self.release_lock)
+
+        logging.info(f"Acquired single instance lock (PID: {os.getpid()}).")
+        return True
+
     def release_lock(self):
-        """Releases the single-instance lock by removing the PID file."""
-        lock_file = os.path.join(BASE_DATA_DIR, "ready_jobs_watcher.lock")
-        try:
-            try:
-                with open(lock_file, 'r') as f:
-                    existing_pid = int(f.read().strip())
-                if existing_pid == os.getpid():
-                    os.remove(lock_file)
-                    logging.info("Released single instance lock.")
-                else:
-                    logging.warning(f"Lock file contains different PID ({existing_pid} vs {os.getpid()}), not removing.")
-            except FileNotFoundError:
-                pass
-            except Exception:
-                # If we can't read it, just try to remove it
-                try:
-                    os.remove(lock_file)
-                except FileNotFoundError:
-                    pass
-                    logging.info("Released single instance lock.")
-        except Exception as e:
-            logging.error(f"Error releasing lock: {e}")
+        """Releases the single-instance lock (compatibility wrapper around SingleInstanceGuard)."""
+        guard = getattr(self, "_single_instance_guard", None)
+        if guard is None:
+            return
+        guard.release()
+        logging.info("Released single instance lock.")
 
     def start_threads(self):
         """Starts the background threads for retries and scheduled tasks."""
@@ -1461,6 +1400,11 @@ class Application:
         """Execute an immediate manual backup based on configured paths."""
         from .scheduler import perform_backup
         perform_backup(self.config, self)
+
+    def sync_moldings(self) -> bool:
+        """Synchronize Cabinet Vision molding profiles to the Ready Jobs metadata folder."""
+        from .moldings_sync import sync_moldings_library
+        return sync_moldings_library(self.config)
 
     def scan_cnc_pdfs_for_bad_parts(self):
         """Trigger an immediate scan of all existing CNC PDFs."""
