@@ -298,6 +298,8 @@ adb shell dumpsys package com.example.timecard | Select-String "versionName|vers
 | How are cabinet/sheet indexes generated? | `C:\Scripts\Ready Jobs Watcher\ready_jobs_watcher\cabinet_sheet_indexer.py` |
 | How does Ready Jobs Watcher publish the Cabinet Vision molding library? | `C:\Scripts\Ready Jobs Watcher\ready_jobs_watcher\moldings_sync.py` |
 | How does Hours Tracker store molding dimension overrides? | `C:\Scripts\Hours Tracker\backend\routes\molding_dimensions_store.py` |
+| How does Hours Tracker store the crown Face Frame/Frameless tag? | `C:\Scripts\Hours Tracker\backend\routes\molding_frame_style_store.py` |
+| How does Hours Tracker publish the tablet-facing molding cache (SVGs, `library.json`, `usage_index.json`)? | `C:\Scripts\Hours Tracker\backend\routes\molding_cache_publish.py` |
 | How does Hours Tracker sync JSON to reporting DB? | `C:\Scripts\Hours Tracker\backend\db.py` |
 | What API serves Hours Tracker admin data? | `C:\Scripts\Hours Tracker\backend\main_v2.py` |
 | How are tablet lineup/board/delivery requests consumed? | `C:\Scripts\Hours Tracker\backend\main_v2.py`: `_apply_production_order_requests`, `_apply_job_board_edit_requests`, `_apply_delivery_schedule_request` |
