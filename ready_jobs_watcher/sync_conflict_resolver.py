@@ -12,10 +12,11 @@ import logging
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 from .atomic_write import atomic_write_json as _shared_atomic_write_json
 
@@ -26,6 +27,15 @@ SYNC_CONFLICT_RE = re.compile(
     r"^(?P<stem>.+)\.sync-conflict-(?P<date>\d{8})-(?P<time>\d{6})-(?P<device>[^.]+)(?P<suffix>(?:\..+)?)$",
     re.IGNORECASE,
 )
+
+# Matches a trailing ".tmp" or ".tmp-<anything>" on the derived original name,
+# e.g. Syncthing's own in-progress bookkeeping files.
+_TMP_SUFFIX_RE = re.compile(r"\.tmp(-.*)?$", re.IGNORECASE)
+
+# How long to wait between the two stat() samples used to confirm a conflict
+# file is no longer being actively written. Short enough not to noticeably
+# stall a sweep over many files, long enough to catch an in-progress write.
+_STABLE_CHECK_INTERVAL_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -47,6 +57,67 @@ def original_path_for_conflict(path: os.PathLike | str) -> Optional[Path]:
     if not match:
         return None
     return conflict.with_name(f"{match.group('stem')}{match.group('suffix')}")
+
+
+def is_transient_conflict_path(path: os.PathLike | str) -> bool:
+    """
+    Return True when a sync-conflict path is Syncthing's own transient/internal
+    bookkeeping rather than a genuine user-facing conflict.
+
+    This is decided from the *derived original* path (the conflict filename
+    with its ``.sync-conflict-<date>-<time>-<device>`` marker stripped back
+    out), which is transient when it:
+    - lives under a ``.metadata\\sync_conflicts`` or ``.stversions`` directory
+    - is dot-prefixed/hidden (an internal-bookkeeping naming convention)
+    - starts with ``.syncthing``
+    - ends in ``.tmp`` or ``.tmp-<suffix>``
+    """
+    conflict = Path(path)
+    original = original_path_for_conflict(conflict)
+    if original is None:
+        return False
+
+    parts_lower = [part.lower() for part in original.parts]
+    if "sync_conflicts" in parts_lower or ".stversions" in parts_lower:
+        return True
+
+    name = original.name
+    name_lower = name.lower()
+    if name.startswith("."):
+        return True
+    if name_lower.startswith(".syncthing"):
+        return True
+    if _TMP_SUFFIX_RE.search(name_lower):
+        return True
+
+    return False
+
+
+def _stat_signature(path: Path) -> Optional[Tuple[int, int]]:
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return None
+    return (stat_result.st_size, stat_result.st_mtime_ns)
+
+
+def _is_stable_file(path: Path, interval: float = _STABLE_CHECK_INTERVAL_SECONDS) -> bool:
+    """
+    Sample (size, mtime_ns) twice across a short bounded interval to guard
+    against processing a conflict file that Syncthing is still actively
+    writing. Returns False (not stable) if the file vanishes or its
+    signature changes between samples -- a later event/sweep will retry it
+    once it settles. A stable empty file is still considered stable; a
+    genuine empty file is valid content, not a sign of an in-progress write.
+    """
+    first = _stat_signature(path)
+    if first is None:
+        return False
+    time.sleep(interval)
+    second = _stat_signature(path)
+    if second is None:
+        return False
+    return first == second
 
 
 def _sha256(path: Path) -> str:
@@ -131,7 +202,11 @@ def resolve_sync_conflict_file(
     original = original_path_for_conflict(conflict)
     if original is None:
         return None
+    if is_transient_conflict_path(conflict):
+        return None
     if not conflict.is_file():
+        return None
+    if not _is_stable_file(conflict):
         return None
 
     root = Path(ready_jobs_root)
@@ -179,8 +254,12 @@ def _iter_conflicts(root: Path) -> Iterable[Path]:
             if name.lower() not in {".stversions"} and name.lower() != "sync_conflicts"
         ]
         for filename in filenames:
-            if SYNC_CONFLICT_RE.match(filename):
-                yield Path(dirpath) / filename
+            if not SYNC_CONFLICT_RE.match(filename):
+                continue
+            candidate = Path(dirpath) / filename
+            if is_transient_conflict_path(candidate):
+                continue
+            yield candidate
 
 
 def scan_and_resolve_sync_conflicts(ready_jobs_root: os.PathLike | str) -> List[SyncConflictResolution]:
