@@ -4,15 +4,14 @@ description: >-
   Use when tracing KKC Ready Jobs metadata ownership or parity, stale tablet
   job data, missing jobs, CNC or hardwood tracker streams, Syncthing
   conflicts, tablet request sidecars, supply schema/status/comments,
-  .time_cards, timeclock API fields, production_order.json,
-  delivery_schedule.json, update-feed metadata, admin metadata,
-  molding/moulding profile or dimension-override files, or deciding whether
-  KKCSheetTracker, Ready Jobs Watcher, Hours Tracker, timeclock-hub, or
-  updater-agent owns a file.
+  safety concern reports/status/comments, .time_cards, timeclock API fields,
+  production_order.json, delivery_schedule.json, update-feed metadata, admin
+  metadata, molding/moulding profile or dimension-override files, or
+  deciding whether KKCSheetTracker, Ready Jobs Watcher, Hours Tracker,
+  timeclock-hub, or updater-agent owns a file.
 metadata:
   sync:
-    version: 2
-    hash: sha256-e754ff0434df2f2e0d30b321ebe29f72f15f38bc682faaa7732b88b763d414b9
+    version: 3
 ---
 # KKC Metadata Map
 
