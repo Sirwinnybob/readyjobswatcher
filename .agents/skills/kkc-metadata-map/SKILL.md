@@ -250,6 +250,7 @@ Get-Content "Y:\Ready Jobs\.time_cards\pending_edits.json"
 Get-Content "Y:\Ready Jobs\.time_cards\loaded_cards.json"
 Get-ChildItem "Y:\Ready Jobs\.time_cards\.locks"
 Get-ChildItem "Y:\Ready Jobs\.supply" -Recurse -Depth 2
+Get-ChildItem "Y:\Ready Jobs\.safety" -Recurse -Depth 2
 ```
 
 KKCSheetTracker tablet:
