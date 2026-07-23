@@ -32,10 +32,13 @@ SYNC_CONFLICT_RE = re.compile(
 # e.g. Syncthing's own in-progress bookkeeping files.
 _TMP_SUFFIX_RE = re.compile(r"\.tmp(-.*)?$", re.IGNORECASE)
 
-# How long to wait between the two stat() samples used to confirm a conflict
-# file is no longer being actively written. Short enough not to noticeably
-# stall a sweep over many files, long enough to catch an in-progress write.
+# How long to wait between stat() samples used to confirm a conflict file is
+# no longer being actively written, and how many samples to take. Short
+# enough not to noticeably stall a sweep over many files, long enough (across
+# multiple samples) to catch most in-progress writes -- see _is_stable_file's
+# docstring for this heuristic's known limitation.
 _STABLE_CHECK_INTERVAL_SECONDS = 0.1
+_STABLE_CHECK_SAMPLES = 3
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,9 @@ def is_transient_conflict_path(path: os.PathLike | str) -> bool:
     This is decided from the *derived original* path (the conflict filename
     with its ``.sync-conflict-<date>-<time>-<device>`` marker stripped back
     out), which is transient when it:
-    - lives under a ``.metadata\\sync_conflicts`` or ``.stversions`` directory
+    - lives under a directory literally named ``sync_conflicts`` (in practice
+      always nested under ``.metadata``, per ``_archive_root_for``) or
+      ``.stversions``
     - is dot-prefixed/hidden (an internal-bookkeeping naming convention)
     - starts with ``.syncthing``
     - ends in ``.tmp`` or ``.tmp-<suffix>``
@@ -101,23 +106,39 @@ def _stat_signature(path: Path) -> Optional[Tuple[int, int]]:
     return (stat_result.st_size, stat_result.st_mtime_ns)
 
 
-def _is_stable_file(path: Path, interval: float = _STABLE_CHECK_INTERVAL_SECONDS) -> bool:
+def _is_stable_file(
+    path: Path,
+    interval: float = _STABLE_CHECK_INTERVAL_SECONDS,
+    samples: int = _STABLE_CHECK_SAMPLES,
+) -> bool:
     """
-    Sample (size, mtime_ns) twice across a short bounded interval to guard
-    against processing a conflict file that Syncthing is still actively
-    writing. Returns False (not stable) if the file vanishes or its
-    signature changes between samples -- a later event/sweep will retry it
-    once it settles. A stable empty file is still considered stable; a
-    genuine empty file is valid content, not a sign of an in-progress write.
+    Sample (size, mtime_ns) across a short bounded window to guard against
+    processing a conflict file that Syncthing is still actively writing.
+    Returns False (not stable) if the file vanishes or its signature ever
+    changes between samples -- a later event/sweep will retry it once it
+    settles. A stable empty file is still considered stable; a genuine
+    empty file is valid content, not a sign of an in-progress write.
+
+    Known limitation: this is a best-effort heuristic, not a guarantee.
+    Syncthing's puller can pre-allocate a destination file to its final
+    size before filling in content, and mtime update granularity on a
+    mapped network share (this watcher's real deployment target, Y:\\) can
+    be coarser than this check's sampling window. A slow write that
+    neither grows in size nor ticks mtime during the whole sampling window
+    will read as "stable" even though it isn't. Re-sampling more than once
+    narrows this window but cannot close it without a stronger signal
+    (e.g. an OS-level file lock check), which is out of scope here.
     """
-    first = _stat_signature(path)
-    if first is None:
+    previous = _stat_signature(path)
+    if previous is None:
         return False
-    time.sleep(interval)
-    second = _stat_signature(path)
-    if second is None:
-        return False
-    return first == second
+    for _ in range(samples - 1):
+        time.sleep(interval)
+        current = _stat_signature(path)
+        if current is None or current != previous:
+            return False
+        previous = current
+    return True
 
 
 def _sha256(path: Path) -> str:
@@ -203,10 +224,14 @@ def resolve_sync_conflict_file(
     if original is None:
         return None
     if is_transient_conflict_path(conflict):
+        main_logger.debug("Ignoring transient/internal sync-conflict path: %s", conflict)
         return None
     if not conflict.is_file():
         return None
     if not _is_stable_file(conflict):
+        main_logger.debug(
+            "Sync-conflict file not yet stable, deferring to a later sweep/event: %s", conflict
+        )
         return None
 
     root = Path(ready_jobs_root)
