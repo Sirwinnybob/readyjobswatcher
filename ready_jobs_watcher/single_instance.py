@@ -66,6 +66,11 @@ class SingleInstanceGuard:
     def acquire(self) -> bool:
         """Attempt to become the singleton owner. Returns True iff this
         process now owns the named mutex."""
+        if self._handle is not None:
+            # Already holding this mutex - re-acquiring would overwrite
+            # self._handle and leak the existing handle.
+            return True
+
         if not _IS_WINDOWS:
             raise RuntimeError(
                 "SingleInstanceGuard requires Windows (Win32 CreateMutexW)."

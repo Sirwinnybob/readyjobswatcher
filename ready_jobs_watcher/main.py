@@ -945,10 +945,13 @@ class Application:
         Returns:
             bool: True if lock was acquired, False if another instance exists.
         """
-        lock_file = os.path.join(BASE_DATA_DIR, "ready_jobs_watcher.lock")
-        self._single_instance_guard = SingleInstanceGuard(diagnostic_path=lock_file)
+        guard = getattr(self, "_single_instance_guard", None)
+        if guard is None:
+            lock_file = os.path.join(BASE_DATA_DIR, "ready_jobs_watcher.lock")
+            guard = SingleInstanceGuard(diagnostic_path=lock_file)
+            self._single_instance_guard = guard
 
-        if not self._single_instance_guard.acquire():
+        if not guard.acquire():
             logging.warning("Another instance is already running. Exiting.")
             return False
 
@@ -964,7 +967,6 @@ class Application:
         if guard is None:
             return
         guard.release()
-        logging.info("Released single instance lock.")
 
     def start_threads(self):
         """Starts the background threads for retries and scheduled tasks."""
