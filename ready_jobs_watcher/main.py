@@ -11,6 +11,7 @@ import logging
 import time
 import atexit
 import datetime
+from typing import Optional
 
 from watchdog.observers import Observer
 from concurrent.futures import ThreadPoolExecutor
@@ -113,13 +114,24 @@ class Application:
     Responsibilities include initializing the file system observers, coordinating
     configuration state, executing scheduled tasks, and properly acquiring system locks.
     """
-    def __init__(self):
-        """Initialize the Application instance with default state and component setup."""
+    def __init__(self, instance_guard: Optional[SingleInstanceGuard] = None):
+        """Initialize the Application instance with default state and component setup.
+
+        Args:
+            instance_guard: A SingleInstanceGuard already acquired by the caller
+                (e.g. __main__.py, before setup_logging()/Config/Qt are touched).
+                Stored as self._single_instance_guard so acquire_lock()'s existing
+                lazy-creation logic sees it and treats it as already held -- its
+                defensive acquire_lock() call in start() becomes a no-op idempotent
+                re-acquire instead of a second real attempt. When omitted (e.g. in
+                tests or other direct construction), behaves as before: acquire_lock()
+                lazily creates its own guard on first use.
+        """
         self.config = Config()
         self.stop_event = threading.Event()
 
         self.PAUSE_PROCESSING = False
-        self._single_instance_guard = None
+        self._single_instance_guard = instance_guard
         self.PENDING_RENAMES = {}
         self.pending_renames_lock = threading.Lock()  # Lock for thread-safe access to PENDING_RENAMES
         self.LAST_BACKUP_TIME = None
@@ -746,14 +758,20 @@ class Application:
 
     def start(self):
         """Initializes and starts all application components."""
+        # Defensive acquisition path for direct callers (tests, scripts) that
+        # construct Application() without going through __main__.py's
+        # pre-acquisition. When a guard was already acquired upstream and
+        # passed in via instance_guard, this is a no-op idempotent re-acquire.
+        # Must run before clear_old_logs()/threads/observers/GUI so a duplicate
+        # launch that reaches start() directly never touches any of that state.
+        if not self.acquire_lock():
+            logging.warning("Another instance is already running. Exiting.")
+            sys.exit(0)
+
         os.makedirs(self.config.BACKUP_DIR, exist_ok=True)
         os.makedirs(BASE_DATA_DIR, exist_ok=True)
 
         clear_old_logs()
-
-        if not self.acquire_lock():
-            logging.warning("Another instance is already running. Exiting.")
-            sys.exit(0)
 
         if self.config.bad_parts_mode == "legacy":
             load_blacklist()
@@ -862,72 +880,96 @@ class Application:
 
     def restart(self):
         """
-        Safely restarts the application.
+        Safely restarts the application in place.
 
-        This method stops background threads, explicitly releases the single-instance
-        lock, starts a new process of the application, and then forcefully exits
-        the current process to avoid Tkinter deadlocks during shutdown.
+        Stops observers and worker threads, hides tray/Qt state, releases the
+        single-instance lock, then replaces the current process image via
+        os.execv -- the old process never keeps running as a separate process
+        alongside a spawned child, it becomes the new one. This removes the
+        parent/child overlap the previous subprocess.Popen-based restart could
+        produce.
         """
-        import subprocess
-
-        logging.info("Initiating safe application restart...")
+        logging.info("Initiating safe in-place application restart...")
 
         # Stop background loops from doing more work
         self.stop_event.set()
 
-        # Give pending operations a moment to save
-        time.sleep(2)
+        # Stop observers and join worker threads (mirrors the observer/thread
+        # stop-and-join portion of Application.stop(), without tearing down
+        # the executor, alert coordinator, etc. -- os.execv discards all of
+        # that when it replaces this process image anyway).
+        observers = [
+            ('main_observer', getattr(self, 'observer', None)),
+            ('pdf_observer', getattr(self, 'pdf_observer', None)),
+            ('desktop_observer', getattr(self, 'desktop_observer', None)),
+        ]
+
+        for name, obs in observers:
+            if obs and obs.is_alive():
+                try:
+                    obs.stop()
+                except Exception as e:
+                    logging.error(f"Error stopping {name} during restart: {e}")
+
+        for name, obs in observers:
+            if obs and obs.is_alive():
+                try:
+                    obs.join(timeout=5)
+                except RuntimeError as e:
+                    logging.error(f"Error joining {name} during restart: {e}")
+                if obs.is_alive():
+                    logging.warning(f"{name} did not stop within timeout during restart")
+
+        threads = [
+            ('retry_thread', getattr(self, 'retry_thread', None)),
+            ('backup_thread', getattr(self, 'backup_thread', None)),
+            ('cnc_scan_thread', getattr(self, 'cnc_scan_thread', None)),
+            ('stats_thread', getattr(self, 'stats_thread', None)),
+            ('restart_thread', getattr(self, 'restart_thread', None)),
+            ('pending_autorelease_thread', getattr(self, 'pending_autorelease_thread', None)),
+            ('pending_reminder_thread', getattr(self, 'pending_reminder_thread', None)),
+            ('metadata_end_of_day_thread', getattr(self, 'metadata_end_of_day_thread', None)),
+            ('poller_thread', getattr(self, 'poller_thread', None)),
+            ('observer_monitor_thread', getattr(self, 'observer_monitor_thread', None)),
+            ('tray_thread', getattr(self, 'tray_thread', None)),
+        ]
+
+        for name, thread in threads:
+            if thread and thread.is_alive():
+                try:
+                    thread.join(timeout=5)
+                except RuntimeError as e:
+                    logging.error(f"Error joining {name} during restart: {e}")
+                if thread.is_alive():
+                    logging.warning(f"{name} did not stop within timeout during restart")
 
         # Cleanly hide the tray icon to prevent ghost icons on Windows
-        if self.icon:
+        if getattr(self, 'icon', None):
             try:
                 self.icon.hide()
             except Exception as e:
                 logging.error(f"Error hiding tray icon during restart: {e}")
 
-        # Release the lock file so the new instance doesn't think we're still running
+        if getattr(self, 'qapp', None):
+            try:
+                self.qapp.quit()
+            except Exception as e:
+                logging.error(f"Error quitting QApplication during restart: {e}")
+
+        # Release the lock (mutex + diagnostic PID) so the replacement process
+        # can acquire it cleanly.
         self.release_lock()
 
-        # Start a new instance
+        # Replace the current process image in place.
         try:
-            if getattr(sys, 'frozen', False):
-                # Running as compiled executable
-                executable = sys.executable
-                args = [executable]
-            else:
-                # Running as script
-                executable = sys.executable
-                args = [executable] + sys.argv
-
-            # Use subprocess.Popen to start a new process
-            # DETACHED_PROCESS flag ensures the new process is independent
-            if os.name == 'nt':
-                # Windows
-                DETACHED_PROCESS = 0x00000008
-                subprocess.Popen(
-                    args,
-                    creationflags=DETACHED_PROCESS,
-                    close_fds=True,
-                    start_new_session=True
-                )
-            else:
-                # Unix-like
-                subprocess.Popen(
-                    args,
-                    start_new_session=True,
-                    close_fds=True
-                )
-
-            logging.info("New instance started. Exiting current process forcefully.")
-
-            # Force exit completely bypassing Tkinter cleanup which deadlocks on background threads
-            os._exit(0)
+            logging.info("Replacing process image to restart in place (PID %s).", os.getpid())
+            os.execv(sys.executable, [sys.executable, *sys.argv])
 
         except Exception as e:
-            logging.error(f"Failed to spawn new process during restart: {e}")
+            logging.error(f"Failed to replace process image during restart: {e}")
             send_critical_alert(
                 "Ready Jobs Watcher restart failed",
-                "Ready Jobs Watcher could not start a replacement process and will exit. "
+                "Ready Jobs Watcher could not restart in place and will exit. "
                 "Start it manually to resume monitoring.",
             )
             os._exit(1)

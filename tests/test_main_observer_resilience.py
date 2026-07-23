@@ -1,12 +1,32 @@
 import os
+import sys
 import tempfile
 import threading
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import pytest
 
 from ready_jobs_watcher.deployment_gate import DeploymentGateManager
 from ready_jobs_watcher.main import Application
+
+
+class FakeGuard:
+    """Minimal stand-in for SingleInstanceGuard, matching the acquire()/release()
+    interface Application.acquire_lock()/release_lock() actually call."""
+
+    def __init__(self, acquired: bool = True):
+        self._acquired = acquired
+        self.acquire_calls = 0
+        self.release_calls = 0
+
+    def acquire(self) -> bool:
+        self.acquire_calls += 1
+        return self._acquired
+
+    def release(self) -> None:
+        self.release_calls += 1
 
 
 class _FakeObserver:
@@ -257,18 +277,47 @@ class TestMainObserverResilience(unittest.TestCase):
         app.release_lock = lambda: calls.append("release_lock")  # type: ignore[method-assign]
         app.acquire_lock = lambda: calls.append("acquire_lock")  # type: ignore[method-assign]
 
-        with patch("ready_jobs_watcher.main.time.sleep"), patch(
-            "subprocess.Popen", side_effect=OSError("cannot spawn")
-        ), patch("ready_jobs_watcher.main.send_critical_alert") as alert, patch(
+        with patch(
+            "ready_jobs_watcher.main.os.execv", side_effect=OSError("cannot exec")
+        ) as execv, patch("ready_jobs_watcher.main.send_critical_alert") as alert, patch(
             "ready_jobs_watcher.main.os._exit", side_effect=SystemExit
         ) as exit_process:
             with self.assertRaises(SystemExit):
                 app.restart()
 
+        execv.assert_called_once_with(sys.executable, [sys.executable, *sys.argv])
         alert.assert_called_once()
         exit_process.assert_called_once_with(1)
         self.assertTrue(app.stop_event.is_set())
         self.assertEqual(calls, ["release_lock"])
+
+
+def test_duplicate_application_refuses_to_start_before_workers(monkeypatch):
+    app = _build_minimal_app()
+    app._single_instance_guard = FakeGuard(acquired=False)
+    clear_logs = Mock()
+    start_threads = Mock()
+    monkeypatch.setattr("ready_jobs_watcher.main.clear_old_logs", clear_logs)
+    monkeypatch.setattr(app, "start_threads", start_threads)
+    with pytest.raises(SystemExit) as exc:
+        app.start()
+    assert exc.value.code == 0
+    clear_logs.assert_not_called()
+    start_threads.assert_not_called()
+
+
+def test_restart_executes_in_place_after_stopping(monkeypatch):
+    app = _build_minimal_app()
+    # _build_minimal_app() stubs .restart() with a recording lambda for the
+    # root-offline-restart tests above; here we exercise the real
+    # Application.restart implementation instead.
+    del app.restart
+    app.release_lock = Mock()
+    execv = Mock()
+    monkeypatch.setattr("ready_jobs_watcher.main.os.execv", execv)
+    app.restart()
+    app.release_lock.assert_called_once()
+    execv.assert_called_once_with(sys.executable, [sys.executable, *sys.argv])
 
 
 if __name__ == "__main__":

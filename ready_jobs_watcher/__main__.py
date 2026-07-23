@@ -14,16 +14,34 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from ready_jobs_watcher.main import setup_logging, Application
-
 if __name__ == "__main__":
+    # Acquire the kernel-owned single-instance mutex before touching logging,
+    # Config, or any other shared state. A duplicate launch must exit here,
+    # before setup_logging() creates/rotates log handlers or Application()
+    # builds observers/threads/GUI state.
+    from ready_jobs_watcher.single_instance import SingleInstanceGuard
+    from ready_jobs_watcher.config import BASE_DATA_DIR
+
+    _lock_file = os.path.join(BASE_DATA_DIR, "ready_jobs_watcher.lock")
+    instance_guard = SingleInstanceGuard(diagnostic_path=_lock_file)
+    if not instance_guard.acquire():
+        print(
+            "Ready Jobs Watcher: another instance is already running. Exiting.",
+            file=sys.stderr,
+        )
+        sys.exit(0)
+
+    from ready_jobs_watcher.main import setup_logging, Application
+
     # Initialize the centralized logging system
     setup_logging()
 
-    # Instantiate the core Application
+    # Instantiate the core Application, threading the already-acquired guard
+    # through so Application.start()'s defensive acquire_lock() call becomes a
+    # no-op idempotent re-acquire rather than a second real attempt.
     from ready_jobs_watcher import __version__
     print(f"Ready Jobs Watcher v{__version__} starting...")
-    app = Application()
+    app = Application(instance_guard=instance_guard)
 
     try:
         # Start all background threads and system tray interface
@@ -44,6 +62,7 @@ if __name__ == "__main__":
             print(f"Failed to send critical alert for crash: {alert_err}", file=sys.stderr)
         raise
     finally:
-        # Ensure all components and threads are properly terminated
+        # Ensure all components and threads are properly terminated, then
+        # release the single-instance lock exactly once.
         app.stop()
-
+        app.release_lock()
