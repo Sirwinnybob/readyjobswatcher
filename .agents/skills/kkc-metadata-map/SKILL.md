@@ -215,6 +215,7 @@ Second caveat: if a Cabinet Vision molding profile is renamed or removed, Ready 
 | Assembly/cabinet view wrong | `.metadata\cabinet_sheet_index.json` |
 | Molding profile geometry missing/wrong | `.metadata\moldings\<category>\<profileId>.xml`, `moldings_sync.py`, Cabinet Vision `Profile`/`Shape` tables |
 | Molding dimension lines/annotations missing or reset | `molding_dimensions.json`, `molding_dimensions_store.py` |
+| Crown Face Frame/Frameless tag not showing/grouping right on tablet | `molding_frame_style.json`, `PUT /api/moldings/{id}/frame-style`, confirm `publish_library_cache()` ran, then `moldings_cache\library.json`'s `frameStyle` field |
 | Specialty/admin items wrong | Hours Tracker admin files, then KKCSheetTracker specialty repository |
 | PDF markup missing | `.metadata\pdf_markup\.tracker\<tablet>.markup.json`, then tablet app version |
 | Supply item/status wrong | `.supply\items`, `.supply\status`, `.supply\comments`, then Hours Tracker supply backend |
