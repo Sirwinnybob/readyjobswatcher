@@ -217,6 +217,7 @@ Second caveat: if a Cabinet Vision molding profile is renamed or removed, Ready 
 | Specialty/admin items wrong | Hours Tracker admin files, then KKCSheetTracker specialty repository |
 | PDF markup missing | `.metadata\pdf_markup\.tracker\<tablet>.markup.json`, then tablet app version |
 | Supply item/status wrong | `.supply\items`, `.supply\status`, `.supply\comments`, then Hours Tracker supply backend |
+| Safety concern submitted on tablet not showing on Hours Tracker | Confirm the file landed in `.safety\concerns` under the SAME base path the rest of Hours Tracker uses (`.metadata`, `.supply`, `job_board.json`) -- check `safety_store.get_safety_dir()` resolves via `get_base_path()`, not a separately-derived path (audit-style bug, see Common Mistakes) |
 | Production order/lineup wrong | `production_order.json`, Hours Tracker admin, then Ready Jobs Watcher cache refresh |
 | Delivery schedule wrong | `Y:\Ready Jobs\.metadata\delivery_schedule.json`, Hours Tracker |
 | Digital hours wrong | `.time_cards\<Employee>\<week>.json`, locks, `pending_edits.json` |
