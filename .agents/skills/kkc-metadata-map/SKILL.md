@@ -6,8 +6,8 @@ description: >-
   conflicts, tablet request sidecars, supply schema/status/comments,
   safety concern reports/status/comments, .time_cards, timeclock API fields,
   production_order.json, delivery_schedule.json, update-feed metadata, admin
-  metadata, molding/moulding profile or dimension-override files, or
-  deciding whether KKCSheetTracker, Ready Jobs Watcher, Hours Tracker,
+  metadata, molding/moulding profile, dimension-override, or frame-style tag
+  files, or deciding whether KKCSheetTracker, Ready Jobs Watcher, Hours Tracker,
   timeclock-hub, or updater-agent owns a file.
 metadata:
   sync:
