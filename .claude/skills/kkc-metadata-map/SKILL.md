@@ -333,7 +333,7 @@ adb shell dumpsys package com.example.timecard | Select-String "versionName|vers
 | Treating thumbnails/fullimages as source metadata | They are render caches; debug source JSON first |
 | Assuming mDNS should always work for timeclock | Current hub may have mDNS disabled; use manual/default IP checks |
 | Assuming CNC actions flow through `events\*.ndjson` | That reader is dormant; the tablet writes legacy `<tablet>.json` only (audit SK-01) |
-| Trusting a bad-part alert reached the engineer | RJW consolidation drops `bad_part_submitted` then deletes the source file (audit C-01) — verify the alert, don't assume |
+| Assuming a bad-part alert was lost because RJW deletes the source file after consolidation | Fixed (audit C-01) — `_merge_cnc_actions` re-emits `bad_part_submitted` with its original timestamp into `consolidated.json` before deletion, so the alert survives |
 | Treating a `.sync-conflict-*` file as harmless | No program filters them; every metadata scan ingests them as a phantom writer (audit H-03) |
 | Assuming a "read-only" HT read never mutates | `admin_store.get_checklist` consumes+deletes tablet `checklist_patch.*.json` unless inside `read_only_context()`; any new read-only consumer (handoff sources) MUST enter that context or it steals tablet patches (audit H-04) |
 | Assuming Ready Jobs Watcher's molding library sync can overwrite Hours Tracker's saved dimensions | Different trees entirely: RJW only writes `.metadata\moldings\*.xml` geometry under `Y:\Ready Jobs`; HT's `molding_dimensions.json` lives in HT's own `DATA_DIR` and RJW never touches it (audit SK-06) |
