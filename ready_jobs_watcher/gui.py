@@ -205,6 +205,10 @@ class MoldingSyncSignal(QObject):
     completed = pyqtSignal(bool, str)
 
 
+class JobMismatchSignal(QObject):
+    new_mismatch = pyqtSignal(object)
+
+
 class QtLogHandler(logging.Handler):
     def __init__(self, log_signal):
         super().__init__()
@@ -328,6 +332,8 @@ class SettingsWindow(QWidget):
         self.consolidation_signal.failed.connect(self._show_consolidation_failed)
         self.molding_sync_signal = MoldingSyncSignal()
         self.molding_sync_signal.completed.connect(self._show_molding_sync_result)
+        self.job_mismatch_signal = JobMismatchSignal()
+        self.job_mismatch_signal.new_mismatch.connect(self._show_cutlist_mismatch_alert_dialog)
         self.alert_coordinator = None
         self.bad_parts_center_dialog = None
         self.jobs_table = None
@@ -817,6 +823,9 @@ class SettingsWindow(QWidget):
     def emit_auto_release_notice(self, job_folder_name: str):
         self.auto_release_signal.new_job.emit(str(job_folder_name))
 
+    def emit_cutlist_mismatch_notice(self, payload: dict):
+        self.job_mismatch_signal.new_mismatch.emit(payload)
+
     def refresh_jobs_dashboard(self):
         self.jobs_dashboard_signal.refresh_requested.emit()
 
@@ -1301,6 +1310,25 @@ class SettingsWindow(QWidget):
         
         if msg_box.clickedButton() == view_btn:
             self.show_bad_parts_center()
+
+    def _show_cutlist_mismatch_alert_dialog(self, payload: dict):
+        job_folder_name = str(payload.get("jobFolderName") or "unknown job")
+        pdf_filename = str(payload.get("pdfFilename") or "unknown file")
+        expected_job = str(payload.get("expectedJob") or "?")
+        found_job = str(payload.get("foundJob") or "?")
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("CUTLIST JOB MISMATCH")
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        msg_box.setText(
+            f"'{pdf_filename}' in job '{job_folder_name}' shows job {found_job}, "
+            f"but this folder is job {expected_job}.\n\n"
+            "This cutlist was NOT indexed - the tablet will not see it until the "
+            "correct file replaces it. It will re-index automatically once fixed."
+        )
+        msg_box.addButton("Dismiss", QMessageBox.ButtonRole.AcceptRole)
+        msg_box.exec()
 
     def trigger_test_bad_parts_alert(self):
         if self.alert_coordinator:
