@@ -1,6 +1,7 @@
 import json
 import os
 
+import ready_jobs_watcher.cutlist_job_mismatch as cutlist_mismatch
 import ready_jobs_watcher.hardwoods_cutlist_indexer as indexer
 import ready_jobs_watcher.reindex_hardwoods_cutlists as reindex_cli
 
@@ -1600,3 +1601,44 @@ def test_write_revision_state_crash_after_temp_write_leaves_original_untouched(t
     # beyond what os.replace itself would have cleaned up; at minimum the
     # canonical file was never touched by the aborted write.
     assert on_disk["currentRevision"] == 1
+
+
+def test_write_and_load_mismatch_flags_round_trip(tmp_path):
+    job_dir = tmp_path / "530a - TEST"
+    job_dir.mkdir()
+    entries = [
+        {
+            "docType": indexer.DOC_TYPE_NAILER,
+            "pdfFilename": "530a - Nailer Cut List.pdf",
+            "expectedJob": "530a",
+            "foundJob": "532",
+            "detectedAt": "2026-07-24T00:00:00+00:00",
+        }
+    ]
+    indexer._write_mismatch_flags(str(job_dir), entries)
+    loaded = indexer._load_existing_mismatch_flags(str(job_dir))
+    assert loaded == {indexer.DOC_TYPE_NAILER: entries[0]}
+
+
+def test_write_mismatch_flags_with_empty_list_removes_file(tmp_path):
+    job_dir = tmp_path / "530a - TEST"
+    job_dir.mkdir()
+    entries = [
+        {
+            "docType": indexer.DOC_TYPE_NAILER,
+            "pdfFilename": "530a - Nailer Cut List.pdf",
+            "expectedJob": "530a",
+            "foundJob": "532",
+            "detectedAt": "2026-07-24T00:00:00+00:00",
+        }
+    ]
+    indexer._write_mismatch_flags(str(job_dir), entries)
+    assert os.path.exists(cutlist_mismatch.mismatch_flag_path(str(job_dir)))
+    indexer._write_mismatch_flags(str(job_dir), [])
+    assert not os.path.exists(cutlist_mismatch.mismatch_flag_path(str(job_dir)))
+
+
+def test_load_existing_mismatch_flags_returns_empty_dict_when_no_file(tmp_path):
+    job_dir = tmp_path / "530a - TEST"
+    job_dir.mkdir()
+    assert indexer._load_existing_mismatch_flags(str(job_dir)) == {}

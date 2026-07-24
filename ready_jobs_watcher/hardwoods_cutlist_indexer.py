@@ -20,6 +20,13 @@ from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .tracker_action_stream import load_hardwoods_tracker_actions
 from .refresh_signals import touch_hardwoods_refresh_signal
 from .utils import open_pdf_with_retry
+from .cutlist_job_mismatch import (
+    JobIdentifier,
+    extract_pdf_job_identifier,
+    folder_job_identifier,
+    is_job_mismatch,
+    mismatch_flag_path,
+)
 
 main_logger = logging.getLogger("main")
 
@@ -71,6 +78,13 @@ class TemplateMismatchError(Exception):
 
 class SkippableDocumentError(Exception):
     pass
+
+
+class JobMismatchError(Exception):
+    def __init__(self, expected: JobIdentifier, found: JobIdentifier):
+        self.expected = expected
+        self.found = found
+        super().__init__(f"job mismatch: expected {expected.display()}, found {found.display()}")
 
 
 def _normalize_slashes(path: str) -> str:
@@ -1088,6 +1102,49 @@ def _write_revision_state(job_folder_path: str, payload: Dict) -> Optional[str]:
     except OSError as exc:
         main_logger.warning("hardwoods_cutlist_indexer: could not write revision state for %s: %s", job_folder_path, exc)
         return None
+
+
+def _load_existing_mismatch_flags(job_folder_path: str) -> Dict[str, Dict]:
+    path = mismatch_flag_path(job_folder_path)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    entries = payload.get("mismatches")
+    if not isinstance(entries, list):
+        return {}
+    out: Dict[str, Dict] = {}
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("docType"):
+            out[str(entry["docType"])] = entry
+    return out
+
+
+def _write_mismatch_flags(job_folder_path: str, entries: List[Dict]) -> None:
+    path = mismatch_flag_path(job_folder_path)
+    if not entries:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            main_logger.warning("hardwoods_cutlist_indexer: could not remove mismatch flag for %s: %s", job_folder_path, exc)
+        return
+    payload = {
+        "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "mismatches": entries,
+    }
+    try:
+        metadata_dir = os.path.dirname(path)
+        os.makedirs(metadata_dir, exist_ok=True)
+        _shared_atomic_write_json(path, payload, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        main_logger.warning("hardwoods_cutlist_indexer: could not write mismatch flag for %s: %s", job_folder_path, exc)
 
 
 def _normalize_match_text(raw: str) -> str:
