@@ -376,6 +376,7 @@ class PdfChangeHandler(FileSystemEventHandler):
         alert_coordinator: Optional[AlertCoordinator] = None,
         deployment_gate=None,
         metadata_refresh_service=None,
+        on_job_mismatch=None,
     ):
         """
         Initialize the PdfChangeHandler.
@@ -407,6 +408,7 @@ class PdfChangeHandler(FileSystemEventHandler):
         self._pdf_conversion_timer_lock = threading.Lock()
         self.deployment_gate = deployment_gate
         self.metadata_refresh_service = metadata_refresh_service
+        self.on_job_mismatch = on_job_mismatch
 
     def handle_created_path(self, path: str, is_directory: bool) -> None:
         self.on_created(SimpleNamespace(src_path=path, is_directory=is_directory))
@@ -527,7 +529,9 @@ class PdfChangeHandler(FileSystemEventHandler):
         except Exception as e:
             main_logger.error(f"Reference index refresh failed ({reason}): {pdf_path} ({e})", exc_info=True)
         try:
-            build_hardwoods_cutlist_index_for_pdf_event(pdf_path, deployment_gate=self.deployment_gate)
+            build_hardwoods_cutlist_index_for_pdf_event(
+                pdf_path, deployment_gate=self.deployment_gate, on_job_mismatch=self.on_job_mismatch
+            )
         except Exception as e:
             main_logger.error(f"Hardwoods cutlist index refresh failed ({reason}): {pdf_path} ({e})", exc_info=True)
         self._schedule_metadata_refresh(pdf_path, "index_refresh_complete")
@@ -890,7 +894,9 @@ class PdfChangeHandler(FileSystemEventHandler):
                     except Exception as e:
                         main_logger.error(f"Reference index refresh failed (deleted): {event.src_path} ({e})", exc_info=True)
                     try:
-                        build_hardwoods_cutlist_index_for_pdf_event(event.src_path, deployment_gate=self.deployment_gate)
+                        build_hardwoods_cutlist_index_for_pdf_event(
+                            event.src_path, deployment_gate=self.deployment_gate, on_job_mismatch=self.on_job_mismatch
+                        )
                     except Exception as e:
                         main_logger.error(f"Hardwoods cutlist index refresh failed (deleted): {event.src_path} ({e})", exc_info=True)
 
