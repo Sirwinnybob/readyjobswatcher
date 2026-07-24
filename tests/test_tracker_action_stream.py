@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from ready_jobs_watcher.tracker_action_stream import load_cnc_tracker_actions
+from ready_jobs_watcher.tracker_action_stream import load_cnc_tracker_actions, load_hardwoods_tracker_actions
 
 
 def _write(path: Path, content: str) -> None:
@@ -327,6 +327,45 @@ def test_load_cnc_tracker_actions_ignores_archived_duplicate_manifest(tmp_path):
 
     assert len(actions) == 1
     assert actions[0]["action"] == "complete"
+
+
+def test_load_hardwoods_tracker_actions_recovers_archived_divergent_conflict(tmp_path):
+    job_folder = tmp_path / "332 - TESTJOB"
+    tracker_dir = job_folder / ".metadata" / "hardwoods" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {
+            "actions": [
+                {"docType": "cutlist", "rowId": "row-1", "action": "set_done_count", "value": 3, "timestamp": "2026-07-08T19:53:41Z"}
+            ]
+        },
+    )
+
+    archive_dir = job_folder / ".metadata" / "sync_conflicts" / "20260708-125930-2E2GGMF"
+    _write_json(
+        archive_dir / "tablet-a.json",
+        {
+            "tabletId": "tablet-a",
+            "actions": [
+                {"docType": "cutlist", "rowId": "row-2", "action": "set_done_count", "value": 5, "timestamp": "2026-07-08T19:53:45Z"}
+            ],
+        },
+    )
+    _write_json(
+        archive_dir / "manifest.json",
+        {
+            "action": "archived_divergent",
+            "originalPath": str(tracker_dir / "tablet-a.json"),
+            "archivePath": str(archive_dir / "tablet-a.json"),
+            "resolvedAt": "2026-07-08T20:01:23Z",
+            "sameContent": False,
+        },
+    )
+
+    actions = load_hardwoods_tracker_actions([str(tracker_dir)])
+
+    assert len(actions) == 2
+    assert {a["rowId"] for a in actions} == {"row-1", "row-2"}
 
 
 def test_load_cnc_tracker_actions_ignores_non_actions_shape_conflict(tmp_path):
