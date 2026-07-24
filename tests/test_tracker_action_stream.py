@@ -395,3 +395,33 @@ def test_load_cnc_tracker_actions_ignores_non_actions_shape_conflict(tmp_path):
 
     assert len(actions) == 1
     assert actions[0]["action"] == "complete"
+
+
+def test_load_cnc_tracker_actions_recovery_is_stable_across_repeated_calls(tmp_path):
+    job_folder = tmp_path / "332 - TESTJOB"
+    tracker_dir = job_folder / "CNC" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {"actions": [{"file": "A.pdf", "page": 1, "action": "complete", "timestamp": "2026-07-08T19:53:41Z"}]},
+    )
+    archive_dir = job_folder / ".metadata" / "sync_conflicts" / "20260708-125930-2E2GGMF"
+    _write_json(
+        archive_dir / "tablet-a.json",
+        {"tabletId": "tablet-a", "actions": [{"file": "A.pdf", "page": 2, "action": "view", "timestamp": "2026-07-08T19:53:45Z"}]},
+    )
+    _write_json(
+        archive_dir / "manifest.json",
+        {
+            "action": "archived_divergent",
+            "originalPath": str(tracker_dir / "tablet-a.json"),
+            "archivePath": str(archive_dir / "tablet-a.json"),
+            "resolvedAt": "2026-07-08T20:01:23Z",
+            "sameContent": False,
+        },
+    )
+
+    first = load_cnc_tracker_actions(str(tracker_dir))
+    second = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert first == second
+    assert len(first) == 2
