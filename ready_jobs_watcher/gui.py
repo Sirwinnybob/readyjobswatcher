@@ -842,6 +842,7 @@ class SettingsWindow(QWidget):
         if self.jobs_table is None:
             return
         from .deployment_gate import derive_state
+        from .cutlist_job_mismatch import read_job_mismatch_flags
 
         state_styles = {
             "PENDING": (QColor("#FEF3C7"), QColor("#92400E")),
@@ -850,6 +851,7 @@ class SettingsWindow(QWidget):
             "DUPLICATE": (QColor("#FEE2E2"), QColor("#991B1B")),
         }
         hidden_style = (QColor("#E2E8F0"), QColor("#334155"))
+        mismatch_style = (QColor("#FEE2E2"), QColor("#991B1B"))
 
         self.jobs_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
@@ -870,6 +872,12 @@ class SettingsWindow(QWidget):
                 else:
                     bg, fg = state_styles.get(state_name, (None, None))
                     display_state = state_name
+
+            mismatch_payload = read_job_mismatch_flags(self.config.ROOT_DIR, str(row.get("jobFolderName", "")))
+            mismatch_entries = mismatch_payload.get("mismatches") if isinstance(mismatch_payload, dict) else None
+            if isinstance(mismatch_entries, list) and mismatch_entries:
+                bg, fg = mismatch_style
+                display_state = f"{display_state} - CUTLIST MISMATCH ({len(mismatch_entries)})"
 
             values = [
                 str(row.get("jobFolderName", "")),
@@ -910,6 +918,11 @@ class SettingsWindow(QWidget):
         marker = read_duplicate_suspect_marker(self.config.ROOT_DIR, job_folder_name)
         if marker is not None:
             self._show_duplicate_job_dialog(job_folder_name, marker)
+            return
+        from .cutlist_job_mismatch import read_job_mismatch_flags
+        mismatch_payload = read_job_mismatch_flags(self.config.ROOT_DIR, job_folder_name)
+        if isinstance(mismatch_payload, dict) and mismatch_payload.get("mismatches"):
+            self._show_cutlist_mismatch_job_dialog(job_folder_name, mismatch_payload)
             return
         self._show_pending_job_prompt_dialog(job_folder_name)
 
@@ -1015,6 +1028,36 @@ class SettingsWindow(QWidget):
         action_row.addWidget(cancel_btn)
         layout.addLayout(action_row)
 
+        dialog.exec()
+
+    def _show_cutlist_mismatch_job_dialog(self, job_folder_name: str, payload: dict):
+        entries = payload.get("mismatches", []) if isinstance(payload, dict) else []
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Cutlist Job Mismatch: {job_folder_name}")
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            f"The following cutlist document(s) in '{job_folder_name}' print a different job "
+            "number than this folder. They were NOT indexed - the tablet does not see them.\n"
+            "Replace the file with the correct job's cutlist and it will re-index automatically."
+        ))
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            doc_type = str(entry.get("docType") or "?")
+            pdf_filename = str(entry.get("pdfFilename") or "?")
+            expected_job = str(entry.get("expectedJob") or "?")
+            found_job = str(entry.get("foundJob") or "?")
+            layout.addWidget(QLabel(
+                f"• {doc_type}: '{pdf_filename}' shows job {found_job} (expected {expected_job})"
+            ))
+
+        action_row = QHBoxLayout()
+        dismiss_btn = QPushButton("Dismiss")
+        dismiss_btn.clicked.connect(dialog.accept)
+        action_row.addStretch()
+        action_row.addWidget(dismiss_btn)
+        layout.addLayout(action_row)
         dialog.exec()
 
     def _show_pending_job_prompt_dialog(self, job_folder_name: str):
