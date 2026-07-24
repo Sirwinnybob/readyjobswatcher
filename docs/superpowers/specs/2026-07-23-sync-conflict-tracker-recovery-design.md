@@ -77,24 +77,26 @@ behavior fix is needed for C-01 itself.
    existing sort (`_sort_combined_actions` / the legacy sort) run over the combined set exactly as
    today. No new merge/dedupe logic — an archived action that duplicates a live one collapses the
    same way any other duplicate action already does in the CNC/hardwoods per-key merge functions.
-5. Once a manifest's actions have been folded in successfully, write a sibling `folded.json`
-   (`{"foldedAt": <iso timestamp>}`) next to that `manifest.json`, atomically. Subsequent passes
-   skip any archive directory that already has `folded.json`, so the glob-and-parse cost stays
-   bounded as the archive grows over months instead of re-parsing every historical conflict on
-   every consolidation cycle.
+5. This step is purely read-only — no new write path, no "already folded" marker. Every pass
+   re-reads and re-folds every qualifying archive every time. This is deliberate, not an oversight:
+   `load_cnc_tracker_actions`/`load_hardwoods_tracker_actions` is the same shared reader called by
+   three independent consumers — `tracker_bad_parts.py` and `remake_candidates_indexer.py` are
+   read-only and never persist anything from what they read, only `metadata_cache.py`'s
+   `_consolidate_tracker` actually writes `consolidated.json`. A "mark folded after first read"
+   scheme would let a read-only consumer's incidental read spend the one-time recovery before the
+   consolidation pass ever sees it, silently losing the data for good. Re-folding every pass avoids
+   that race entirely, and is cheap at realistic volumes (the live share has ~20 archived conflicts
+   total across all jobs after weeks of operation, not thousands) — and safe, since the CNC/
+   hardwoods merge functions are already idempotent over repeated historical rows (a duplicated
+   historical action doesn't change the computed final per-key state).
 
 ### Error handling
 
 - A manifest that fails to parse, is missing expected fields, or whose `archivePath` is missing/
   unreadable/malformed is logged at `debug` and skipped for this pass — not fatal, retried next
   cycle (consistent with how malformed legacy tracker files are already handled).
-- A `folded.json` write failure (e.g. permissions, transient share hiccup) is logged and leaves the
-  manifest un-marked, so the next pass simply tries the fold again — folding is idempotent from the
-  reader's perspective (it only ever adds rows into an in-memory list; nothing here mutates the
-  live tracker file or the archive), so a repeated fold before the marker lands is harmless, just
-  wasted work, not a correctness risk.
 - This step never modifies or deletes anything under `sync_conflicts\`; it only reads
-  `manifest.json`/`archivePath` and adds the new `folded.json` marker file.
+  `manifest.json` and `archivePath`.
 
 ### Testing
 
@@ -105,9 +107,9 @@ New tests in `tests/test_tracker_action_stream.py`:
    `.metadata\sync_conflicts\<id>\<tablet>.json` + `manifest.json` (`action: archived_divergent`)
    with different actions for the same tablet. Assert `load_cnc_tracker_actions` returns the union
    of both action sets, correctly ordered.
-2. **Idempotency** — call the loader twice; assert a `folded.json` marker appears after the first
-   call and the second call doesn't duplicate the recovered actions or re-parse the archived file
-   (spy/count file opens, or assert output identical and stable).
+2. **Repeat-call stability** — call the loader twice in a row; assert both calls return the same
+   recovered actions (proving re-reading the same archive every pass is stable, not just a
+   one-shot fluke).
 3. **Negative: unrelated conflict in the same bucket** — a manifest for something else entirely
    (e.g. an archived `delivery_schedule_request` conflict) sitting in the same
    `sync_conflicts\` directory must be ignored (not folded, no error).
