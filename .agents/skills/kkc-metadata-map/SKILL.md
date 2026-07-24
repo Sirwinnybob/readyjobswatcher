@@ -52,7 +52,7 @@ Cabinet Vision (external CAD database, not one of the five programs above) is th
 | `Y:\Ready Jobs\<job>\.metadata\cache_static.json` | Ready Jobs Watcher | Check mtime/content, then `metadata_cache.py` and watcher logs |
 | `Y:\Ready Jobs\<job>\CNC\.metadata\<pdf-stem>.json` | Ready Jobs Watcher | Check sidecar exists for each CNC PDF and parse errors in `cnc_scan.log` |
 | `Y:\Ready Jobs\<job>\CNC\.metadata\remake_bad_parts_candidates.json` | Ready Jobs Watcher | Check CNC scan log and scheduled cache refresh entries |
-| `Y:\Ready Jobs\<job>\CNC\.tracker\<tablet>.json` | KKCSheetTracker tablets | **LIVE channel** for CNC actions (carries `bad_part_submitted` alert marker, `ProgressStore.kt:818`). RJW consolidates then DELETES these files — consolidation is lossy for `bad_part_submitted` (see audit C-01) |
+| `Y:\Ready Jobs\<job>\CNC\.tracker\<tablet>.json` | KKCSheetTracker tablets | **LIVE channel** for CNC actions (carries `bad_part_submitted` alert marker, `ProgressStore.kt:818`). RJW consolidates then DELETES these files — `bad_part_submitted` loss on consolidation was fixed (audit C-01, `_merge_cnc_actions` re-emits both `bad_part` and `bad_part_submitted` with original timestamps before deletion) |
 | `Y:\Ready Jobs\<job>\CNC\.tracker\events\**\*.ndjson` | (designed for tablets) Ready Jobs Watcher reads | **DORMANT** as of 2026-07-09 — RJW's `tracker_action_stream.py` reader exists but the tablet writes NO ndjson (grep-confirmed). Legacy `<tablet>.json` above is the real channel |
 | `Y:\Ready Jobs\<job>\CNC\.tracker\consolidated.json` | Ready Jobs Watcher | Check tracker action stream/reconcile logs |
 | `Y:\Ready Jobs\<job>\CNC\.tracker\watcher_refresh_watcher.json` | Ready Jobs Watcher | Refresh heartbeat; not source-of-truth progress |
