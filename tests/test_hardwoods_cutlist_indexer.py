@@ -1717,3 +1717,76 @@ def test_no_job_line_present_does_not_block_parsing(tmp_path, monkeypatch):
         indexer.DOC_TYPE_FACE_FRAME, str(face_frame), str(job_dir)
     )
     assert len(rows) == 1
+
+
+def test_job_mismatch_excludes_doc_but_keeps_sibling_docs(tmp_path, monkeypatch):
+    job_dir = tmp_path / "530a - DC BIGLEY"
+    job_dir.mkdir()
+    nailer = job_dir / "530a - Nailer Cut List.pdf"
+    nailer.write_text("placeholder", encoding="utf-8")
+    face_frame = job_dir / "530a - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    wrong_job_words = [_w(80, 130, "532"), _w(100, 130, "-"), _w(112, 130, "WRONG"), _w(160, 130, "JOB")]
+    right_job_words = [_w(80, 130, "530a"), _w(112, 130, "-"), _w(140, 130, "DC"), _w(160, 130, "BIGLEY")]
+    table_words = _std_header(160) + _std_row(182, 2, "Bottom Rail", "4.75", "54", "15, 16")
+
+    doc_map = {
+        str(nailer): _FakeDoc([_FakePage(words=wrong_job_words + table_words)]),
+        str(face_frame): _FakeDoc([_FakePage(words=right_job_words + table_words)]),
+    }
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: doc_map[str(path)])
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    _, payload = _load_output(str(job_dir))
+    doc_types = {doc["docType"] for doc in payload["documents"]}
+    assert doc_types == {indexer.DOC_TYPE_FACE_FRAME}
+
+
+def test_job_mismatch_writes_flag_file_then_clears_it_once_fixed(tmp_path, monkeypatch):
+    job_dir = tmp_path / "530a - DC BIGLEY"
+    job_dir.mkdir()
+    nailer = job_dir / "530a - Nailer Cut List.pdf"
+    nailer.write_text("placeholder", encoding="utf-8")
+
+    wrong_job_words = [_w(80, 130, "532"), _w(100, 130, "-"), _w(112, 130, "WRONG"), _w(160, 130, "JOB")]
+    right_job_words = [_w(80, 130, "530a"), _w(112, 130, "-"), _w(140, 130, "DC"), _w(160, 130, "BIGLEY")]
+    table_words = _std_header(160) + _std_row(182, 2, "Bottom Rail", "4.75", "54", "15, 16")
+
+    monkeypatch.setattr(
+        indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=wrong_job_words + table_words)])
+    )
+    indexer.build_hardwoods_cutlist_index_for_job(str(job_dir))
+    flags = indexer._load_existing_mismatch_flags(str(job_dir))
+    assert flags[indexer.DOC_TYPE_NAILER]["expectedJob"] == "530A"  # parse_job_identifier uppercases the suffix
+    assert flags[indexer.DOC_TYPE_NAILER]["foundJob"] == "532"
+
+    monkeypatch.setattr(
+        indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=right_job_words + table_words)])
+    )
+    indexer.build_hardwoods_cutlist_index_for_job(str(job_dir))
+    assert indexer._load_existing_mismatch_flags(str(job_dir)) == {}
+    assert not os.path.exists(cutlist_mismatch.mismatch_flag_path(str(job_dir)))
+
+
+def test_on_job_mismatch_callback_fires_once_then_not_again_for_same_unfixed_doc(tmp_path, monkeypatch):
+    job_dir = tmp_path / "530a - DC BIGLEY"
+    job_dir.mkdir()
+    nailer = job_dir / "530a - Nailer Cut List.pdf"
+    nailer.write_text("placeholder", encoding="utf-8")
+
+    wrong_job_words = [_w(80, 130, "532"), _w(100, 130, "-"), _w(112, 130, "WRONG"), _w(160, 130, "JOB")]
+    table_words = _std_header(160) + _std_row(182, 2, "Bottom Rail", "4.75", "54", "15, 16")
+    monkeypatch.setattr(
+        indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=wrong_job_words + table_words)])
+    )
+
+    calls = []
+    indexer.build_hardwoods_cutlist_index_for_job(str(job_dir), on_job_mismatch=calls.append)
+    indexer.build_hardwoods_cutlist_index_for_job(str(job_dir), on_job_mismatch=calls.append)
+
+    assert len(calls) == 1
+    assert calls[0]["docType"] == indexer.DOC_TYPE_NAILER
+    assert calls[0]["jobFolderName"] == "530a - DC BIGLEY"
+    assert calls[0]["expectedJob"] == "530A"  # parse_job_identifier uppercases the suffix
+    assert calls[0]["foundJob"] == "532"

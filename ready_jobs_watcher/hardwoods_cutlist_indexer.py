@@ -13,7 +13,7 @@ import re
 from collections import defaultdict
 from decimal import Decimal
 from decimal import InvalidOperation
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from .atomic_write import atomic_write_json as _shared_atomic_write_json
@@ -1562,7 +1562,11 @@ def _remove_index_if_exists(job_folder_path: str) -> bool:
     return removed
 
 
-def build_hardwoods_cutlist_index_for_job(job_folder_path: str, deployment_gate=None) -> bool:
+def build_hardwoods_cutlist_index_for_job(
+    job_folder_path: str,
+    deployment_gate=None,
+    on_job_mismatch: Optional[Callable[[Dict], None]] = None,
+) -> bool:
     """
     Build or refresh hardwoods cutlist index for a job folder.
     Returns True when an index file was written or removed.
@@ -1575,9 +1579,12 @@ def build_hardwoods_cutlist_index_for_job(job_folder_path: str, deployment_gate=
 
     docs = _find_hardwoods_docs(job_folder_path)
     if not docs:
+        _write_mismatch_flags(job_folder_path, [])
         return _remove_index_if_exists(job_folder_path)
 
+    previous_mismatches = _load_existing_mismatch_flags(job_folder_path)
     serialized_docs: List[Dict] = []
+    current_mismatches: List[Dict] = []
     for doc_type, (filename, path) in sorted(docs.items(), key=lambda item: item[0]):
         try:
             page_count, rows, totals = _parse_document_rows(doc_type, path, job_folder_path)
@@ -1586,6 +1593,27 @@ def build_hardwoods_cutlist_index_for_job(job_folder_path: str, deployment_gate=
             continue
         except TemplateMismatchError as e:
             main_logger.error("Hardwoods parse skipped (template mismatch): %s (%s)", path, e)
+            continue
+        except JobMismatchError as e:
+            entry = {
+                "docType": doc_type,
+                "pdfFilename": filename,
+                "expectedJob": e.expected.display(),
+                "foundJob": e.found.display(),
+                "detectedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            current_mismatches.append(entry)
+            main_logger.error(
+                "Hardwoods parse skipped (job mismatch): %s (expected %s, found %s)",
+                path,
+                entry["expectedJob"],
+                entry["foundJob"],
+            )
+            if on_job_mismatch is not None and doc_type not in previous_mismatches:
+                try:
+                    on_job_mismatch({**entry, "jobFolderName": os.path.basename(job_folder_path)})
+                except Exception as exc:
+                    main_logger.warning("on_job_mismatch callback failed for %s: %s", path, exc)
             continue
         except Exception as e:
             main_logger.error("Hardwoods parse failed: %s (%s)", path, e, exc_info=True)
@@ -1600,6 +1628,8 @@ def build_hardwoods_cutlist_index_for_job(job_folder_path: str, deployment_gate=
                 "totals": totals,
             }
         )
+
+    _write_mismatch_flags(job_folder_path, current_mismatches)
 
     if not serialized_docs:
         return _remove_index_if_exists(job_folder_path)
@@ -1627,7 +1657,11 @@ def build_hardwoods_cutlist_index_for_job(job_folder_path: str, deployment_gate=
     return True
 
 
-def build_hardwoods_cutlist_index_for_pdf_event(pdf_path: str, deployment_gate=None) -> bool:
+def build_hardwoods_cutlist_index_for_pdf_event(
+    pdf_path: str,
+    deployment_gate=None,
+    on_job_mismatch: Optional[Callable[[Dict], None]] = None,
+) -> bool:
     """
     Rebuild hardwoods cutlist index for a specific modified/created/deleted PDF.
     """
@@ -1650,4 +1684,6 @@ def build_hardwoods_cutlist_index_for_pdf_event(pdf_path: str, deployment_gate=N
     ):
         return False
 
-    return build_hardwoods_cutlist_index_for_job(job_folder, deployment_gate=deployment_gate)
+    return build_hardwoods_cutlist_index_for_job(
+        job_folder, deployment_gate=deployment_gate, on_job_mismatch=on_job_mismatch
+    )
