@@ -236,6 +236,8 @@ class Application:
         self._pending_job_timers = DebouncedTimerMap(name_prefix="PendingPrompt")
         self._pending_auto_release_notices = []
         self._pending_auto_release_notices_lock = threading.Lock()
+        self._pending_job_mismatch_notices = []
+        self._pending_job_mismatch_notices_lock = threading.Lock()
         self.deployment_gate = DeploymentGateManager(self.config.ROOT_DIR)
         self.metadata_refresh_service = MetadataRefreshService(self.config)
         self.tracker_monitor = TrackerBadPartsMonitor(self.config, deployment_gate=self.deployment_gate)
@@ -292,6 +294,22 @@ class Application:
             self._pending_auto_release_notices.clear()
         for job in jobs:
             self.settings_window.emit_auto_release_notice(job)
+
+    def _queue_job_mismatch_notice(self, payload: dict):
+        if self.settings_window:
+            self.settings_window.emit_cutlist_mismatch_notice(payload)
+            return
+        with self._pending_job_mismatch_notices_lock:
+            self._pending_job_mismatch_notices.append(payload)
+
+    def _flush_pending_job_mismatch_notices(self):
+        if not self.settings_window:
+            return
+        with self._pending_job_mismatch_notices_lock:
+            notices = list(self._pending_job_mismatch_notices)
+            self._pending_job_mismatch_notices.clear()
+        for payload in notices:
+            self.settings_window.emit_cutlist_mismatch_notice(payload)
 
     def on_new_job_folder_detected(self, folder_path: str, *, skip_collision_check: bool = False):
         root_norm = os.path.normcase(os.path.normpath(self.config.ROOT_DIR))
@@ -535,7 +553,11 @@ class Application:
         except Exception as exc:
             logging.error("Reference index build failed during deploy parse for %s: %s", job_folder_name, exc, exc_info=True)
         try:
-            hardwood_ok = bool(build_hardwoods_cutlist_index_for_job(job_path, deployment_gate=self.deployment_gate))
+            hardwood_ok = bool(
+                build_hardwoods_cutlist_index_for_job(
+                    job_path, deployment_gate=self.deployment_gate, on_job_mismatch=self._queue_job_mismatch_notice
+                )
+            )
         except Exception as exc:
             logging.error("Hardwoods index build failed during deploy parse for %s: %s", job_folder_name, exc, exc_info=True)
         return reference_ok or hardwood_ok
@@ -636,7 +658,11 @@ class Application:
         # c) Build hardwoods cutlist index
         hardwood_ok = False
         try:
-            hardwood_ok = bool(build_hardwoods_cutlist_index_for_job(job_path, deployment_gate=self.deployment_gate))
+            hardwood_ok = bool(
+                build_hardwoods_cutlist_index_for_job(
+                    job_path, deployment_gate=self.deployment_gate, on_job_mismatch=self._queue_job_mismatch_notice
+                )
+            )
         except Exception as exc:
             logging.error("Hardwoods index build failed during re-parse for %s: %s", job_folder_name, exc, exc_info=True)
 
@@ -1326,6 +1352,7 @@ class Application:
                 alert_coordinator=self.alert_coordinator,
                 deployment_gate=self.deployment_gate,
                 metadata_refresh_service=getattr(self, "metadata_refresh_service", None),
+                on_job_mismatch=self._queue_job_mismatch_notice,
             )
             self.rename_event_handler = event_handler
             self.pdf_event_handler = pdf_event_handler
@@ -1407,6 +1434,7 @@ class Application:
         self._flush_pending_bad_parts_popups()
         self._flush_pending_job_prompts()
         self._flush_pending_auto_release_notices()
+        self._flush_pending_job_mismatch_notices()
 
         # We start the initial scan slightly delayed similar to Tkinter's after
         import threading
@@ -1586,7 +1614,9 @@ class Application:
                 except Exception as e:
                     logging.error(f"Reference index build failed for {job_path}: {e}", exc_info=True)
                 try:
-                    build_hardwoods_cutlist_index_for_job(job_path, deployment_gate=self.deployment_gate)
+                    build_hardwoods_cutlist_index_for_job(
+                        job_path, deployment_gate=self.deployment_gate, on_job_mismatch=self._queue_job_mismatch_notice
+                    )
                 except Exception as e:
                     logging.error(f"Hardwoods cutlist index build failed for {job_path}: {e}", exc_info=True)
                 try:

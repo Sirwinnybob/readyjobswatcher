@@ -102,7 +102,9 @@ class TestReparseJob(unittest.TestCase):
             # Check that mock parsers were called
             app.job_processor.process_job_folder.assert_called_once_with(job_path)
             mock_build_reference.assert_called_once_with(job_path)
-            mock_build_hardwoods.assert_called_once_with(job_path, deployment_gate=app.deployment_gate)
+            mock_build_hardwoods.assert_called_once_with(
+                job_path, deployment_gate=app.deployment_gate, on_job_mismatch=app._queue_job_mismatch_notice
+            )
             mock_convert_3d.assert_called_once_with(job_path)
             mock_process_directory.assert_called_once_with(job_path, force=True)
 
