@@ -769,7 +769,7 @@ def _assign_material_to_totals(
     return totals_sorted, running_material, running_unit_type
 
 
-def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict], List[Dict]]:
+def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> Tuple[int, List[Dict], List[Dict]]:
     rows: List[Dict] = []
     totals: List[Dict] = []
     template_detected = False
@@ -794,6 +794,12 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
                     raise SkippableDocumentError("placeholder document")
                 if _is_legacy_cabinet_vision_cutlist(rows_by_y, doc_type):
                     raise SkippableDocumentError("legacy cabinet vision cut list layout")
+                folder_id = folder_job_identifier(os.path.basename(job_folder_path))
+                if folder_id is not None:
+                    first_lines = [_line_text(row_words) for _, row_words in rows_by_y[:6]]
+                    pdf_id = extract_pdf_job_identifier(doc_type, first_lines)
+                    if pdf_id is not None and is_job_mismatch(folder_id, pdf_id):
+                        raise JobMismatchError(expected=folder_id, found=pdf_id)
 
             markers = _extract_section_markers(doc_type, rows_by_y)
             if markers and active_material is None:
@@ -1574,7 +1580,7 @@ def build_hardwoods_cutlist_index_for_job(job_folder_path: str, deployment_gate=
     serialized_docs: List[Dict] = []
     for doc_type, (filename, path) in sorted(docs.items(), key=lambda item: item[0]):
         try:
-            page_count, rows, totals = _parse_document_rows(doc_type, path)
+            page_count, rows, totals = _parse_document_rows(doc_type, path, job_folder_path)
         except SkippableDocumentError as e:
             main_logger.info("Hardwoods parse skipped: %s (%s)", path, e)
             continue

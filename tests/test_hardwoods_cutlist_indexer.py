@@ -1,3 +1,5 @@
+import pytest
+
 import json
 import os
 
@@ -1642,3 +1644,76 @@ def test_load_existing_mismatch_flags_returns_empty_dict_when_no_file(tmp_path):
     job_dir = tmp_path / "530a - TEST"
     job_dir.mkdir()
     assert indexer._load_existing_mismatch_flags(str(job_dir)) == {}
+
+
+def test_mismatched_job_number_raises_job_mismatch_error(tmp_path, monkeypatch):
+    job_dir = tmp_path / "530a - DC BIGLEY"
+    job_dir.mkdir()
+    nailer = job_dir / "530a - Nailer Cut List.pdf"
+    nailer.write_text("placeholder", encoding="utf-8")
+
+    job_line_y = 130.0
+    job_line_words = [
+        _w(80, job_line_y, "532"),
+        _w(100, job_line_y, "-"),
+        _w(112, job_line_y, "WRONG"),
+        _w(160, job_line_y, "JOB"),
+    ]
+    page_words = list(job_line_words)
+    page_words += _std_header(160)
+    page_words += _std_row(182, 2, "Bottom Rail", "4.75", "54", "15, 16")
+
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=page_words)]))
+
+    with pytest.raises(indexer.JobMismatchError) as excinfo:
+        indexer._parse_document_rows(indexer.DOC_TYPE_NAILER, str(nailer), str(job_dir))
+    assert excinfo.value.expected.display() == "530A"  # parse_job_identifier uppercases the suffix
+    assert excinfo.value.found.display() == "532"
+
+
+def test_suffix_dropped_by_cabinet_vision_is_not_a_mismatch(tmp_path, monkeypatch):
+    job_dir = tmp_path / "616b - KEVIN JANNI 1711 DUKE ST"
+    job_dir.mkdir()
+    face_frame = job_dir / "616b - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    job_line_y = 130.0
+    job_line_words = [
+        _w(80, job_line_y, "616"),
+        _w(100, job_line_y, "-"),
+        _w(112, job_line_y, "KEVIN"),
+        _w(160, job_line_y, "JANNI"),
+    ]
+    # A Material: marker is required for rows to survive the new-template-only
+    # material contract (see test_new_template_rows_include_material_field_and_values
+    # above); placed on its own row so it doesn't merge with the job-identity line.
+    material_words = [_w(74, 145, "Material:"), _w(124, 145, "'3/4"), _w(160, 145, "Maple'")]
+    page_words = list(job_line_words)
+    page_words += material_words
+    page_words += _std_header(160)
+    page_words += _std_row(182, 2, "Bottom Rail", "4.75", "54", "15, 16")
+
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=page_words)]))
+
+    page_count, rows, totals = indexer._parse_document_rows(
+        indexer.DOC_TYPE_FACE_FRAME, str(face_frame), str(job_dir)
+    )
+    assert len(rows) == 1
+
+
+def test_no_job_line_present_does_not_block_parsing(tmp_path, monkeypatch):
+    # Existing fixtures across this file have no job-identity line before the
+    # header - confirms the check fails open when the PDF side can't be read.
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+    face_frame = job_dir / "998 - Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+
+    material_words = [_w(74, 145, "Material:"), _w(124, 145, "'3/4"), _w(160, 145, "Maple'")]
+    page_words = material_words + _std_header(160) + _std_row(182, 2, "Bottom Rail", "4.75", "54", "15, 16")
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=page_words)]))
+
+    page_count, rows, totals = indexer._parse_document_rows(
+        indexer.DOC_TYPE_FACE_FRAME, str(face_frame), str(job_dir)
+    )
+    assert len(rows) == 1
