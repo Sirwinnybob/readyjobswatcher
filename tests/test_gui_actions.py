@@ -82,3 +82,73 @@ def test_trigger_run_consolidation_warns_when_service_missing(monkeypatch):
     window.trigger_run_consolidation()
 
     assert messages == [("Consolidation", "Metadata refresh service is not initialized.")]
+
+
+def test_actions_tab_has_manual_sync_moldings_button():
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow(Config())
+
+    buttons = window.findChildren(QPushButton)
+    labels = [button.text() for button in buttons]
+
+    assert "Sync Moldings Library Now" in labels
+
+
+def test_trigger_sync_moldings_success(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow(Config())
+    
+    sync_calls = 0
+    def mock_sync_moldings():
+        nonlocal sync_calls
+        sync_calls += 1
+        return True
+        
+    window.app_instance = SimpleNamespace(sync_moldings=mock_sync_moldings)
+    messages = []
+
+    monkeypatch.setattr("threading.Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        "ready_jobs_watcher.gui.QMessageBox.information",
+        lambda _parent, title, message: messages.append(("info", title, message)),
+    )
+    monkeypatch.setattr(
+        "ready_jobs_watcher.gui.QMessageBox.warning",
+        lambda _parent, title, message: messages.append(("warning", title, message)),
+    )
+
+    window.trigger_sync_moldings()
+
+    assert sync_calls == 1
+    assert messages[0] == ("info", "Molding Sync", "Molding library synchronization started in background.")
+    assert messages[1] == ("info", "Molding Sync", "Molding library synchronization completed successfully.")
+
+
+def test_trigger_sync_moldings_failure(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow(Config())
+    
+    sync_calls = 0
+    def mock_sync_moldings():
+        nonlocal sync_calls
+        sync_calls += 1
+        return False
+        
+    window.app_instance = SimpleNamespace(sync_moldings=mock_sync_moldings)
+    messages = []
+
+    monkeypatch.setattr("threading.Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        "ready_jobs_watcher.gui.QMessageBox.information",
+        lambda _parent, title, message: messages.append(("info", title, message)),
+    )
+    monkeypatch.setattr(
+        "ready_jobs_watcher.gui.QMessageBox.warning",
+        lambda _parent, title, message: messages.append(("warning", title, message)),
+    )
+
+    window.trigger_sync_moldings()
+
+    assert sync_calls == 1
+    assert messages[0] == ("info", "Molding Sync", "Molding library synchronization started in background.")
+    assert messages[1] == ("warning", "Molding Sync", "Molding library synchronization failed. Check logs for details.")

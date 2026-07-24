@@ -7,7 +7,6 @@ for bad parts, system health logging, and scheduled daily application restarts.
 import logging
 import datetime
 import threading
-import time
 import shutil
 import os
 from typing import TYPE_CHECKING, Callable, Optional
@@ -29,8 +28,6 @@ main_logger = logging.getLogger('main')
 
 backup_logger = logging.getLogger('backup')
 cnc_logger = logging.getLogger('cnc')
-
-LAST_BACKUP_TIME = None
 
 def perform_backup(config: Config, app: 'Application') -> None:
     """
@@ -201,9 +198,8 @@ def cnc_scan_scheduler(
     config: Config,
     stop_event: threading.Event,
     tracker_monitor: "TrackerBadPartsMonitor" = None,
-    alert_coordinator: "AlertCoordinator" = None
-    ,
-    deployment_gate=None
+    alert_coordinator: "AlertCoordinator" = None,
+    deployment_gate=None,
 ) -> None:
     """
     Background worker loop to periodically scan CNC PDFs according to schedule.
@@ -300,15 +296,17 @@ def process_metadata_end_of_day_once(metadata_refresh_service: "MetadataRefreshS
 
 def metadata_end_of_day_scheduler(config: Config, stop_event: threading.Event, metadata_refresh_service: "MetadataRefreshService") -> None:
     """Run Ready Jobs-owned cache refresh, archive, and CNC/hardwoods condensing once per day."""
-    main_logger.info("Metadata end-of-day scheduler started. Time: %s", config.metadata_end_of_day_time)
+    end_of_day_time = getattr(config, "metadata_end_of_day_time", "20:00")
+    main_logger.info("Metadata end-of-day scheduler started. Time: %s", end_of_day_time)
 
     while not stop_event.is_set():
         try:
             now = datetime.datetime.now()
+            end_of_day_time = getattr(config, "metadata_end_of_day_time", "20:00")
             try:
-                hour, minute = map(int, config.metadata_end_of_day_time.split(":"))
+                hour, minute = map(int, end_of_day_time.split(":"))
             except (ValueError, AttributeError):
-                main_logger.error("Invalid metadata_end_of_day_time: %s, using 20:00", config.metadata_end_of_day_time)
+                main_logger.error("Invalid metadata_end_of_day_time: %s, using 20:00", end_of_day_time)
                 hour, minute = 20, 0
 
             scheduled_time_today = datetime.datetime.combine(now.date(), datetime.time(hour, minute))
@@ -330,11 +328,17 @@ def metadata_end_of_day_scheduler(config: Config, stop_event: threading.Event, m
                 try:
                     summary = process_metadata_end_of_day_once(metadata_refresh_service)
                     main_logger.info("Metadata end-of-day sweep complete: %s", summary)
+                    try:
+                        from .moldings_sync import sync_moldings_library
+                        sync_moldings_library(config)
+                    except Exception as sync_exc:
+                        main_logger.error("Moldings library synchronization failed in end-of-day sweep: %s", sync_exc, exc_info=True)
                     break
                 except Exception as exc:
                     if attempt == 0:
                         main_logger.warning("Metadata end-of-day sweep failed, retrying once: %s", exc)
-                        stop_event.wait(30)
+                        if stop_event.wait(30):
+                            break
                     else:
                         main_logger.error("Metadata end-of-day sweep failed: %s", exc, exc_info=True)
         except Exception as exc:
@@ -356,20 +360,19 @@ def daily_restart_scheduler(config: Config, stop_event: threading.Event, app: 'A
         stop_event (threading.Event): Signal used to cleanly exit the loop.
         app (Application): Application instance to gracefully stop.
     """
-    import sys
-    import subprocess
-
-    main_logger.info(f"Daily restart scheduler started. Restart time: {config.daily_restart_time}")
+    restart_time = getattr(config, "daily_restart_time", "03:00")
+    main_logger.info(f"Daily restart scheduler started. Restart time: {restart_time}")
 
     while not stop_event.is_set():
         try:
             now = datetime.datetime.now()
 
             # Parse the configured restart time
+            restart_time = getattr(config, "daily_restart_time", "03:00")
             try:
-                restart_hour, restart_minute = map(int, config.daily_restart_time.split(':'))
+                restart_hour, restart_minute = map(int, restart_time.split(':'))
             except (ValueError, AttributeError):
-                main_logger.error(f"Invalid daily_restart_time format: {config.daily_restart_time}, using default 03:00")
+                main_logger.error(f"Invalid daily_restart_time format: {restart_time}, using default 03:00")
                 restart_hour, restart_minute = 3, 0
 
             # Calculate next restart time

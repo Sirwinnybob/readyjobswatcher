@@ -172,3 +172,67 @@ def test_validate_ready_jobs_polling_config(config_instance):
     assert config_instance._validate_config({"ready_jobs_file_poll_seconds": 0}) is False
     assert config_instance._validate_config({"ready_jobs_root_poll_seconds": -1}) is False
     assert config_instance._validate_config({"ready_jobs_stable_poll_count": 0}) is False
+
+
+def test_db_config_defaults(monkeypatch):
+    monkeypatch.setattr(Config, "load", lambda self: None)
+    cfg = Config()
+    assert cfg.db_server == '.\\CV24'
+    assert cfg.db_name == 'CVData'
+    assert cfg.db_user == ''
+    assert cfg.db_password == ''
+
+
+def test_validate_config_db_fields(config_instance):
+    # Valid values should pass
+    assert config_instance._validate_config({"db_server": "my_server"}) is True
+    assert config_instance._validate_config({"db_name": "my_db"}) is True
+    assert config_instance._validate_config({"db_user": "my_user"}) is True
+    assert config_instance._validate_config({"db_password": "my_password"}) is True
+    
+    # Invalid values (non-strings) should fail
+    assert config_instance._validate_config({"db_server": 123}) is False
+    assert config_instance._validate_config({"db_name": True}) is False
+    assert config_instance._validate_config({"db_user": ["user"]}) is False
+    assert config_instance._validate_config({"db_password": {"pass": "123"}}) is False
+
+
+def test_apply_config_dict_db_fields(monkeypatch):
+    monkeypatch.setattr(Config, "load", lambda self: None)
+    cfg = Config()
+    
+    cfg._apply_config_dict({
+        "db_server": "new_server",
+        "db_name": "new_db",
+        "db_user": "new_user",
+        "db_password": "new_password"
+    })
+    
+    assert cfg.db_server == "new_server"
+    assert cfg.db_name == "new_db"
+    assert cfg.db_user == "new_user"
+    assert cfg.db_password == "new_password"
+
+
+def test_save_db_fields(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, "load", lambda self: None)
+    cfg = Config()
+    config_file_path = str(tmp_path / "config.json")
+    cfg.CONFIG_FILE = config_file_path
+    
+    cfg.db_server = "save_server"
+    cfg.db_name = "save_db"
+    cfg.db_user = "save_user"
+    cfg.db_password = "save_password"
+    
+    cfg.save()
+    
+    import json
+    with open(config_file_path, "r") as f:
+        saved_data = json.load(f)
+        
+    assert saved_data["db_server"] == "save_server"
+    assert saved_data["db_name"] == "save_db"
+    assert saved_data["db_user"] == "save_user"
+    assert saved_data["db_password"] == "save_password"
+

@@ -1517,6 +1517,11 @@ class Application:
         from .scheduler import perform_backup
         perform_backup(self.config, self)
 
+    def sync_moldings(self) -> bool:
+        """Synchronize Cabinet Vision molding profiles to the Ready Jobs metadata folder."""
+        from .moldings_sync import sync_moldings_library
+        return sync_moldings_library(self.config)
+
     def scan_cnc_pdfs_for_bad_parts(self):
         """Trigger an immediate scan of all existing CNC PDFs."""
         from .scheduler import scan_cnc_pdfs_for_bad_parts

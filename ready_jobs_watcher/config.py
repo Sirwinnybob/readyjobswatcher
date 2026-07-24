@@ -84,6 +84,10 @@ class Config:
         self.metadata_snapshot_daypart_limit = True
         self.metadata_snapshot_archive_dir = os.path.join(BASE_DATA_DIR, "metadata_snapshots")
         self.assimp_path: Optional[str] = None
+        self.db_server = '.\\CV24'
+        self.db_name = 'CVData'
+        self.db_user = ''
+        self.db_password = ''
         self.load()
 
     def _validate_config(self, config: Dict) -> bool:
@@ -212,6 +216,11 @@ class Config:
                 main_logger.error("Config validation failed: ready_jobs_stable_poll_count must be an integer >= 1")
                 return False
 
+        for key in ('db_server', 'db_name', 'db_user', 'db_password'):
+            if key in config and not isinstance(config[key], str):
+                main_logger.error(f"Config validation failed: {key} must be a string")
+                return False
+
         return True
 
     def _apply_config_dict(self, config: Dict) -> None:
@@ -268,6 +277,10 @@ class Config:
             self.metadata_snapshot_archive_dir,
         )
         self.assimp_path = config.get("assimp_path", self.assimp_path)
+        self.db_server = config.get('db_server', self.db_server)
+        self.db_name = config.get('db_name', self.db_name)
+        self.db_user = config.get('db_user', self.db_user)
+        self.db_password = config.get('db_password', self.db_password)
 
     def load(self) -> None:
         """
@@ -368,7 +381,11 @@ class Config:
                 'metadata_snapshot_max_per_job': self.metadata_snapshot_max_per_job,
                 'metadata_snapshot_daypart_limit': self.metadata_snapshot_daypart_limit,
                 'metadata_snapshot_archive_dir': self.metadata_snapshot_archive_dir,
-                'assimp_path': self.assimp_path
+                'assimp_path': self.assimp_path,
+                'db_server': self.db_server,
+                'db_name': self.db_name,
+                'db_user': self.db_user,
+                'db_password': self.db_password
             }
 
             # Validate the config we're about to save

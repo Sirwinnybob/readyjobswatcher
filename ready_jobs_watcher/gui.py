@@ -201,6 +201,10 @@ class ConsolidationSignal(QObject):
     failed = pyqtSignal(str)
 
 
+class MoldingSyncSignal(QObject):
+    completed = pyqtSignal(bool, str)
+
+
 class QtLogHandler(logging.Handler):
     def __init__(self, log_signal):
         super().__init__()
@@ -322,6 +326,8 @@ class SettingsWindow(QWidget):
         self.consolidation_signal = ConsolidationSignal()
         self.consolidation_signal.completed.connect(self._show_consolidation_complete)
         self.consolidation_signal.failed.connect(self._show_consolidation_failed)
+        self.molding_sync_signal = MoldingSyncSignal()
+        self.molding_sync_signal.completed.connect(self._show_molding_sync_result)
         self.alert_coordinator = None
         self.bad_parts_center_dialog = None
         self.jobs_table = None
@@ -550,12 +556,16 @@ class SettingsWindow(QWidget):
         self.run_consolidation_btn = QPushButton("Run Tracker Consolidation Now")
         self.run_consolidation_btn.clicked.connect(self.trigger_run_consolidation)
 
+        sync_moldings_btn = QPushButton("Sync Moldings Library Now")
+        sync_moldings_btn.clicked.connect(self.trigger_sync_moldings)
+
         layout.addWidget(backup_btn)
         layout.addWidget(scan_cnc_btn)
         layout.addWidget(scan_ready_jobs_btn)
         layout.addWidget(convert_pdfs_btn)
         layout.addWidget(force_convert_pdfs_btn)
         layout.addWidget(self.run_consolidation_btn)
+        layout.addWidget(sync_moldings_btn)
         layout.addStretch()
 
         self.tabs.addTab(tab, "Actions")
@@ -673,6 +683,29 @@ class SettingsWindow(QWidget):
             "Consolidation Failed",
             f"Tracker consolidation failed:\n{message}",
         )
+
+    def trigger_sync_moldings(self):
+        if self.app_instance:
+            QMessageBox.information(self, "Molding Sync", "Molding library synchronization started in background.")
+            import threading
+            threading.Thread(target=self._run_sync_moldings_worker, daemon=True).start()
+
+    def _run_sync_moldings_worker(self):
+        try:
+            success = self.app_instance.sync_moldings()
+            if success:
+                self.molding_sync_signal.completed.emit(True, "Molding library synchronization completed successfully.")
+            else:
+                self.molding_sync_signal.completed.emit(False, "Molding library synchronization failed. Check logs for details.")
+        except Exception as exc:
+            logging.error("Molding synchronization worker raised exception: %s", exc, exc_info=True)
+            self.molding_sync_signal.completed.emit(False, "Molding library synchronization failed. Check logs for details.")
+
+    def _show_molding_sync_result(self, success, message):
+        if success:
+            QMessageBox.information(self, "Molding Sync", message)
+        else:
+            QMessageBox.warning(self, "Molding Sync", message)
 
     def trigger_rename_job(self):
         job_folder_name = self._selected_job_folder_name()

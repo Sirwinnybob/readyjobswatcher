@@ -59,3 +59,14 @@ def test_temporary_and_archive_files_are_ignored(tmp_path):
     assert classify_metadata_path(thumb, root).ownership == OwnershipMode.IGNORED_GENERATED
     assert is_rebuild_trigger(tmp_file, root) is False
     assert is_rebuild_trigger(thumb, root) is False
+
+
+def test_hours_tracker_moldings_cache_is_ignored_not_a_trigger(tmp_path):
+    root = tmp_path / "Ready Jobs"
+    dim_svg = root / ".metadata" / "moldings_cache" / "Crown" / "105_dim.svg"
+    library = root / ".metadata" / "moldings_cache" / "library.json"
+
+    assert classify_metadata_path(dim_svg, root).ownership == OwnershipMode.IGNORED_GENERATED
+    assert classify_metadata_path(library, root).ownership == OwnershipMode.IGNORED_GENERATED
+    assert is_rebuild_trigger(dim_svg, root) is False
+    assert is_rebuild_trigger(library, root) is False

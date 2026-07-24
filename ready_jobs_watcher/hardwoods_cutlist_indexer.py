@@ -222,7 +222,7 @@ def _rows_contain_phrase(rows_by_y: List[Tuple[float, List[Dict]]], phrase: str)
     return any(needle in _normalize_text(_line_text(row_words)) for _, row_words in rows_by_y)
 
 
-def _is_placeholder_door_list(rows_by_y: List[Tuple[float, List[Dict]]]) -> bool:
+def _is_placeholder_document(rows_by_y: List[Tuple[float, List[Dict]]]) -> bool:
     return _rows_contain_phrase(rows_by_y, "if you're seeing") and _rows_contain_phrase(
         rows_by_y, "engineer didn't do"
     )
@@ -776,8 +776,8 @@ def _parse_document_rows(doc_type: str, pdf_path: str) -> Tuple[int, List[Dict],
             rows_by_y = _group_words_by_y(words)
 
             if page_index == 0:
-                if doc_type == DOC_TYPE_DOOR_LIST and _is_placeholder_door_list(rows_by_y):
-                    raise SkippableDocumentError("placeholder door list")
+                if _is_placeholder_document(rows_by_y):
+                    raise SkippableDocumentError("placeholder document")
                 if _is_legacy_cabinet_vision_cutlist(rows_by_y, doc_type):
                     raise SkippableDocumentError("legacy cabinet vision cut list layout")
 
