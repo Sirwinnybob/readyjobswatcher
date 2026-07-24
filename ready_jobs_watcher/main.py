@@ -991,7 +991,17 @@ class Application:
             ('tray_thread', getattr(self, 'tray_thread', None)),
         ]
 
+        current_thread = threading.current_thread()
         for name, thread in threads:
+            if thread is current_thread:
+                # restart() can run on one of these threads itself (e.g. the
+                # daily restart scheduler runs on restart_thread; the
+                # root-offline auto-restart runs on observer_monitor_thread).
+                # Joining the thread executing this call would always raise
+                # RuntimeError: cannot join current thread -- there's nothing
+                # to wait for from it anyway, since it's still running this
+                # very method.
+                continue
             if thread and thread.is_alive():
                 try:
                     thread.join(timeout=5)

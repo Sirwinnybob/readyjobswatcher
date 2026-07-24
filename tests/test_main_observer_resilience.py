@@ -326,6 +326,33 @@ def test_restart_executes_in_place_after_stopping(monkeypatch):
     execv.assert_called_once_with(sys.executable, _restart_exec_args())
 
 
+def test_restart_does_not_self_join_calling_thread(monkeypatch):
+    # daily_restart_scheduler runs on restart_thread and calls app.restart()
+    # from it; _maybe_restart_after_root_offline runs on
+    # observer_monitor_thread. Either one calling restart() must not try to
+    # join itself -- thread.join() on the current thread always raises
+    # RuntimeError: cannot join current thread, which used to be logged as
+    # an error on every normal automatic restart even though execv still
+    # fired fine afterward.
+    app = _build_minimal_app()
+    del app.restart
+    app.release_lock = Mock()
+    monkeypatch.setattr("ready_jobs_watcher.main.os.execv", Mock())
+    app.restart_thread = threading.current_thread()
+    app.observer_monitor_thread = threading.current_thread()
+
+    log_errors = []
+    monkeypatch.setattr(
+        "ready_jobs_watcher.main.logging.error",
+        lambda msg, *a, **k: log_errors.append(msg % a if a else msg),
+    )
+
+    app.restart()
+
+    assert not any("restart_thread" in msg for msg in log_errors)
+    assert not any("observer_monitor_thread" in msg for msg in log_errors)
+
+
 def test_win32_quote_arg_leaves_plain_args_alone():
     assert _win32_quote_arg("plain") == "plain"
     assert _win32_quote_arg("-m") == "-m"
