@@ -1,12 +1,17 @@
 import json
 from pathlib import Path
 
-from ready_jobs_watcher.tracker_action_stream import load_cnc_tracker_actions
+from ready_jobs_watcher.tracker_action_stream import load_cnc_tracker_actions, load_hardwoods_tracker_actions
 
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_load_cnc_tracker_actions_supports_multiline_json_stream(tmp_path):
@@ -229,3 +234,194 @@ def test_aud05_excludes_nested_sync_conflict_ndjson(tmp_path):
     assert len(actions) == 1
     assert actions[0]["action"] == "complete"
     assert all(a.get("part") not in (7, 8) for a in actions)
+
+
+def test_load_cnc_tracker_actions_recovers_archived_divergent_conflict(tmp_path):
+    job_folder = tmp_path / "332 - TESTJOB"
+    tracker_dir = job_folder / "CNC" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {"actions": [{"file": "A.pdf", "page": 1, "action": "complete", "timestamp": "2026-07-08T19:53:41Z"}]},
+    )
+
+    archive_dir = job_folder / ".metadata" / "sync_conflicts" / "20260708-125930-2E2GGMF"
+    _write_json(
+        archive_dir / "tablet-a.json",
+        {"tabletId": "tablet-a", "actions": [{"file": "A.pdf", "page": 2, "action": "view", "timestamp": "2026-07-08T19:53:45Z"}]},
+    )
+    _write_json(
+        archive_dir / "manifest.json",
+        {
+            "action": "archived_divergent",
+            "originalPath": str(tracker_dir / "tablet-a.json"),
+            "archivePath": str(archive_dir / "tablet-a.json"),
+            "resolvedAt": "2026-07-08T20:01:23Z",
+            "sameContent": False,
+        },
+    )
+
+    actions = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert len(actions) == 2
+    assert actions[0]["action"] == "complete"
+    assert actions[1]["action"] == "view"
+
+
+def test_load_cnc_tracker_actions_ignores_unrelated_conflict_in_shared_bucket(tmp_path):
+    # The per-job sync_conflicts bucket holds every conflict type for that job, not just
+    # tracker files -- a conflict for something unrelated (e.g. a delivery schedule request)
+    # sitting in the same bucket must never be folded into tracker actions.
+    job_folder = tmp_path / "332 - TESTJOB"
+    tracker_dir = job_folder / "CNC" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {"actions": [{"file": "A.pdf", "page": 1, "action": "complete", "timestamp": "2026-07-08T19:53:41Z"}]},
+    )
+
+    archive_dir = job_folder / ".metadata" / "sync_conflicts" / "20260707-090000-ABCDEF"
+    _write_json(archive_dir / "delivery_schedule_request.tablet-a.json", {"requestedAt": "new"})
+    _write_json(
+        archive_dir / "manifest.json",
+        {
+            "action": "archived_divergent",
+            "originalPath": str(job_folder / "delivery_schedule_request.tablet-a.json"),
+            "archivePath": str(archive_dir / "delivery_schedule_request.tablet-a.json"),
+            "resolvedAt": "2026-07-07T09:05:00Z",
+            "sameContent": False,
+        },
+    )
+
+    actions = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert len(actions) == 1
+    assert actions[0]["action"] == "complete"
+
+
+def test_load_cnc_tracker_actions_ignores_archived_duplicate_manifest(tmp_path):
+    # sameContent=True / action="archived_duplicate" means the original already has this
+    # exact content -- nothing to recover, folding it in would just duplicate existing data.
+    job_folder = tmp_path / "332 - TESTJOB"
+    tracker_dir = job_folder / "CNC" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {"actions": [{"file": "A.pdf", "page": 1, "action": "complete", "timestamp": "2026-07-08T19:53:41Z"}]},
+    )
+
+    archive_dir = job_folder / ".metadata" / "sync_conflicts" / "20260721-065159-2E2GGMF"
+    _write_json(
+        archive_dir / "tablet-a.json",
+        {"tabletId": "tablet-a", "actions": [{"file": "A.pdf", "page": 9, "action": "view", "timestamp": "2026-07-21T06:51:59Z"}]},
+    )
+    _write_json(
+        archive_dir / "manifest.json",
+        {
+            "action": "archived_duplicate",
+            "originalPath": str(tracker_dir / "tablet-a.json"),
+            "archivePath": str(archive_dir / "tablet-a.json"),
+            "resolvedAt": "2026-07-21T06:52:00Z",
+            "sameContent": True,
+        },
+    )
+
+    actions = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert len(actions) == 1
+    assert actions[0]["action"] == "complete"
+
+
+def test_load_hardwoods_tracker_actions_recovers_archived_divergent_conflict(tmp_path):
+    job_folder = tmp_path / "332 - TESTJOB"
+    tracker_dir = job_folder / ".metadata" / "hardwoods" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {
+            "actions": [
+                {"docType": "cutlist", "rowId": "row-1", "action": "set_done_count", "value": 3, "timestamp": "2026-07-08T19:53:41Z"}
+            ]
+        },
+    )
+
+    archive_dir = job_folder / ".metadata" / "sync_conflicts" / "20260708-125930-2E2GGMF"
+    _write_json(
+        archive_dir / "tablet-a.json",
+        {
+            "tabletId": "tablet-a",
+            "actions": [
+                {"docType": "cutlist", "rowId": "row-2", "action": "set_done_count", "value": 5, "timestamp": "2026-07-08T19:53:45Z"}
+            ],
+        },
+    )
+    _write_json(
+        archive_dir / "manifest.json",
+        {
+            "action": "archived_divergent",
+            "originalPath": str(tracker_dir / "tablet-a.json"),
+            "archivePath": str(archive_dir / "tablet-a.json"),
+            "resolvedAt": "2026-07-08T20:01:23Z",
+            "sameContent": False,
+        },
+    )
+
+    actions = load_hardwoods_tracker_actions([str(tracker_dir)])
+
+    assert len(actions) == 2
+    assert {a["rowId"] for a in actions} == {"row-1", "row-2"}
+
+
+def test_load_cnc_tracker_actions_ignores_non_actions_shape_conflict(tmp_path):
+    # Defense in depth: even a divergent, path-matching manifest must not be folded if the
+    # archived file doesn't actually look like a tracker action log.
+    job_folder = tmp_path / "332 - TESTJOB"
+    tracker_dir = job_folder / "CNC" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {"actions": [{"file": "A.pdf", "page": 1, "action": "complete", "timestamp": "2026-07-08T19:53:41Z"}]},
+    )
+
+    archive_dir = job_folder / ".metadata" / "sync_conflicts" / "20260710-000000-ABCDEF"
+    _write_json(archive_dir / "tablet-a.json", {"somethingElse": True})
+    _write_json(
+        archive_dir / "manifest.json",
+        {
+            "action": "archived_divergent",
+            "originalPath": str(tracker_dir / "tablet-a.json"),
+            "archivePath": str(archive_dir / "tablet-a.json"),
+            "resolvedAt": "2026-07-10T00:00:01Z",
+            "sameContent": False,
+        },
+    )
+
+    actions = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert len(actions) == 1
+    assert actions[0]["action"] == "complete"
+
+
+def test_load_cnc_tracker_actions_recovery_is_stable_across_repeated_calls(tmp_path):
+    job_folder = tmp_path / "332 - TESTJOB"
+    tracker_dir = job_folder / "CNC" / ".tracker"
+    _write_json(
+        tracker_dir / "tablet-a.json",
+        {"actions": [{"file": "A.pdf", "page": 1, "action": "complete", "timestamp": "2026-07-08T19:53:41Z"}]},
+    )
+    archive_dir = job_folder / ".metadata" / "sync_conflicts" / "20260708-125930-2E2GGMF"
+    _write_json(
+        archive_dir / "tablet-a.json",
+        {"tabletId": "tablet-a", "actions": [{"file": "A.pdf", "page": 2, "action": "view", "timestamp": "2026-07-08T19:53:45Z"}]},
+    )
+    _write_json(
+        archive_dir / "manifest.json",
+        {
+            "action": "archived_divergent",
+            "originalPath": str(tracker_dir / "tablet-a.json"),
+            "archivePath": str(archive_dir / "tablet-a.json"),
+            "resolvedAt": "2026-07-08T20:01:23Z",
+            "sameContent": False,
+        },
+    )
+
+    first = load_cnc_tracker_actions(str(tracker_dir))
+    second = load_cnc_tracker_actions(str(tracker_dir))
+
+    assert first == second
+    assert len(first) == 2

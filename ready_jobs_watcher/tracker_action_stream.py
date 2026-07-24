@@ -10,7 +10,10 @@ import json
 import os
 import glob
 from json import JSONDecodeError
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from .file_handler import JobProcessor
 
 _CNC_OP_MAP = {
     "set_complete_true": "complete",
@@ -217,6 +220,115 @@ def _next_recovery_index(text: str, current_idx: int) -> int:
     return min(candidates)
 
 
+# Bound on how many parent directories to walk while looking for the enclosing job folder from
+# a tracker_dir (e.g. "<job>/CNC/.tracker" is 2 levels down, "<job>/.metadata/hardwoods/.tracker"
+# is 3). Generous relative to both known shapes so a future tracker path nested one level deeper
+# still resolves, without walking indefinitely on an unexpected layout.
+_JOB_FOLDER_SEARCH_DEPTH = 8
+
+
+def _find_job_folder(tracker_dir: Path) -> Optional[Path]:
+    current = tracker_dir.parent
+    for _ in range(_JOB_FOLDER_SEARCH_DEPTH):
+        try:
+            if JobProcessor.is_job_folder(str(current)):
+                return current
+        except Exception:
+            return None
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+    return None
+
+
+def _original_matches_tracker_dir(original: Path, tracker_dir: Path) -> bool:
+    """
+    True when a conflict manifest's derived original path belongs to this exact tracker_dir.
+
+    Compares only the trailing two path components (case-insensitively), e.g. ("CNC", ".tracker")
+    or ("hardwoods", ".tracker"), rather than the full path -- archived manifests on the live share
+    record originalPath using whatever spelling Syncthing saw it under (both UNC
+    "\\\\host\\share\\..." and mapped "Y:\\..." forms have been observed for the same file), so a
+    full-path compare would spuriously fail even for a genuine match.
+    """
+    original_tail = tuple(part.lower() for part in original.parent.parts[-2:])
+    tracker_tail = tuple(part.lower() for part in tracker_dir.parts[-2:])
+    return len(tracker_tail) == 2 and original_tail == tracker_tail
+
+
+def _load_recovered_conflict_rows(
+    tracker_dir: Path,
+    logger=None,
+) -> List[Tuple[str, str, int, Dict[str, Any]]]:
+    """
+    Recover actions from archived divergent Syncthing conflicts belonging to tracker_dir.
+
+    sync_conflict_resolver.py archives a genuinely divergent conflict copy under
+    "<job>/.metadata/sync_conflicts/<archive_id>/" and never merges it back into the live file (by
+    design -- it never overwrites original bytes). Without this, whatever actions only existed on
+    the losing side of that conflict are gone from consolidation forever. This reads them back in
+    as ordinary historical action rows, every pass -- no "already folded" marker. A marker written
+    here would be unsafe: this reader is also called by read-only consumers (tracker_bad_parts.py,
+    remake_candidates_indexer.py) that never persist anything, so one of them reading first could
+    mark an archive done before metadata_cache.py's actual consolidation pass ever saw it, silently
+    dropping the recovery. Re-reading every pass is cheap at realistic archive volumes and safe
+    since the CNC/hardwoods merge functions are already idempotent over repeated historical rows.
+    """
+    job_folder = _find_job_folder(tracker_dir)
+    if job_folder is None:
+        return []
+
+    sync_conflicts_root = job_folder / ".metadata" / "sync_conflicts"
+    if not sync_conflicts_root.is_dir():
+        return []
+
+    rows: List[Tuple[str, str, int, Dict[str, Any]]] = []
+    for manifest_path in sorted(sync_conflicts_root.glob("*/manifest.json")):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except Exception as exc:
+            if logger is not None:
+                logger.debug("Skipping unreadable sync-conflict manifest %s (%s)", manifest_path, exc)
+            continue
+
+        if not isinstance(manifest, dict) or manifest.get("action") != "archived_divergent":
+            continue
+
+        original_path = manifest.get("originalPath")
+        archive_path = manifest.get("archivePath")
+        if not isinstance(original_path, str) or not isinstance(archive_path, str):
+            continue
+        if not _original_matches_tracker_dir(Path(original_path), tracker_dir):
+            continue
+
+        archived_file = Path(archive_path)
+        try:
+            with open(archived_file, "r", encoding="utf-8") as f:
+                archived_payload = json.load(f)
+        except Exception as exc:
+            if logger is not None:
+                logger.debug("Skipping unreadable archived tracker file %s (%s)", archived_file, exc)
+            continue
+
+        if (
+            not isinstance(archived_payload, dict)
+            or not isinstance(archived_payload.get("tabletId"), str)
+            or not isinstance(archived_payload.get("actions"), list)
+        ):
+            continue
+
+        archived_path_str = str(archived_file)
+        for idx, action in enumerate(archived_payload["actions"]):
+            if not isinstance(action, dict):
+                continue
+            ts = str(action.get("timestamp", "") or "")
+            rows.append((ts, archived_path_str, idx, action))
+
+    return rows
+
+
 def _load_legacy_json_actions(
     tracker_dirs: Sequence[str],
     logger=None,
@@ -248,6 +360,8 @@ def _load_legacy_json_actions(
                     continue
                 ts = str(action.get("timestamp", "") or "")
                 rows.append((ts, path, idx, action))
+
+        rows.extend(_load_recovered_conflict_rows(Path(tracker_dir), logger=logger))
 
     rows.sort(key=lambda row: (row[0], row[1], row[2]))
     return [row[3] for row in rows]
