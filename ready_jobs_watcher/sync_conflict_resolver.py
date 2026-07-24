@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,6 +40,21 @@ _TMP_SUFFIX_RE = re.compile(r"\.tmp(-.*)?$", re.IGNORECASE)
 # docstring for this heuristic's known limitation.
 _STABLE_CHECK_INTERVAL_SECONDS = 0.1
 _STABLE_CHECK_SAMPLES = 3
+
+# Process-wide guard against two independent watchdog Observers (the rename
+# handler's and the PDF handler's, both recursively watching the same tree)
+# racing to resolve the exact same conflict file from two threads at once.
+# Keyed on a normalized real path so equivalent spellings of the same file
+# collapse to one key; a path already in flight is skipped, not queued.
+_IN_FLIGHT_LOCK = threading.Lock()
+_IN_FLIGHT_CONFLICT_PATHS: set[str] = set()
+
+
+def _normalize_conflict_key(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
 
 
 @dataclass(frozen=True)
@@ -226,50 +242,69 @@ def resolve_sync_conflict_file(
     if is_transient_conflict_path(conflict):
         main_logger.debug("Ignoring transient/internal sync-conflict path: %s", conflict)
         return None
-    if not conflict.is_file():
-        return None
-    if not _is_stable_file(conflict):
-        main_logger.debug(
-            "Sync-conflict file not yet stable, deferring to a later sweep/event: %s", conflict
-        )
-        return None
 
-    root = Path(ready_jobs_root)
-    if not original.exists():
-        original.parent.mkdir(parents=True, exist_ok=True)
-        restored = _move_preserving(conflict, original)
-        main_logger.warning("Restored Syncthing conflict because original was missing: %s -> %s", conflict, restored)
+    # Only conflicts that pass the (cheap, lock-free) transient check above
+    # reach the in-flight guard below -- this is what actually closes the
+    # RenameHandler-vs-PdfChangeHandler race, since both observers' threads
+    # can otherwise reach this point for the same genuine conflict file at
+    # nearly the same time.
+    key = _normalize_conflict_key(conflict)
+    with _IN_FLIGHT_LOCK:
+        if key in _IN_FLIGHT_CONFLICT_PATHS:
+            main_logger.debug(
+                "Sync-conflict already being resolved by another thread, skipping: %s", conflict
+            )
+            return None
+        _IN_FLIGHT_CONFLICT_PATHS.add(key)
+
+    try:
+        if not conflict.is_file():
+            return None
+        if not _is_stable_file(conflict):
+            main_logger.debug(
+                "Sync-conflict file not yet stable, deferring to a later sweep/event: %s", conflict
+            )
+            return None
+
+        root = Path(ready_jobs_root)
+        if not original.exists():
+            original.parent.mkdir(parents=True, exist_ok=True)
+            restored = _move_preserving(conflict, original)
+            main_logger.warning("Restored Syncthing conflict because original was missing: %s -> %s", conflict, restored)
+            return SyncConflictResolution(
+                conflict_path=str(conflict),
+                original_path=str(restored),
+                action="restored_missing_original",
+            )
+
+        conflict_hash = _sha256(conflict)
+        original_hash = _sha256(original)
+        same_content = conflict_hash == original_hash
+        action = "archived_duplicate" if same_content else "archived_divergent"
+        archive_id = _archive_id(conflict)
+        archive_dir = _archive_root_for(conflict, root) / archive_id
+        archived = _move_preserving(conflict, archive_dir / original.name)
+        _write_manifest(
+            archive_dir / "manifest.json",
+            conflict=conflict,
+            original=original,
+            archived=archived,
+            action=action,
+            same_content=same_content,
+            conflict_hash=conflict_hash,
+            original_hash=original_hash,
+        )
+        main_logger.warning("Archived Syncthing conflict (%s): %s -> %s", action, conflict, archived)
         return SyncConflictResolution(
             conflict_path=str(conflict),
-            original_path=str(restored),
-            action="restored_missing_original",
+            original_path=str(original),
+            action=action,
+            archive_id=archive_id,
+            archive_path=str(archived),
         )
-
-    conflict_hash = _sha256(conflict)
-    original_hash = _sha256(original)
-    same_content = conflict_hash == original_hash
-    action = "archived_duplicate" if same_content else "archived_divergent"
-    archive_id = _archive_id(conflict)
-    archive_dir = _archive_root_for(conflict, root) / archive_id
-    archived = _move_preserving(conflict, archive_dir / original.name)
-    _write_manifest(
-        archive_dir / "manifest.json",
-        conflict=conflict,
-        original=original,
-        archived=archived,
-        action=action,
-        same_content=same_content,
-        conflict_hash=conflict_hash,
-        original_hash=original_hash,
-    )
-    main_logger.warning("Archived Syncthing conflict (%s): %s -> %s", action, conflict, archived)
-    return SyncConflictResolution(
-        conflict_path=str(conflict),
-        original_path=str(original),
-        action=action,
-        archive_id=archive_id,
-        archive_path=str(archived),
-    )
+    finally:
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT_CONFLICT_PATHS.discard(key)
 
 
 def _iter_conflicts(root: Path) -> Iterable[Path]:

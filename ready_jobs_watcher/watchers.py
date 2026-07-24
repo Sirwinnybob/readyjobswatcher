@@ -802,7 +802,11 @@ class PdfChangeHandler(FileSystemEventHandler):
         """
         try:
             if not event.is_directory and is_sync_conflict_path(event.src_path):
-                resolve_sync_conflict_file(event.src_path, self.config.ROOT_DIR)
+                # RenameHandler (running on the separate rename-watching Observer
+                # over this same recursive tree) already owns sync-conflict
+                # resolution for created/moved events. Only detect and skip here
+                # -- calling resolve_sync_conflict_file from both handlers would
+                # race two threads to move/archive the same conflict file.
                 return
 
             if not event.is_directory and self._is_watcher_refresh_signal(event.src_path):

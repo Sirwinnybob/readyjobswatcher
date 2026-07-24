@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import json
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,8 @@ from ready_jobs_watcher.remake_candidates_indexer import (
 )
 from ready_jobs_watcher.scheduler import sync_conflict_resolver_scheduler
 from ready_jobs_watcher.main import Application
+from ready_jobs_watcher.watchers import RenameHandler, PdfChangeHandler
+from ready_jobs_watcher import sync_conflict_resolver as sync_conflict_resolver_module
 
 
 def test_classify_metadata_path_sync_conflict(tmp_path):
@@ -242,8 +245,142 @@ def test_hardwoods_cutlist_indexer_collect_pdfs_sync_conflict_exclusion(tmp_path
     from ready_jobs_watcher.hardwoods_cutlist_indexer import _collect_pdf_candidates
     (tmp_path / "valid.pdf").write_bytes(b"pdf")
     (tmp_path / "conflict.sync-conflict-20260622-070801-DRK5N56.pdf").write_bytes(b"pdf")
-    
+
     candidates = _collect_pdf_candidates(str(tmp_path))
     filenames = [os.path.basename(c) for c in candidates]
     assert "valid.pdf" in filenames
     assert "conflict.sync-conflict-20260622-070801-DRK5N56.pdf" not in filenames
+
+
+def _make_watcher_config(root):
+    config = MagicMock()
+    config.ROOT_DIR = str(root)
+    config.new_folder_delay_seconds = 5
+    config.pdf_conversion_delay_seconds = 5
+    config.bad_parts_mode = "tracker"
+    return config
+
+
+def _make_handlers(config):
+    job_processor = MagicMock()
+    app_state = MagicMock()
+    rename_handler = RenameHandler(config, job_processor, app_state)
+    pdf_handler = PdfChangeHandler(config, rename_handler=rename_handler)
+    return rename_handler, pdf_handler
+
+
+def test_conflict_created_event_resolved_once_across_both_handlers(tmp_path):
+    """
+    RenameHandler and PdfChangeHandler run on two independent watchdog
+    Observers over the same tree; both receive the same on_created event for
+    a genuine sync-conflict file. Only one of them should invoke the
+    resolver -- otherwise two threads race to move/archive the same file.
+    """
+    config = _make_watcher_config(tmp_path)
+    rename_handler, pdf_handler = _make_handlers(config)
+
+    conflict_path = str(
+        tmp_path / "613 - Test Job" / "Door.sync-conflict-20260720-073405-ABC.pdf"
+    )
+    event = SimpleNamespace(src_path=conflict_path, is_directory=False)
+
+    with patch("ready_jobs_watcher.watchers.resolve_sync_conflict_file") as mock_resolve:
+        mock_resolve.return_value = None
+        rename_handler.on_created(event)
+        pdf_handler.on_created(event)
+
+    assert mock_resolve.call_count == 1
+
+
+def test_conflict_moved_event_only_resolved_by_rename_handler(tmp_path):
+    """RenameHandler.on_moved is the only handler that owns move-triggered conflicts."""
+    config = _make_watcher_config(tmp_path)
+    rename_handler, pdf_handler = _make_handlers(config)
+
+    dest_path = str(
+        tmp_path / "613 - Test Job" / "Door.sync-conflict-20260720-073405-ABC.pdf"
+    )
+    event = SimpleNamespace(src_path=dest_path, dest_path=dest_path, is_directory=False)
+
+    with patch("ready_jobs_watcher.watchers.resolve_sync_conflict_file") as mock_resolve:
+        mock_resolve.return_value = None
+        rename_handler.on_moved(event)
+        # PdfChangeHandler has no on_moved override; nothing to dispatch there.
+
+    assert mock_resolve.call_count == 1
+
+
+def test_transient_conflict_event_ignored_by_both_handlers(tmp_path):
+    """
+    A `.syncthing...json.tmp`-shaped conflict marker must not be resolved by
+    either handler: RenameHandler still calls into the resolver (which
+    internally recognizes and skips transient paths with no side effects),
+    while PdfChangeHandler no longer calls the resolver at all.
+    """
+    config = _make_watcher_config(tmp_path)
+    rename_handler, pdf_handler = _make_handlers(config)
+
+    transient = tmp_path / (
+        ".syncthing.delivery_schedule_request.SM-X808U-6448."
+        "sync-conflict-20260720-073405-2E2GGMF.json.tmp"
+    )
+    transient.write_bytes(b"")
+    event = SimpleNamespace(src_path=str(transient), is_directory=False)
+
+    rename_handler.on_created(event)
+    pdf_handler.on_created(event)
+
+    assert transient.exists()
+    assert not list((tmp_path / ".metadata" / "sync_conflicts").rglob("manifest*.json"))
+
+
+def test_resolver_in_flight_lock_skips_concurrent_duplicate_call(tmp_path):
+    """
+    Two threads (simulating RenameHandler's and PdfChangeHandler's observer
+    threads) calling resolve_sync_conflict_file for the same conflict path
+    at the same time must not both perform the resolution -- the second
+    caller should be skipped (return None) while the first is in flight.
+    """
+    original = tmp_path / "job_board.json"
+    conflict = tmp_path / "job_board.sync-conflict-20260622-070801-DRK5N56.json"
+    original.write_text('{"jobs":[]}', encoding="utf-8")
+    conflict.write_text('{"jobs":[]}', encoding="utf-8")
+
+    entered_stability_check = threading.Event()
+    release_first_call = threading.Event()
+    real_is_stable_file = sync_conflict_resolver_module._is_stable_file
+
+    def blocking_is_stable_file(path, *args, **kwargs):
+        entered_stability_check.set()
+        release_first_call.wait(timeout=5)
+        return real_is_stable_file(path, *args, **kwargs)
+
+    results = {}
+
+    def _first_call():
+        with patch.object(
+            sync_conflict_resolver_module,
+            "_is_stable_file",
+            side_effect=blocking_is_stable_file,
+        ):
+            results["first"] = sync_conflict_resolver_module.resolve_sync_conflict_file(
+                conflict, tmp_path
+            )
+
+    thread = threading.Thread(target=_first_call, name="FirstResolveCall")
+    thread.start()
+    try:
+        assert entered_stability_check.wait(timeout=5)
+
+        # A competing "second observer thread" call for the exact same path
+        # while the first is still in flight must be skipped immediately.
+        second_result = sync_conflict_resolver_module.resolve_sync_conflict_file(
+            conflict, tmp_path
+        )
+        assert second_result is None
+    finally:
+        release_first_call.set()
+        thread.join(timeout=5)
+
+    assert results["first"] is not None
+    assert not conflict.exists()
