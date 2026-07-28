@@ -312,22 +312,24 @@ def build_board_stock_rows(job_folder: Path, hardwood_index: Optional[Dict[str, 
             }.get(doc.get("docType"))
             if not source:
                 continue
-            for block in doc.get("totals", []):
-                material = str(block.get("material", "")).strip()
-                widths = block.get("widthValues", [])
-                lengths = block.get("lengthValues", [])
-                for i in range(max(len(widths), len(lengths))):
-                    width_raw = str(widths[i]).strip() if i < len(widths) else ""
-                    feet_raw = str(lengths[i]).strip().replace(",", "") if i < len(lengths) else ""
-                    try:
-                        width = float(width_raw)
-                        feet = float(feet_raw)
-                    except ValueError:
-                        continue
-                    if feet <= 0.0:
-                        continue
-                    key = (material, width, source)
-                    aggregated[key] = aggregated.get(key, 0.0) + feet
+            # Page totals can continue onto a page whose next material header is
+            # already present.  The row data is material-scoped and remains the
+            # authoritative source for a rip-list grouping.
+            for row in doc.get("rows", []):
+                material = str(row.get("material", "")).strip()
+                try:
+                    width = float(str(row.get("width", "")).strip())
+                    length_inches = float(str(row.get("length", "")).strip().replace(",", ""))
+                    quantity = int(row.get("qty", 0))
+                except (TypeError, ValueError):
+                    continue
+                rip_width = width
+                rip_length_inches = length_inches
+                feet = (rip_length_inches * quantity) / 12.0
+                if not material or rip_width <= 0.0 or feet <= 0.0:
+                    continue
+                key = (material, rip_width, source)
+                aggregated[key] = aggregated.get(key, 0.0) + feet
 
     for (material, width, source), feet in aggregated.items():
         board_stock_rows.append(

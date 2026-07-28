@@ -1,6 +1,7 @@
 import json
 
 from ready_jobs_watcher.metadata_cache import (
+    build_board_stock_rows,
     check_cache_needs_rebuild,
     generate_static_cache,
     refresh_single_job,
@@ -82,6 +83,74 @@ def test_static_cache_reads_current_hours_tracker_admin_board_stock(tmp_path):
             "notes": "2.5",
         }
     ]
+
+
+def test_board_stock_rows_use_detail_rows_when_totals_cross_a_material_page_break(tmp_path):
+    index = {
+        "documents": [
+            {
+                "docType": "DOOR_CUT_LIST",
+                "rows": [
+                    {
+                        "material": "3/4 Solid White Oak Rift",
+                        "width": "2.2813",
+                        "length": "69.0625",
+                        "qty": 2,
+                    }
+                ],
+                # The current report can carry a previous material's totals onto
+                # the page where the next material begins.  Those columns must
+                # never become the source of a rip-list row.
+                "totals": [
+                    {
+                        "material": "3/4 Solid White Oak Rift",
+                        "widthValues": ["69.0625"],
+                        "lengthValues": ["0.2593"],
+                    }
+                ],
+            }
+        ]
+    }
+
+    rows = build_board_stock_rows(tmp_path / "123 - Test Job", index)
+
+    assert rows == [
+        {
+            "stableKey": "board_stock|3/4 Solid White Oak Rift|2.2813|DOOR",
+            "material": "3/4 Solid White Oak Rift",
+            "width": "2.2813",
+            "normalizedWidth": 2.2813,
+            "source": "DOOR",
+            "sourceLabel": "DOOR",
+            "totalFeet": 11.510416666666666,
+            "neededRips": 2,
+        }
+    ]
+
+
+def test_board_stock_rows_use_the_width_column_even_when_it_is_larger_than_length(tmp_path):
+    index = {
+        "documents": [
+            {
+                "docType": "DOOR_CUT_LIST",
+                "rows": [
+                    {
+                        "material": "3/4 Solid White Oak Rift",
+                        "width": "69.0625",
+                        "length": "3.0625",
+                        "qty": 1,
+                    }
+                ],
+                "totals": [],
+            }
+        ]
+    }
+
+    rows = build_board_stock_rows(tmp_path / "123 - Test Job", index)
+
+    assert rows[0]["normalizedWidth"] == 69.0625
+    assert rows[0]["width"] == "69.0625"
+    assert rows[0]["totalFeet"] == 3.0625 / 12.0
 
 
 def test_hours_tracker_admin_board_stock_marks_cache_stale(tmp_path):
