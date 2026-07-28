@@ -99,6 +99,32 @@ def test_v3_cutlist_with_material_header_and_table_rows_parses(tmp_path, monkeyp
     assert rows[0]["material"] == "3/4 Maple"
 
 
+def test_v3_cutlist_with_an_unparsed_row_like_line_is_rejected(tmp_path, monkeypatch):
+    job_dir = tmp_path / "123 - Test Job"
+    job_dir.mkdir()
+    face_frame = job_dir / "Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+    words = [_w(74, 100, "Face"), _w(108, 100, "Frame"), _w(150, 100, "Cut"), _w(174, 100, "List"), _w(210, 100, "3.0")]
+    words += [_w(74, 145, "Material:"), _w(124, 145, "'3/4"), _w(160, 145, "Maple'"), _w(230, 145, "|"), _w(240, 145, "Units:"), _w(280, 145, "BD"), _w(300, 145, "FT"), _w(320, 145, "|")]
+    words += _std_header(160) + _std_row(182, 1, "Top Rail", "3", "56.5", "Unassigned")
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=words)]))
+    with pytest.raises(indexer.TemplateMismatchError, match="unparsed detail rows"):
+        indexer._parse_document_rows(indexer.DOC_TYPE_FACE_FRAME, str(face_frame), str(job_dir))
+
+
+def test_v3_cutlist_with_no_valid_detail_rows_is_rejected(tmp_path, monkeypatch):
+    job_dir = tmp_path / "123 - Test Job"
+    job_dir.mkdir()
+    face_frame = job_dir / "Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+    words = [_w(74, 100, "Face"), _w(108, 100, "Frame"), _w(150, 100, "Cut"), _w(174, 100, "List"), _w(210, 100, "3.0")]
+    words += [_w(74, 145, "Material:"), _w(124, 145, "'3/4"), _w(160, 145, "Maple'"), _w(230, 145, "|"), _w(240, 145, "Units:"), _w(280, 145, "BD"), _w(300, 145, "FT"), _w(320, 145, "|")]
+    words += _std_header(160)
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=words)]))
+    with pytest.raises(indexer.TemplateMismatchError, match="no valid detail rows"):
+        indexer._parse_document_rows(indexer.DOC_TYPE_FACE_FRAME, str(face_frame), str(job_dir))
+
+
 def _std_row(y, qty, desc, width, length, cab_text):
     words = [
         _w(86, y, str(qty)),
