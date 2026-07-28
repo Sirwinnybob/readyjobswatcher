@@ -9,7 +9,7 @@ Keep Face Frame, Nailer, and Door Cut List 3.0 PDFs readable in CABINET VISION w
 - Preserve the readable 3.0 report layout: normal title, Material header, line-item table, static colors, and no Totals section.
 - Keep report-title compatibility by cut-list type: a 3.0 Face Frame, Nailer, or Door PDF must be routed only to its matching parser.
 - Derive rip data from parsed line items, never from a Totals block.
-- Treat the short side of a rectangular part as the rip width.
+- Treat the printed Width column as the authoritative rip width, even when it is numerically larger than Length.
 - Fail safely when the required readable-table contract is incomplete.
 
 ## Contract
@@ -26,10 +26,10 @@ RJW must not use decorative colors, Totals, rips summaries, embedded machine tag
 ## Data Flow
 
 ```text
-Readable PDF title + material headers + table rows
+Readable PDF title + material headers + W:/L:-labeled table rows
                  -> strict parser validation
                  -> normalized line items
-                 -> short-side rip aggregation
+                 -> Width-column rip aggregation
                  -> cache_static.json board stock rows
 ```
 
@@ -42,12 +42,13 @@ Readable PDF title + material headers + table rows
 
 ## Verification
 
-- Unit tests cover title matching, missing required table/material structure, and short-side rip orientation.
+- Unit tests cover title matching, missing required table/material structure, and Width-column rip orientation.
 - Regression parsing uses the supplied Door, Face Frame, and Nailer PDFs after regeneration.
-- Confirm no row with a rip width greater than its paired long dimension is emitted solely because the dimensions are printed in the opposite order.
+- Confirm every board-stock row uses the parsed Width value exactly, even when Length is numerically smaller.
 
 ## Out of Scope
 
 - New inline machine annotations in CABINET VISION.
 - Hidden helper columns or additional report rows.
 - Restoring or parsing Totals blocks.
+- Reordering Width and Length values based on their numeric size.
