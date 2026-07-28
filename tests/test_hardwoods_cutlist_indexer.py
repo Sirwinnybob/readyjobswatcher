@@ -99,6 +99,38 @@ def test_v3_cutlist_with_material_header_and_table_rows_parses(tmp_path, monkeyp
     assert rows[0]["material"] == "3/4 Maple"
 
 
+def test_v3_cutlist_rejects_a_material_marker_after_the_first_detail_row(tmp_path, monkeypatch):
+    job_dir = tmp_path / "123 - Test Job"
+    job_dir.mkdir()
+    face_frame = job_dir / "Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+    words = [_w(74, 100, "Face"), _w(108, 100, "Frame"), _w(150, 100, "Cut"), _w(174, 100, "List"), _w(210, 100, "3.0")]
+    words += _std_header(140)
+    words += _std_row(162, 1, "Top Rail", "3", "56.5", "30")
+    words += [_w(74, 182, "Material:"), _w(124, 182, "'3/4"), _w(160, 182, "Maple'"), _w(230, 182, "|"), _w(240, 182, "Units:"), _w(280, 182, "BD"), _w(300, 182, "FT"), _w(320, 182, "|")]
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=words)]))
+
+    with pytest.raises(indexer.TemplateMismatchError, match="material"):
+        indexer._parse_document_rows(indexer.DOC_TYPE_FACE_FRAME, str(face_frame), str(job_dir))
+
+
+def test_v3_cutlist_rejects_a_later_table_section_without_its_material_marker(tmp_path, monkeypatch):
+    job_dir = tmp_path / "123 - Test Job"
+    job_dir.mkdir()
+    face_frame = job_dir / "Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+    words = [_w(74, 80, "Face"), _w(108, 80, "Frame"), _w(150, 80, "Cut"), _w(174, 80, "List"), _w(210, 80, "3.0")]
+    words += [_w(74, 120, "Material:"), _w(124, 120, "'3/4"), _w(160, 120, "Maple'"), _w(230, 120, "|"), _w(240, 120, "Units:"), _w(280, 120, "BD"), _w(300, 120, "FT"), _w(320, 120, "|")]
+    words += _std_header(140)
+    words += _std_row(162, 1, "Top Rail", "3", "56.5", "30")
+    words += _std_header(200)
+    words += _std_row(222, 1, "Bottom Rail", "4", "54", "31")
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=words)]))
+
+    with pytest.raises(indexer.TemplateMismatchError, match="material"):
+        indexer._parse_document_rows(indexer.DOC_TYPE_FACE_FRAME, str(face_frame), str(job_dir))
+
+
 def test_v3_cutlist_with_an_unparsed_row_like_line_is_rejected(tmp_path, monkeypatch):
     job_dir = tmp_path / "123 - Test Job"
     job_dir.mkdir()
@@ -278,6 +310,65 @@ def _load_revisions(job_dir: str):
     out_path = os.path.join(job_dir, ".metadata", "hardwoods", "cutlist_revisions.json")
     with open(out_path, "r", encoding="utf-8") as f:
         return out_path, json.load(f)
+
+
+def test_malformed_required_v3_sibling_preserves_existing_index_and_revisions(tmp_path, monkeypatch):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+    files = {
+        indexer.DOC_TYPE_FACE_FRAME: job_dir / "998 - Face Frame Cut List.pdf",
+        indexer.DOC_TYPE_NAILER: job_dir / "998 - Nailer Cut List.pdf",
+        indexer.DOC_TYPE_DOOR_CUT: job_dir / "998 - Door Cut List.pdf",
+    }
+    for pdf_path in files.values():
+        pdf_path.write_text("placeholder", encoding="utf-8")
+
+    titles = {
+        indexer.DOC_TYPE_FACE_FRAME: ["Face", "Frame", "Cut", "List", "3.0"],
+        indexer.DOC_TYPE_NAILER: ["Nailer", "Cut", "List", "3.0"],
+        indexer.DOC_TYPE_DOOR_CUT: ["Door", "Cut", "List", "3.0"],
+    }
+
+    def _valid_words(doc_type):
+        words = [_w(74 + i * 42, 100, token) for i, token in enumerate(titles[doc_type])]
+        words += [_w(74, 145, "Material:"), _w(124, 145, "'3/4"), _w(160, 145, "Maple'"), _w(230, 145, "|"), _w(240, 145, "Units:"), _w(280, 145, "BD"), _w(300, 145, "FT"), _w(320, 145, "|")]
+        words += _std_header(160)
+        words += _std_row(182, 1, "Top Rail", "3", "56.5", "30")
+        return words
+
+    words_by_path = {
+        str(pdf_path): _valid_words(doc_type)
+        for doc_type, pdf_path in files.items()
+    }
+    monkeypatch.setattr(
+        indexer.fitz,
+        "open",
+        lambda path: _FakeDoc([_FakePage(words=words_by_path[str(path)])]),
+    )
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is True
+    index_path, first_index = _load_output(str(job_dir))
+    revision_path, first_revisions = _load_revisions(str(job_dir))
+    assert {doc["docType"] for doc in first_index["documents"]} == set(files)
+
+    malformed_face_frame = [_w(74 + i * 42, 100, token) for i, token in enumerate(titles[indexer.DOC_TYPE_FACE_FRAME])]
+    malformed_face_frame += _std_header(140)
+    malformed_face_frame += _std_row(162, 1, "Top Rail", "3", "56.5", "30")
+    malformed_face_frame += [_w(74, 182, "Material:"), _w(124, 182, "'3/4"), _w(160, 182, "Maple'"), _w(230, 182, "|"), _w(240, 182, "Units:"), _w(280, 182, "BD"), _w(300, 182, "FT"), _w(320, 182, "|")]
+    words_by_path[str(files[indexer.DOC_TYPE_FACE_FRAME])] = malformed_face_frame
+
+    with open(index_path, "rb") as f:
+        index_before = f.read()
+    with open(revision_path, "rb") as f:
+        revisions_before = f.read()
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is False
+    with open(index_path, "rb") as f:
+        assert f.read() == index_before
+    with open(revision_path, "rb") as f:
+        assert f.read() == revisions_before
+    assert _load_output(str(job_dir))[1] == first_index
+    assert _load_revisions(str(job_dir))[1] == first_revisions
 
 
 def test_new_template_rows_include_material_field_and_values(tmp_path, monkeypatch):

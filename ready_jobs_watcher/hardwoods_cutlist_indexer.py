@@ -70,10 +70,19 @@ _UNIT_TYPE_CUBIC_M = "CUBIC_M"
 _UNIT_TYPE_CUBIC_FT = "CUBIC_FT"
 _UNIT_TYPE_PAIR = "PAIR"
 _UNIT_TYPE_UNKNOWN = "UNKNOWN"
+_REQUIRED_READABLE_V3_DOC_TYPES = frozenset(
+    {
+        DOC_TYPE_FACE_FRAME,
+        DOC_TYPE_NAILER,
+        DOC_TYPE_DOOR_CUT,
+    }
+)
 
 
 class TemplateMismatchError(Exception):
-    pass
+    def __init__(self, message: str, *, required_v3: bool = False):
+        self.required_v3 = required_v3
+        super().__init__(message)
 
 
 class SkippableDocumentError(Exception):
@@ -796,6 +805,7 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
     is_v3_cutlist = False
     saw_material_marker = False
     row_gap_pages: List[int] = []
+    material_gap_sections: List[str] = []
 
     doc = open_pdf_with_retry(pdf_path)
     try:
@@ -818,7 +828,10 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
                 title_line = _line_text(rows_by_y[0][1]) if rows_by_y else ""
                 is_v3_cutlist = bool(re.search(r"\b3\.0\b", title_line))
                 if not _is_compatible_cutlist_report_title(doc_type, title_line):
-                    raise TemplateMismatchError(f"3.0 title does not match {doc_type}")
+                    raise TemplateMismatchError(
+                        f"3.0 title does not match {doc_type}",
+                        required_v3=is_v3_cutlist,
+                    )
                 if folder_id is not None:
                     pdf_id = extract_pdf_job_identifier(doc_type, first_lines)
                     if pdf_id is not None and is_job_mismatch(folder_id, pdf_id):
@@ -827,9 +840,6 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
             markers = _extract_section_markers(doc_type, rows_by_y)
             if markers:
                 saw_material_marker = True
-            if markers and active_material is None:
-                active_material = str(markers[0].get("material") or "")
-                active_unit_type = str(markers[0].get("unitType") or _UNIT_TYPE_UNKNOWN)
 
             if doc_type != DOC_TYPE_DOOR_LIST:
                 for marker in markers:
@@ -848,6 +858,17 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
             header_rows = _find_header_rows(doc_type, rows_by_y)
             if header_rows:
                 template_detected = True
+                if is_v3_cutlist:
+                    prior_header_y = float("-inf")
+                    for section_number, header_info in enumerate(header_rows, start=1):
+                        header_y = float(header_info["y"])
+                        has_preceding_marker = any(
+                            prior_header_y + 0.5 < float(marker.get("y", 0.0)) <= header_y + 0.5
+                            for marker in markers
+                        )
+                        if not has_preceding_marker:
+                            material_gap_sections.append(f"page {page_number} section {section_number}")
+                        prior_header_y = header_y
 
             page_rows: List[Dict] = []
             if header_rows:
@@ -958,15 +979,37 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
                         open_totals_block = None
 
         if not template_detected:
-            raise TemplateMismatchError("new template header/pipe structure not detected")
+            raise TemplateMismatchError(
+                "new template header/pipe structure not detected",
+                required_v3=is_v3_cutlist,
+            )
 
         if is_v3_cutlist:
             if not saw_material_marker:
-                raise TemplateMismatchError("3.0 cut list material header not detected")
+                raise TemplateMismatchError(
+                    "3.0 cut list material header not detected",
+                    required_v3=True,
+                )
+            if material_gap_sections:
+                raise TemplateMismatchError(
+                    f"3.0 cut list material header missing before table sections {material_gap_sections}",
+                    required_v3=True,
+                )
             if row_gap_pages:
-                raise TemplateMismatchError(f"3.0 cut list has unparsed detail rows on pages {row_gap_pages}")
+                raise TemplateMismatchError(
+                    f"3.0 cut list has unparsed detail rows on pages {row_gap_pages}",
+                    required_v3=True,
+                )
             if not rows:
-                raise TemplateMismatchError("3.0 cut list has no valid detail rows")
+                raise TemplateMismatchError(
+                    "3.0 cut list has no valid detail rows",
+                    required_v3=True,
+                )
+            if any(not row.get("material") for row in rows):
+                raise TemplateMismatchError(
+                    "3.0 cut list has detail rows without a preceding material header",
+                    required_v3=True,
+                )
 
         _normalize_totals_lengths_for_doc_type(doc_type, totals)
 
@@ -1627,6 +1670,12 @@ def build_hardwoods_cutlist_index_for_job(
             continue
         except TemplateMismatchError as e:
             main_logger.error("Hardwoods parse skipped (template mismatch): %s (%s)", path, e)
+            if e.required_v3 and doc_type in _REQUIRED_READABLE_V3_DOC_TYPES:
+                main_logger.error(
+                    "Hardwoods index publication aborted: required 3.0 sibling malformed: %s",
+                    path,
+                )
+                return False
             continue
         except JobMismatchError as e:
             entry = {
