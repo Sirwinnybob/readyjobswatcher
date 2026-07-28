@@ -53,6 +53,52 @@ def _std_header(y=160.0):
     ]
 
 
+@pytest.mark.parametrize(
+    ("doc_type", "title"),
+    [
+        (indexer.DOC_TYPE_FACE_FRAME, "Face Frame Cut List + Filler 3.0"),
+        (indexer.DOC_TYPE_NAILER, "Nailer Cut List KK 3.0"),
+        (indexer.DOC_TYPE_DOOR_CUT, "Door Cut List 3.0"),
+        (indexer.DOC_TYPE_DOOR_CUT, "Door Cut List 2.0"),
+    ],
+)
+def test_cutlist_report_title_accepts_matching_v3_and_legacy_v2(doc_type, title):
+    assert indexer._is_compatible_cutlist_report_title(doc_type, title)
+
+
+def test_cutlist_report_title_rejects_wrong_v3_cutlist_type():
+    assert not indexer._is_compatible_cutlist_report_title(
+        indexer.DOC_TYPE_DOOR_CUT,
+        "Face Frame Cut List + Filler 3.0",
+    )
+
+
+def test_v3_cutlist_without_a_material_header_is_rejected(tmp_path, monkeypatch):
+    job_dir = tmp_path / "123 - Test Job"
+    job_dir.mkdir()
+    face_frame = job_dir / "Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+    words = [_w(74, 100, "Face"), _w(108, 100, "Frame"), _w(150, 100, "Cut"), _w(174, 100, "List"), _w(210, 100, "3.0")]
+    words += _std_header(160) + _std_row(182, 1, "Top Rail", "3", "56.5", "30")
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=words)]))
+    with pytest.raises(indexer.TemplateMismatchError, match="material"):
+        indexer._parse_document_rows(indexer.DOC_TYPE_FACE_FRAME, str(face_frame), str(job_dir))
+
+
+def test_v3_cutlist_with_material_header_and_table_rows_parses(tmp_path, monkeypatch):
+    job_dir = tmp_path / "123 - Test Job"
+    job_dir.mkdir()
+    face_frame = job_dir / "Face Frame Cut List.pdf"
+    face_frame.write_text("placeholder", encoding="utf-8")
+    words = [_w(74, 100, "Face"), _w(108, 100, "Frame"), _w(150, 100, "Cut"), _w(174, 100, "List"), _w(210, 100, "3.0")]
+    words += [_w(74, 145, "Material:"), _w(124, 145, "'3/4"), _w(160, 145, "Maple'"), _w(230, 145, "|"), _w(240, 145, "Units:"), _w(280, 145, "BD"), _w(300, 145, "FT"), _w(320, 145, "|")]
+    words += _std_header(160) + _std_row(182, 1, "Top Rail", "3", "56.5", "30")
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=words)]))
+    _, rows, _ = indexer._parse_document_rows(indexer.DOC_TYPE_FACE_FRAME, str(face_frame), str(job_dir))
+    assert len(rows) == 1
+    assert rows[0]["material"] == "3/4 Maple"
+
+
 def _std_row(y, qty, desc, width, length, cab_text):
     words = [
         _w(86, y, str(qty)),

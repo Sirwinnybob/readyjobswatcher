@@ -99,6 +99,22 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip()).lower()
 
 
+_V3_TITLE_BY_DOC_TYPE = {
+    DOC_TYPE_FACE_FRAME: re.compile(r"\bface\s*frame\s*cut\s*list\b", re.IGNORECASE),
+    DOC_TYPE_NAILER: re.compile(r"\bnailer\s*cut\s*list\b", re.IGNORECASE),
+    DOC_TYPE_DOOR_CUT: re.compile(r"\bdoor\s*cut\s*list\b", re.IGNORECASE),
+}
+
+
+def _is_compatible_cutlist_report_title(doc_type: str, title: str) -> bool:
+    """Keep legacy report titles valid while guarding typed 3.0 templates."""
+    title_text = str(title or "")
+    if not re.search(r"\b3\.0\b", title_text):
+        return True
+    expected_title = _V3_TITLE_BY_DOC_TYPE.get(doc_type)
+    return expected_title is not None and bool(expected_title.search(title_text))
+
+
 def _doc_type_from_filename(filename: str) -> Optional[str]:
     for doc_type, pattern in _DOC_DEFINITIONS:
         if pattern.search(filename):
@@ -777,6 +793,9 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
     active_unit_type: Optional[str] = None
     open_totals_block: Optional[Dict] = None
     last_header_info: Optional[Dict] = None
+    is_v3_cutlist = False
+    saw_material_marker = False
+    row_gap_pages: List[int] = []
 
     doc = open_pdf_with_retry(pdf_path)
     try:
@@ -795,13 +814,19 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
                 if _is_legacy_cabinet_vision_cutlist(rows_by_y, doc_type):
                     raise SkippableDocumentError("legacy cabinet vision cut list layout")
                 folder_id = folder_job_identifier(os.path.basename(job_folder_path))
+                first_lines = [_line_text(row_words) for _, row_words in rows_by_y[:6]]
+                title_line = _line_text(rows_by_y[0][1]) if rows_by_y else ""
+                is_v3_cutlist = bool(re.search(r"\b3\.0\b", title_line))
+                if not _is_compatible_cutlist_report_title(doc_type, title_line):
+                    raise TemplateMismatchError(f"3.0 title does not match {doc_type}")
                 if folder_id is not None:
-                    first_lines = [_line_text(row_words) for _, row_words in rows_by_y[:6]]
                     pdf_id = extract_pdf_job_identifier(doc_type, first_lines)
                     if pdf_id is not None and is_job_mismatch(folder_id, pdf_id):
                         raise JobMismatchError(expected=folder_id, found=pdf_id)
 
             markers = _extract_section_markers(doc_type, rows_by_y)
+            if markers:
+                saw_material_marker = True
             if markers and active_material is None:
                 active_material = str(markers[0].get("material") or "")
                 active_unit_type = str(markers[0].get("unitType") or _UNIT_TYPE_UNKNOWN)
@@ -892,6 +917,7 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
 
             row_like_count = _count_row_like_lines(doc_type, rows_by_y)
             if row_like_count > len(page_rows):
+                row_gap_pages.append(page_number)
                 main_logger.warning(
                     "HARDWOODS_ROW_GAP doc=%s pdf=%s page=%s parsed=%s row_like=%s missing=%s",
                     doc_type,
@@ -933,6 +959,14 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
 
         if not template_detected:
             raise TemplateMismatchError("new template header/pipe structure not detected")
+
+        if is_v3_cutlist:
+            if not saw_material_marker:
+                raise TemplateMismatchError("3.0 cut list material header not detected")
+            if row_gap_pages:
+                raise TemplateMismatchError(f"3.0 cut list has unparsed detail rows on pages {row_gap_pages}")
+            if not rows:
+                raise TemplateMismatchError("3.0 cut list has no valid detail rows")
 
         _normalize_totals_lengths_for_doc_type(doc_type, totals)
 
