@@ -1,8 +1,11 @@
 import os
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
+from ready_jobs_watcher.atomic_write import atomic_replace as real_atomic_replace
 from ready_jobs_watcher.deployment_gate import (
     MODE_BOTH,
     MODE_UNKNOWN,
@@ -272,6 +275,92 @@ class TestDeploymentGateManager(unittest.TestCase):
             cleared_count = gate.migrate_clear_legacy_autorelease_timers()
 
             self.assertEqual(cleared_count, 0)
+
+
+class TestDeploymentGateWindowsContention(unittest.TestCase):
+    def test_concurrent_mark_deployed_retries_access_denied_when_creating_lock(self):
+        """A WinError 5 during O_EXCL lock creation must behave like contention."""
+        with tempfile.TemporaryDirectory() as root:
+            job = "1013 - CONTENTION"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            DeploymentGateManager(root).ensure_pending_for_new_job(job)
+
+            real_open = os.open
+            first_access_denied = threading.Event()
+            open_guard = threading.Lock()
+
+            def open_with_one_access_denied(*args, **kwargs):
+                with open_guard:
+                    if not first_access_denied.is_set():
+                        first_access_denied.set()
+                        raise PermissionError(5, "Access is denied", str(args[0]))
+                return real_open(*args, **kwargs)
+
+            errors = []
+            errors_guard = threading.Lock()
+
+            def run_round():
+                barrier = threading.Barrier(40)
+                workers = []
+
+                def worker():
+                    try:
+                        barrier.wait()
+                        # Separate managers model independent watcher/admin callers,
+                        # so the shared file lock sees real same-path contention.
+                        DeploymentGateManager(root).mark_deployed(job, selected_mode="BOTH")
+                    except BaseException as exc:  # surfaced by the assertion below
+                        with errors_guard:
+                            errors.append(exc)
+
+                for _ in range(40):
+                    thread = threading.Thread(target=worker)
+                    workers.append(thread)
+                    thread.start()
+                for thread in workers:
+                    thread.join(timeout=10)
+                    self.assertFalse(thread.is_alive(), "contention worker did not finish")
+
+            with patch("ready_jobs_watcher.deployment_gate.os.open", side_effect=open_with_one_access_denied):
+                for _ in range(3):
+                    run_round()
+
+            self.assertTrue(first_access_denied.is_set(), "test did not exercise WinError 5")
+            self.assertEqual(errors, [])
+            final_state = DeploymentGateManager(root).load_state(job)
+            self.assertTrue(final_state["deployed"])
+            self.assertFalse(final_state["parseReady"])
+            self.assertEqual(final_state["selectedMode"], "BOTH")
+
+    def test_save_state_retries_access_denied_from_final_replace(self):
+        """A transient WinError 5 from the final gate-file rename must be retried."""
+        with tempfile.TemporaryDirectory() as root:
+            job = "1014 - REPLACE RETRY"
+            os.makedirs(os.path.join(root, job), exist_ok=True)
+            gate = DeploymentGateManager(root)
+            replace_attempts = 0
+
+            def replace_with_one_access_denied(temp_path, dest_path):
+                nonlocal replace_attempts
+                replace_attempts += 1
+                if replace_attempts == 1:
+                    raise PermissionError(5, "Access is denied", str(dest_path))
+                return real_atomic_replace(temp_path, dest_path)
+
+            state = gate._default_state(job, deployed=False)
+            with patch(
+                "ready_jobs_watcher.atomic_write.atomic_replace",
+                side_effect=replace_with_one_access_denied,
+            ), patch(
+                "ready_jobs_watcher.deployment_gate.atomic_replace",
+                side_effect=replace_with_one_access_denied,
+                create=True,
+            ):
+                saved = gate.save_state(job, state)
+
+            self.assertEqual(replace_attempts, 2)
+            self.assertFalse(saved["deployed"])
+            self.assertEqual(gate.load_state(job)["jobFolderName"], job)
 
 
 class TestEnsureHiddenGatesForAllFolders(unittest.TestCase):

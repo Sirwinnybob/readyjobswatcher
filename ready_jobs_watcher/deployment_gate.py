@@ -14,7 +14,11 @@ import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
-from .atomic_write import atomic_write_json as _shared_atomic_write_json
+from .atomic_write import (
+    atomic_replace,
+    atomic_write_json as _shared_atomic_write_json,
+    write_temp_json,
+)
 from .refresh_signals import touch_cnc_refresh_signal
 
 main_logger = logging.getLogger("main")
@@ -25,6 +29,8 @@ MODE_FRAMELESS = "FRAMELESS"
 MODE_BOTH = "BOTH"
 MODE_UNKNOWN = "UNKNOWN"
 MODE_VALUES = {MODE_FACE_FRAME, MODE_FRAMELESS, MODE_BOTH, MODE_UNKNOWN}
+_GATE_REPLACE_RETRY_ATTEMPTS = 3
+_GATE_REPLACE_RETRY_DELAY_SECONDS = 0.05
 
 
 class DeploymentGateLock:
@@ -57,7 +63,7 @@ class DeploymentGateLock:
                     os.close(fd)
                     acquired = True
                     break
-                except FileExistsError:
+                except (FileExistsError, PermissionError):
                     # Check for stale lock (older than 10s)
                     try:
                         mtime = self.lock_path.stat().st_mtime
@@ -128,6 +134,22 @@ class DeploymentGateManager:
     def _atomic_write_json(path: str, payload: Dict) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         _shared_atomic_write_json(path, payload, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def _write_gate_state_with_retry(path: str, payload: Dict) -> None:
+        """Write a gate file while retrying a transient Windows final-rename race."""
+        temp_path = write_temp_json(path, payload, indent=2, ensure_ascii=False)
+        try:
+            for attempt in range(1, _GATE_REPLACE_RETRY_ATTEMPTS + 1):
+                try:
+                    atomic_replace(temp_path, path)
+                    return
+                except PermissionError:
+                    if attempt == _GATE_REPLACE_RETRY_ATTEMPTS:
+                        raise
+                    time.sleep(_GATE_REPLACE_RETRY_DELAY_SECONDS)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     @staticmethod
     def _default_state(job_folder_name: str, deployed: bool = True) -> Dict:
@@ -212,7 +234,7 @@ class DeploymentGateManager:
             coerced["updatedAt"] = self._now_iso()
             metadata_path = self._metadata_path_for_job(job_folder_name)
             try:
-                self._atomic_write_json(metadata_path, coerced)
+                self._write_gate_state_with_retry(metadata_path, coerced)
             except OSError as exc:
                 main_logger.error("Failed writing deployment gate for %s: %s", job_folder_name, exc)
                 raise
