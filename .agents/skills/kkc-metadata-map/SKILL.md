@@ -213,6 +213,8 @@ Second caveat: if a Cabinet Vision molding profile is renamed or removed, Ready 
 | Job appears but material counts/pages are wrong | `cache_static.json`, CNC sidecars, `cnc_scan.log` |
 | CNC progress/bad parts stale | `CNC\.tracker\*.json`, `events\*.ndjson`, `consolidated.json` |
 | Hardwoods rows/revisions wrong | `.metadata\hardwoods\cutlist_index.json`, `cutlist_revisions.json` |
+| Hardwoods row missing/excluded entirely for one doc type, siblings fine | `.metadata\hardwoods\cutlist_job_mismatch.json` (printed job number on that PDF's page 1 didn't match the folder) — check this before assuming a parser bug |
+| Cutlist rip width looks swapped with length | Confirm PDF is a readable "3.0" template (title line contains `3.0`) — as of 2026-07-28 RJW's `build_board_stock_rows` always treats the printed Width column as authoritative and never swaps by numeric size (`e79a88a`); a wrong-looking width means the source PDF/OCR data itself, not RJW's aggregation |
 | Assembly/cabinet view wrong | `.metadata\cabinet_sheet_index.json` |
 | Molding profile geometry missing/wrong | `.metadata\moldings\<category>\<profileId>.xml`, `moldings_sync.py`, Cabinet Vision `Profile`/`Shape` tables |
 | Molding dimension lines/annotations missing or reset | `molding_dimensions.json`, `molding_dimensions_store.py` |
