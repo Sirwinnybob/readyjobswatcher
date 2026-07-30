@@ -263,6 +263,148 @@ def generate_static_cache(job_folder: Path, folder_name: Optional[str] = None, l
     return static_data
 
 
+def _compute_cnc_progress(job_folder: Path, static_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Compute per-material CNC progress from consolidated tracker data."""
+    materials = static_data.get("cncJob", {}).get("materials", [])
+    if not materials:
+        return None
+    consolidated = _read_json(job_folder / "CNC" / ".tracker" / "consolidated.json")
+    actions = consolidated.get("actions", []) if isinstance(consolidated, dict) else []
+
+    per_file: Dict[str, List[Dict]] = {}
+    for a in actions:
+        fname = a.get("file") or a.get("pdfFilename", "")
+        if fname:
+            per_file.setdefault(fname, []).append(a)
+
+    per_material = []
+    total_sheets = 0
+    total_done = 0
+    total_bad = 0
+    total_skipped = 0
+
+    for mat in materials:
+        fname = mat["pdfFilename"]
+        page_count = mat.get("pageCount", 0)
+        total_sheets += page_count
+        file_actions = per_file.get(fname, [])
+
+        page_status: Dict[str, str] = {}
+        for a in sorted(file_actions, key=lambda x: x.get("timestamp", "")):
+            page = str(a.get("page", ""))
+            action = a.get("action", "")
+            if not page or not action:
+                continue
+            if action == "complete":
+                page_status[page] = "done"
+            elif action == "bad_part":
+                page_status[page] = "bad"
+            elif action == "skip":
+                page_status.setdefault(page, "skipped")
+            elif action == "unskip" and page_status.get(page) == "skipped":
+                page_status[page] = "done"
+
+        done = sum(1 for s in page_status.values() if s == "done")
+        bad = sum(1 for s in page_status.values() if s == "bad")
+        skipped = sum(1 for s in page_status.values() if s == "skipped")
+        total_done += done
+        total_bad += bad
+        total_skipped += skipped
+
+        mat_meta = mat.get("metadata") or {}
+        is_remake = bool(mat_meta.get("remakeLabel"))
+
+        per_material.append({
+            "materialName": mat["materialName"],
+            "totalSheets": page_count,
+            "done": done,
+            "bad": bad,
+            "skipped": skipped,
+            "isRemake": is_remake,
+        })
+
+    return {
+        "totalSheets": total_sheets,
+        "done": total_done,
+        "bad": total_bad,
+        "skipped": total_skipped,
+        "materials": per_material,
+    }
+
+
+def _compute_hardwood_progress(job_folder: Path, static_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Compute per-doc-type hardwood progress from consolidated tracker data."""
+    hardwood_job = static_data.get("hardwoodJob", {})
+    index = hardwood_job.get("index") if isinstance(hardwood_job, dict) else None
+    if not index:
+        return None
+    documents = index.get("documents", [])
+    if not documents:
+        return None
+
+    consolidated = _read_json(job_folder / ".metadata" / "hardwoods" / ".tracker" / "consolidated.json")
+    actions = consolidated.get("actions", []) if isinstance(consolidated, dict) else []
+
+    doc_progress: Dict[str, dict] = {}
+    for doc in documents:
+        dt = doc.get("docType", "")
+        if not dt:
+            continue
+        row_status: Dict[str, dict] = {}
+        for a in actions:
+            if a.get("docType") != dt:
+                continue
+            rid = a.get("rowId", "")
+            action = a.get("action", "")
+            if not rid or not action:
+                continue
+            if action == "set_done_count":
+                rs = row_status.setdefault(rid, {"done": 0, "bad": 0, "skipped": False})
+                rs["done"] = max(rs["done"], int(a.get("value", 0)))
+            elif action == "set_bad_count":
+                rs = row_status.setdefault(rid, {"done": 0, "bad": 0, "skipped": False})
+                rs["bad"] = max(rs["bad"], int(a.get("value", 0)))
+            elif action == "set_skipped":
+                rs = row_status.setdefault(rid, {"done": 0, "bad": 0, "skipped": False})
+                rs["skipped"] = True
+            elif action == "clear_skipped":
+                if rid in row_status:
+                    row_status[rid]["skipped"] = False
+
+        doc_progress[dt] = {
+            "total": len(doc.get("rows", [])),
+            "done": sum(1 for s in row_status.values() if s["done"] > 0),
+            "bad": sum(1 for s in row_status.values() if s["bad"] > 0),
+            "skipped": sum(1 for s in row_status.values() if s["skipped"]),
+        }
+
+    if not doc_progress:
+        return None
+
+    return {
+        "totalPieces": sum(d["total"] for d in doc_progress.values()),
+        "donePieces": sum(d["done"] for d in doc_progress.values()),
+        "badPieces": sum(d["bad"] for d in doc_progress.values()),
+        "skippedPieces": sum(d["skipped"] for d in doc_progress.values()),
+        "docTypes": [{"docType": k, **v} for k, v in doc_progress.items()],
+    }
+
+
+def _compute_progress_summary(job_folder: Path, static_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute progress summary for cache_index.json from static data + tracker files."""
+    cnc_progress = _compute_cnc_progress(job_folder, static_data)
+    hardwood_progress = _compute_hardwood_progress(job_folder, static_data)
+    pdf_catalog = static_data.get("pdfCatalog", {})
+    has_delivery = pdf_catalog.get("deliverySheet") is not None
+    has_3d = bool(static_data.get("hasThreeDAssets", False))
+    return {
+        "cnc": cnc_progress,
+        "hardwoods": hardwood_progress,
+        "hasDeliverySheet": has_delivery,
+        "has3DAssets": has_3d,
+    }
+
+
 def build_pdf_catalog(job_folder: Path) -> Dict[str, Any]:
     root_pdfs = []
     if job_folder.exists():
