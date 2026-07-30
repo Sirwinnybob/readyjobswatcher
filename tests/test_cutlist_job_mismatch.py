@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 
 import ready_jobs_watcher.cutlist_job_mismatch as mismatch
 
@@ -88,6 +89,71 @@ def test_allow_override_is_idempotent_and_persists_approval_metadata(tmp_path):
         "approvedBy": "operator",
     }]
     assert ledger["overrides"][0]["approvedAt"].endswith("+00:00")
+
+
+def test_concurrent_override_adds_preserve_both_decisions(tmp_path, monkeypatch):
+    job_dir = tmp_path / "530a - TEST"
+    job_dir.mkdir()
+    first_loaded = threading.Event()
+    second_loaded = threading.Event()
+    real_load = mismatch._load_override_entries
+
+    def coordinated_load(job_folder_path):
+        entries = real_load(job_folder_path)
+        if threading.current_thread().name == "allow-first":
+            first_loaded.set()
+            second_loaded.wait(timeout=0.3)
+        else:
+            second_loaded.set()
+        return entries
+
+    monkeypatch.setattr(mismatch, "_load_override_entries", coordinated_load)
+    results = []
+    first = threading.Thread(
+        name="allow-first",
+        target=lambda: results.append(mismatch.allow_job_mismatch_override(
+            str(job_dir),
+            doc_type="NAILER_CUT_LIST",
+            pdf_filename="530a - Nailer Cut List.pdf",
+            expected_job="530A",
+            found_job="532",
+        )),
+    )
+    second = threading.Thread(
+        name="allow-second",
+        target=lambda: results.append(mismatch.allow_job_mismatch_override(
+            str(job_dir),
+            doc_type="FACE_FRAME_CUT_LIST",
+            pdf_filename="530a - Face Frame Cut List.pdf",
+            expected_job="530A",
+            found_job="533",
+        )),
+    )
+
+    first.start()
+    assert first_loaded.wait(timeout=1)
+    second.start()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert results == [True, True]
+    with open(mismatch.mismatch_override_path(str(job_dir)), encoding="utf-8") as f:
+        ledger = json.load(f)
+    identities = {
+        (
+            entry["doc_type"],
+            entry["pdf_filename"],
+            entry["expected_job"],
+            entry["found_job"],
+        )
+        for entry in ledger["overrides"]
+    }
+    assert identities == {
+        ("NAILER_CUT_LIST", "530a - Nailer Cut List.pdf", "530A", "532"),
+        ("FACE_FRAME_CUT_LIST", "530a - Face Frame Cut List.pdf", "530A", "533"),
+    }
 
 
 def test_parse_job_identifier_plain_number():

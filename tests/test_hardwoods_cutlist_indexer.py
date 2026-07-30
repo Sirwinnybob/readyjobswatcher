@@ -2093,6 +2093,48 @@ def test_matching_override_indexes_document_and_keeps_visible_status(tmp_path, m
     assert notifications == []
 
 
+def test_matching_override_is_revalidated_when_pdf_changes_between_opens(tmp_path, monkeypatch):
+    job_dir, nailer = _make_wrong_job_nailer(tmp_path, monkeypatch)
+    cutlist_mismatch.allow_job_mismatch_override(
+        str(job_dir),
+        doc_type=indexer.DOC_TYPE_NAILER,
+        pdf_filename=nailer.name,
+        expected_job="530A",
+        found_job="532",
+        approved_by="operator",
+    )
+
+    approved_words = [
+        _w(80, 130, "532"),
+        _w(100, 130, "-"),
+        _w(112, 130, "APPROVED"),
+        _w(160, 130, "JOB"),
+    ]
+    replacement_words = [
+        _w(80, 130, "533"),
+        _w(100, 130, "-"),
+        _w(112, 130, "REPLACEMENT"),
+        _w(170, 130, "JOB"),
+    ]
+    table_words = _std_header(160) + _std_row(182, 2, "Bottom Rail", "4.75", "54", "15, 16")
+    opens = [
+        _FakeDoc([_FakePage(words=approved_words + table_words)]),
+        _FakeDoc([_FakePage(words=replacement_words + table_words)]),
+    ]
+    monkeypatch.setattr(indexer.fitz, "open", lambda _path: opens.pop(0))
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is False
+    assert not os.path.exists(os.path.join(job_dir, ".metadata", "hardwoods", "cutlist_index.json"))
+    payload = cutlist_mismatch.read_job_mismatch_flags(str(tmp_path), job_dir.name)
+    assert payload is not None
+    assert not any(entry.get("overrideActive") for entry in payload["mismatches"])
+    assert any(
+        entry.get("overridePresent")
+        and entry.get("foundJob") == "532"
+        for entry in payload["mismatches"]
+    )
+
+
 def test_failed_approved_retry_is_not_marked_active_or_indexed(tmp_path, monkeypatch):
     job_dir, nailer = _make_wrong_job_nailer(tmp_path, monkeypatch)
     cutlist_mismatch.allow_job_mismatch_override(
@@ -2110,7 +2152,9 @@ def test_failed_approved_retry_is_not_marked_active_or_indexed(tmp_path, monkeyp
 
     assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is False
     assert not os.path.exists(os.path.join(job_dir, ".metadata", "hardwoods", "cutlist_index.json"))
-    assert indexer._load_existing_mismatch_flags(str(job_dir)) == {}
+    status = indexer._load_existing_mismatch_flags(str(job_dir))[indexer.DOC_TYPE_NAILER]
+    assert status["overridePresent"] is True
+    assert status["overrideActive"] is False
 
 
 def test_override_never_bypasses_mismatched_v3_report_title(tmp_path, monkeypatch):

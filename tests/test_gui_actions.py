@@ -79,8 +79,11 @@ class _FakeLayout:
 
 
 class _FakeLabel:
-    def __init__(self, _text):
-        pass
+    instances = []
+
+    def __init__(self, text):
+        self.text = text
+        self.__class__.instances.append(self)
 
 
 class _OverrideApp:
@@ -98,7 +101,9 @@ def _bare_settings_window_with_override_app():
     return window
 
 
-def _job_mismatch_payload(override_active):
+def _job_mismatch_payload(override_active, *, override_present=None):
+    if override_present is None:
+        override_present = override_active
     return {
         "mismatches": [{
             "docType": "Face Frame",
@@ -106,12 +111,14 @@ def _job_mismatch_payload(override_active):
             "expectedJob": "123",
             "foundJob": "456",
             "overrideActive": override_active,
+            "overridePresent": override_present,
         }]
     }
 
 
 def _capture_mismatch_dialog_buttons(monkeypatch, window, payload):
     _FakeButton.instances = []
+    _FakeLabel.instances = []
     monkeypatch.setattr("ready_jobs_watcher.gui.QDialog", _FakeDialog)
     monkeypatch.setattr("ready_jobs_watcher.gui.QVBoxLayout", _FakeLayout)
     monkeypatch.setattr("ready_jobs_watcher.gui.QHBoxLayout", _FakeLayout)
@@ -119,6 +126,10 @@ def _capture_mismatch_dialog_buttons(monkeypatch, window, payload):
     monkeypatch.setattr("ready_jobs_watcher.gui.QPushButton", _FakeButton)
     window._show_cutlist_mismatch_job_dialog("123 - TEST JOB", payload)
     return [button.label for button in _FakeButton.instances]
+
+
+def _captured_mismatch_dialog_text():
+    return "\n".join(label.text for label in _FakeLabel.instances)
 
 
 def test_mismatch_dialog_offers_allow_for_blocked_job_number(monkeypatch):
@@ -135,6 +146,78 @@ def test_mismatch_dialog_offers_revoke_for_allowed_job_number(monkeypatch):
 
     assert "Remove allow and rebuild" in labels
     assert "Allow this PDF anyway" not in labels
+
+
+def test_mismatch_dialog_offers_revoke_for_saved_but_inactive_override(monkeypatch):
+    window = _bare_settings_window_with_override_app()
+    labels = _capture_mismatch_dialog_buttons(
+        monkeypatch,
+        window,
+        _job_mismatch_payload(False, override_present=True),
+    )
+
+    assert "Remove allow and rebuild" in labels
+    assert "Allow this PDF anyway" not in labels
+
+
+def test_mismatch_dialog_says_active_override_is_indexed(monkeypatch):
+    window = _bare_settings_window_with_override_app()
+    _capture_mismatch_dialog_buttons(monkeypatch, window, _job_mismatch_payload(True))
+
+    text = _captured_mismatch_dialog_text()
+    assert "Allowed override active" in text
+    assert "This PDF is indexed" in text
+    assert "NOT indexed" not in text
+
+
+def test_mismatch_dialog_keeps_not_indexed_warning_for_blocked_entry(monkeypatch):
+    window = _bare_settings_window_with_override_app()
+    _capture_mismatch_dialog_buttons(monkeypatch, window, _job_mismatch_payload(False))
+
+    text = _captured_mismatch_dialog_text()
+    assert "Blocked mismatch" in text
+    assert "This PDF was NOT indexed" in text
+    assert "Allowed override active" not in text
+
+
+def test_starting_one_override_action_disables_all_job_override_buttons(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    override_app = _OverrideApp()
+    window = SettingsWindow(Config(), app_instance=override_app)
+    window.refresh_jobs_dashboard = lambda: None
+    payload = {
+        "mismatches": [
+            {
+                "docType": "Face Frame",
+                "pdfFilename": "FFCL.pdf",
+                "expectedJob": "123",
+                "foundJob": "456",
+            },
+            {
+                "docType": "Nailer",
+                "pdfFilename": "NCL.pdf",
+                "expectedJob": "123",
+                "foundJob": "457",
+            },
+        ]
+    }
+
+    _capture_mismatch_dialog_buttons(monkeypatch, window, payload)
+    monkeypatch.setattr("threading.Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        "ready_jobs_watcher.gui.QMessageBox.question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr("ready_jobs_watcher.gui.QMessageBox.information", lambda *_args: None)
+
+    override_buttons = [
+        button for button in _FakeButton.instances
+        if button.label in {"Allow this PDF anyway", "Remove allow and rebuild"}
+    ]
+    assert len(override_buttons) == 2
+    override_buttons[0].clicked.callback()
+
+    assert [button.enabled for button in override_buttons] == [False, False]
 
 
 def test_mismatch_dialog_allow_rebuilds_with_the_exact_job_identity(monkeypatch):

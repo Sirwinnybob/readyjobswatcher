@@ -13,9 +13,11 @@ import logging
 import os
 import re
 import getpass
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
 from .atomic_write import atomic_write_json
 from .file_handler import JobProcessor
@@ -37,6 +39,8 @@ DOC_TYPE_CLOSET_ROD = "CLOSET_ROD_CUT_LIST"
 _TOKEN_PATTERN = re.compile(r"^(\d+)([A-Za-z]?)$")
 _CUTLIST_HEADER_LINE_PATTERN = re.compile(r"^(\d+[A-Za-z]?)\s*-\s+\S")
 _DOOR_LIST_HEADER_LINE_PATTERN = re.compile(r"Job:\s*.*\((\d+[A-Za-z]?)\)", re.IGNORECASE)
+_job_locks: dict[str, threading.RLock] = {}
+_job_locks_guard = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,23 @@ def mismatch_override_path(job_folder_path: str) -> str:
     return os.path.join(job_folder_path, ".metadata", "hardwoods", MISMATCH_OVERRIDE_FILENAME)
 
 
+def _lock_for_job(job_folder_path: str) -> threading.RLock:
+    normalized = os.path.normcase(os.path.abspath(os.path.normpath(job_folder_path)))
+    with _job_locks_guard:
+        lock = _job_locks.get(normalized)
+        if lock is None:
+            lock = threading.RLock()
+            _job_locks[normalized] = lock
+        return lock
+
+
+@contextmanager
+def cutlist_job_lock(job_folder_path: str) -> Iterator[None]:
+    """Serialize override decisions, index rebuilds, and their cache refresh."""
+    with _lock_for_job(job_folder_path):
+        yield
+
+
 def _override_identity(*, doc_type: str, pdf_filename: str, expected_job: str, found_job: str):
     return (str(doc_type), str(pdf_filename), str(expected_job), str(found_job))
 
@@ -149,14 +170,15 @@ def _write_override_entries(job_folder_path: str, entries: List[dict]) -> None:
 def has_job_mismatch_override(
     job_folder_path: str, *, doc_type: str, pdf_filename: str, expected_job: str, found_job: str
 ) -> bool:
-    wanted = _override_identity(
-        doc_type=doc_type,
-        pdf_filename=pdf_filename,
-        expected_job=expected_job,
-        found_job=found_job,
-    )
-    entries = _load_override_entries(job_folder_path)
-    return bool(entries and any(_entry_override_identity(entry) == wanted for entry in entries))
+    with cutlist_job_lock(job_folder_path):
+        wanted = _override_identity(
+            doc_type=doc_type,
+            pdf_filename=pdf_filename,
+            expected_job=expected_job,
+            found_job=found_job,
+        )
+        entries = _load_override_entries(job_folder_path)
+        return bool(entries and any(_entry_override_identity(entry) == wanted for entry in entries))
 
 
 def allow_job_mismatch_override(
@@ -168,62 +190,125 @@ def allow_job_mismatch_override(
     found_job: str,
     approved_by: Optional[str] = None,
 ) -> bool:
-    wanted = _override_identity(
-        doc_type=doc_type,
-        pdf_filename=pdf_filename,
-        expected_job=expected_job,
-        found_job=found_job,
-    )
-    entries = _load_override_entries(job_folder_path)
-    if entries is None:
-        return False
-    if any(_entry_override_identity(entry) == wanted for entry in entries):
+    with cutlist_job_lock(job_folder_path):
+        wanted = _override_identity(
+            doc_type=doc_type,
+            pdf_filename=pdf_filename,
+            expected_job=expected_job,
+            found_job=found_job,
+        )
+        entries = _load_override_entries(job_folder_path)
+        if entries is None:
+            return False
+        if any(_entry_override_identity(entry) == wanted for entry in entries):
+            return True
+        entries.append({
+            "doc_type": wanted[0],
+            "pdf_filename": wanted[1],
+            "expected_job": wanted[2],
+            "found_job": wanted[3],
+            "approvedAt": datetime.now(timezone.utc).isoformat(),
+            "approvedBy": str(approved_by) if approved_by is not None else getpass.getuser(),
+        })
+        _write_override_entries(job_folder_path, entries)
         return True
-    entries.append({
-        "doc_type": wanted[0],
-        "pdf_filename": wanted[1],
-        "expected_job": wanted[2],
-        "found_job": wanted[3],
-        "approvedAt": datetime.now(timezone.utc).isoformat(),
-        "approvedBy": str(approved_by) if approved_by is not None else getpass.getuser(),
-    })
-    _write_override_entries(job_folder_path, entries)
-    return True
 
 
 def remove_job_mismatch_override(
     job_folder_path: str, *, doc_type: str, pdf_filename: str, expected_job: str, found_job: str
 ) -> bool:
-    wanted = _override_identity(
-        doc_type=doc_type,
-        pdf_filename=pdf_filename,
-        expected_job=expected_job,
-        found_job=found_job,
-    )
-    entries = _load_override_entries(job_folder_path)
-    if entries is None:
-        return False
-    retained = []
-    removed = False
-    for entry in entries:
-        matches = _entry_override_identity(entry) == wanted
-        if matches:
-            removed = True
-        else:
-            retained.append(entry)
-    if removed:
-        _write_override_entries(job_folder_path, retained)
-    return removed
+    with cutlist_job_lock(job_folder_path):
+        wanted = _override_identity(
+            doc_type=doc_type,
+            pdf_filename=pdf_filename,
+            expected_job=expected_job,
+            found_job=found_job,
+        )
+        entries = _load_override_entries(job_folder_path)
+        if entries is None:
+            return False
+        retained = []
+        removed = False
+        for entry in entries:
+            matches = _entry_override_identity(entry) == wanted
+            if matches:
+                removed = True
+            else:
+                retained.append(entry)
+        if removed:
+            _write_override_entries(job_folder_path, retained)
+        return removed
+
+
+def _status_identity(entry: dict):
+    try:
+        return _override_identity(
+            doc_type=entry["docType"],
+            pdf_filename=entry["pdfFilename"],
+            expected_job=entry["expectedJob"],
+            found_job=entry["foundJob"],
+        )
+    except KeyError:
+        return None
+
+
+def _inactive_status_for_override(entry: dict) -> dict:
+    return {
+        "docType": entry["doc_type"],
+        "pdfFilename": entry["pdf_filename"],
+        "expectedJob": entry["expected_job"],
+        "foundJob": entry["found_job"],
+        "detectedAt": entry.get("approvedAt"),
+        "overridePresent": True,
+        "overrideActive": False,
+    }
 
 
 def read_job_mismatch_flags(root_dir: str, job_folder_name: str) -> Optional[dict]:
-    path = mismatch_flag_path(os.path.join(root_dir, job_folder_name))
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except FileNotFoundError:
-        return None
-    except Exception as exc:
-        main_logger.error("Failed reading cutlist job mismatch flag %s: %s", path, exc)
-        return None
+    job_folder_path = os.path.join(root_dir, job_folder_name)
+    path = mismatch_flag_path(job_folder_path)
+    with cutlist_job_lock(job_folder_path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                data = {}
+        except FileNotFoundError:
+            data = {}
+        except Exception as exc:
+            main_logger.error("Failed reading cutlist job mismatch flag %s: %s", path, exc)
+            data = {}
+
+        raw_entries = data.get("mismatches")
+        status_entries = (
+            [dict(entry) for entry in raw_entries if isinstance(entry, dict)]
+            if isinstance(raw_entries, list)
+            else []
+        )
+        override_entries = _load_override_entries(job_folder_path)
+        override_entries = override_entries if override_entries is not None else []
+        override_by_identity = {
+            _entry_override_identity(entry): entry
+            for entry in override_entries
+            if _entry_override_identity(entry) is not None
+        }
+
+        seen = set()
+        for entry in status_entries:
+            identity = _status_identity(entry)
+            if identity is None:
+                continue
+            seen.add(identity)
+            if identity in override_by_identity:
+                entry["overridePresent"] = True
+                entry.setdefault("overrideActive", False)
+        for identity, entry in override_by_identity.items():
+            if identity not in seen:
+                status_entries.append(_inactive_status_for_override(entry))
+
+        if not status_entries:
+            return None
+        return {
+            "updatedAt": data.get("updatedAt"),
+            "mismatches": status_entries,
+        }
