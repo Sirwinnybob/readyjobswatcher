@@ -12,6 +12,7 @@ import logging
 import time
 import atexit
 import datetime
+from pathlib import Path
 from typing import Optional
 
 from watchdog.observers import Observer
@@ -47,6 +48,7 @@ from .cabinet_sheet_indexer import (
 from .duplicate_job_guard import find_job_number_collision, write_duplicate_suspect_marker
 from .rename_history import find_recent_rename_source
 from .hardwoods_cutlist_indexer import build_hardwoods_cutlist_index_for_job
+from .cutlist_job_mismatch import allow_job_mismatch_override, remove_job_mismatch_override
 from .dae_converter import convert_3d_models_for_job, scan_root_for_missing_glbs
 from .deployment_gate import DeploymentGateManager
 from .notifications import send_notification, send_critical_alert
@@ -537,6 +539,42 @@ class Application:
         logging.info("Job pulled from deployment: job=%s", job_folder_name)
         if self.settings_window:
             self.settings_window.refresh_jobs_dashboard()
+
+    def update_cutlist_job_mismatch_override(self, job_folder_name: str, *, allow: bool, **identity: str) -> dict:
+        job_path = os.path.join(self.config.ROOT_DIR, str(job_folder_name).strip())
+        if not os.path.isdir(job_path):
+            return {"success": False, "message": "Job folder no longer exists."}
+
+        decision_recorded = (
+            allow_job_mismatch_override(job_path, **identity)
+            if allow
+            else remove_job_mismatch_override(job_path, **identity)
+        )
+        if not decision_recorded:
+            action = "saved" if allow else "revoked"
+            return {"success": False, "message": f"Override could not be {action}."}
+
+        try:
+            rebuilt = build_hardwoods_cutlist_index_for_job(
+                job_path,
+                deployment_gate=self.deployment_gate,
+                on_job_mismatch=self._queue_job_mismatch_notice,
+            )
+        except Exception as exc:
+            logging.error("Cutlist override rebuild failed for %s: %s", job_folder_name, exc, exc_info=True)
+            return {"success": False, "message": f"Override saved, but rebuild failed: {exc}"}
+        if not rebuilt:
+            return {"success": False, "message": "Override saved, but hardwoods rebuild did not complete."}
+
+        try:
+            self.metadata_refresh_service.refresh_job_now(Path(job_path), "cutlist_job_mismatch_override_updated")
+        except Exception as exc:
+            logging.error("Cutlist override cache refresh failed for %s: %s", job_folder_name, exc, exc_info=True)
+            return {"success": False, "message": f"Override saved, but cache refresh failed: {exc}"}
+
+        if self.settings_window:
+            self.settings_window.refresh_jobs_dashboard()
+        return {"success": True, "message": "Cutlist mismatch override updated and cache refreshed."}
 
     def _parse_job_after_deploy(self, job_folder_name: str) -> bool:
         job_path = os.path.join(self.config.ROOT_DIR, job_folder_name)

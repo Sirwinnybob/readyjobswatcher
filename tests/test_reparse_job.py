@@ -2,10 +2,120 @@ import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from ready_jobs_watcher import cutlist_job_mismatch
+import ready_jobs_watcher.main as main
 from ready_jobs_watcher.main import Application
 from ready_jobs_watcher.deployment_gate import DEPLOYMENT_GATE_FILENAME
+
+
+def _cutlist_override_app(root_dir):
+    app = Application.__new__(Application)
+    app.config = SimpleNamespace(ROOT_DIR=str(root_dir))
+    app.deployment_gate = MagicMock()
+    app.metadata_refresh_service = MagicMock()
+    app.settings_window = MagicMock()
+    return app
+
+
+def _cutlist_override_identity():
+    return {
+        "doc_type": "NAILER_CUT_LIST",
+        "pdf_filename": "530a - Nailer Cut List.pdf",
+        "expected_job": "530A",
+        "found_job": "532",
+    }
+
+
+def test_update_cutlist_override_rebuilds_job_then_refreshes_cache(tmp_path, monkeypatch):
+    job_name = "530a - TEST"
+    job_path = tmp_path / job_name
+    job_path.mkdir()
+    app = _cutlist_override_app(tmp_path)
+    rebuilt_paths = []
+
+    def rebuild(path, **kwargs):
+        rebuilt_paths.append((path, kwargs))
+        return True
+
+    monkeypatch.setattr(main, "build_hardwoods_cutlist_index_for_job", rebuild)
+
+    result = app.update_cutlist_job_mismatch_override(job_name, allow=True, **_cutlist_override_identity())
+
+    assert result == {"success": True, "message": "Cutlist mismatch override updated and cache refreshed."}
+    assert cutlist_job_mismatch.has_job_mismatch_override(str(job_path), **_cutlist_override_identity())
+    assert rebuilt_paths == [
+        (
+            str(job_path),
+            {"deployment_gate": app.deployment_gate, "on_job_mismatch": app._queue_job_mismatch_notice},
+        )
+    ]
+    app.metadata_refresh_service.refresh_job_now.assert_called_once_with(
+        Path(job_path), "cutlist_job_mismatch_override_updated"
+    )
+    app.metadata_refresh_service.schedule_job.assert_not_called()
+    app.settings_window.refresh_jobs_dashboard.assert_called_once()
+
+
+def test_update_cutlist_override_keeps_allow_decision_when_rebuild_fails(tmp_path, monkeypatch):
+    job_name = "530a - TEST"
+    job_path = tmp_path / job_name
+    job_path.mkdir()
+    app = _cutlist_override_app(tmp_path)
+
+    def rebuild(*args, **kwargs):
+        raise RuntimeError("parser unavailable")
+
+    monkeypatch.setattr(main, "build_hardwoods_cutlist_index_for_job", rebuild)
+
+    result = app.update_cutlist_job_mismatch_override(job_name, allow=True, **_cutlist_override_identity())
+
+    assert result == {"success": False, "message": "Override saved, but rebuild failed: parser unavailable"}
+    assert cutlist_job_mismatch.has_job_mismatch_override(str(job_path), **_cutlist_override_identity())
+    app.metadata_refresh_service.refresh_job_now.assert_not_called()
+    app.settings_window.refresh_jobs_dashboard.assert_not_called()
+
+
+def test_update_cutlist_override_keeps_revoke_decision_when_refresh_fails(tmp_path, monkeypatch):
+    job_name = "530a - TEST"
+    job_path = tmp_path / job_name
+    job_path.mkdir()
+    app = _cutlist_override_app(tmp_path)
+    cutlist_job_mismatch.allow_job_mismatch_override(str(job_path), **_cutlist_override_identity())
+    monkeypatch.setattr(main, "build_hardwoods_cutlist_index_for_job", lambda *args, **kwargs: True)
+    app.metadata_refresh_service.refresh_job_now.side_effect = RuntimeError("cache unavailable")
+
+    result = app.update_cutlist_job_mismatch_override(job_name, allow=False, **_cutlist_override_identity())
+
+    assert result == {"success": False, "message": "Override saved, but cache refresh failed: cache unavailable"}
+    assert not cutlist_job_mismatch.has_job_mismatch_override(str(job_path), **_cutlist_override_identity())
+    app.settings_window.refresh_jobs_dashboard.assert_not_called()
+
+
+def test_update_cutlist_override_stops_when_allow_decision_cannot_be_saved(tmp_path, monkeypatch):
+    job_name = "530a - TEST"
+    job_path = tmp_path / job_name
+    job_path.mkdir()
+    app = _cutlist_override_app(tmp_path)
+    override_path = cutlist_job_mismatch.mismatch_override_path(str(job_path))
+    Path(override_path).parent.mkdir(parents=True)
+    Path(override_path).write_text("not valid json", encoding="utf-8")
+    rebuild_calls = []
+    monkeypatch.setattr(
+        main,
+        "build_hardwoods_cutlist_index_for_job",
+        lambda *args, **kwargs: rebuild_calls.append((args, kwargs)) or True,
+    )
+
+    result = app.update_cutlist_job_mismatch_override(job_name, allow=True, **_cutlist_override_identity())
+
+    assert result == {"success": False, "message": "Override could not be saved."}
+    assert rebuild_calls == []
+    app.metadata_refresh_service.refresh_job_now.assert_not_called()
+
 
 class TestReparseJob(unittest.TestCase):
     def setUp(self):
