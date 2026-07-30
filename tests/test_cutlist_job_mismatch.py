@@ -1,4 +1,36 @@
+import os
+
 import ready_jobs_watcher.cutlist_job_mismatch as mismatch
+
+
+def test_override_matches_only_exact_document_identity(tmp_path):
+    job_dir = tmp_path / "530a - TEST"
+    job_dir.mkdir()
+    fields = dict(
+        doc_type="NAILER_CUT_LIST",
+        pdf_filename="530a - Nailer Cut List.pdf",
+        expected_job="530A",
+        found_job="532",
+    )
+    mismatch.allow_job_mismatch_override(str(job_dir), approved_by="operator", **fields)
+    assert mismatch.has_job_mismatch_override(str(job_dir), **fields)
+    assert not mismatch.has_job_mismatch_override(
+        str(job_dir), **{**fields, "found_job": "533"}
+    )
+
+
+def test_removing_final_override_removes_ledger_file(tmp_path):
+    job_dir = tmp_path / "530a - TEST"
+    job_dir.mkdir()
+    fields = dict(
+        doc_type="NAILER_CUT_LIST",
+        pdf_filename="530a - Nailer Cut List.pdf",
+        expected_job="530A",
+        found_job="532",
+    )
+    mismatch.allow_job_mismatch_override(str(job_dir), **fields)
+    assert mismatch.remove_job_mismatch_override(str(job_dir), **fields)
+    assert not os.path.exists(mismatch.mismatch_override_path(str(job_dir)))
 
 
 def test_parse_job_identifier_plain_number():

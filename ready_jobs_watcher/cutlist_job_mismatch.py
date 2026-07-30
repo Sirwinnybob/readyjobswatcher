@@ -12,14 +12,18 @@ import json
 import logging
 import os
 import re
+import getpass
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import List, Optional
 
+from .atomic_write import atomic_write_json
 from .file_handler import JobProcessor
 
 main_logger = logging.getLogger("main")
 
 MISMATCH_FLAG_FILENAME = "cutlist_job_mismatch.json"
+MISMATCH_OVERRIDE_FILENAME = "cutlist_job_mismatch_overrides.json"
 
 # Mirrors hardwoods_cutlist_indexer.DOC_TYPE_DOOR_LIST. Kept as a local literal
 # (not imported) so this module never depends on hardwoods_cutlist_indexer,
@@ -87,6 +91,132 @@ def is_job_mismatch(folder_id: JobIdentifier, pdf_id: JobIdentifier) -> bool:
 
 def mismatch_flag_path(job_folder_path: str) -> str:
     return os.path.join(job_folder_path, ".metadata", "hardwoods", MISMATCH_FLAG_FILENAME)
+
+
+def mismatch_override_path(job_folder_path: str) -> str:
+    return os.path.join(job_folder_path, ".metadata", "hardwoods", MISMATCH_OVERRIDE_FILENAME)
+
+
+def _override_identity(*, doc_type: str, pdf_filename: str, expected_job: str, found_job: str):
+    return (str(doc_type), str(pdf_filename), str(expected_job), str(found_job))
+
+
+def _load_override_entries(job_folder_path: str) -> List[dict]:
+    try:
+        with open(mismatch_override_path(job_folder_path), "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        main_logger.error("Failed reading cutlist job mismatch overrides for %s: %s", job_folder_path, exc)
+        return []
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return []
+    entries = payload.get("overrides")
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _write_override_entries(job_folder_path: str, entries: List[dict]) -> None:
+    path = mismatch_override_path(job_folder_path)
+    if entries:
+        atomic_write_json(path, {"version": 1, "overrides": entries}, indent=2, ensure_ascii=False)
+    else:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
+def has_job_mismatch_override(
+    job_folder_path: str, *, doc_type: str, pdf_filename: str, expected_job: str, found_job: str
+) -> bool:
+    wanted = _override_identity(
+        doc_type=doc_type,
+        pdf_filename=pdf_filename,
+        expected_job=expected_job,
+        found_job=found_job,
+    )
+    for entry in _load_override_entries(job_folder_path):
+        try:
+            if _override_identity(
+                doc_type=entry["doc_type"],
+                pdf_filename=entry["pdf_filename"],
+                expected_job=entry["expected_job"],
+                found_job=entry["found_job"],
+            ) == wanted:
+                return True
+        except KeyError:
+            continue
+    return False
+
+
+def allow_job_mismatch_override(
+    job_folder_path: str,
+    *,
+    doc_type: str,
+    pdf_filename: str,
+    expected_job: str,
+    found_job: str,
+    approved_by: Optional[str] = None,
+) -> bool:
+    wanted = _override_identity(
+        doc_type=doc_type,
+        pdf_filename=pdf_filename,
+        expected_job=expected_job,
+        found_job=found_job,
+    )
+    entries = _load_override_entries(job_folder_path)
+    if has_job_mismatch_override(
+        job_folder_path,
+        doc_type=doc_type,
+        pdf_filename=pdf_filename,
+        expected_job=expected_job,
+        found_job=found_job,
+    ):
+        return True
+    entries.append({
+        "doc_type": wanted[0],
+        "pdf_filename": wanted[1],
+        "expected_job": wanted[2],
+        "found_job": wanted[3],
+        "approvedAt": datetime.now(timezone.utc).isoformat(),
+        "approvedBy": str(approved_by) if approved_by is not None else getpass.getuser(),
+    })
+    _write_override_entries(job_folder_path, entries)
+    return True
+
+
+def remove_job_mismatch_override(
+    job_folder_path: str, *, doc_type: str, pdf_filename: str, expected_job: str, found_job: str
+) -> bool:
+    wanted = _override_identity(
+        doc_type=doc_type,
+        pdf_filename=pdf_filename,
+        expected_job=expected_job,
+        found_job=found_job,
+    )
+    entries = _load_override_entries(job_folder_path)
+    retained = []
+    removed = False
+    for entry in entries:
+        try:
+            matches = _override_identity(
+                doc_type=entry["doc_type"],
+                pdf_filename=entry["pdf_filename"],
+                expected_job=entry["expected_job"],
+                found_job=entry["found_job"],
+            ) == wanted
+        except KeyError:
+            matches = False
+        if matches:
+            removed = True
+        else:
+            retained.append(entry)
+    if removed:
+        _write_override_entries(job_folder_path, retained)
+    return removed
 
 
 def read_job_mismatch_flags(root_dir: str, job_folder_name: str) -> Optional[dict]:
