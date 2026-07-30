@@ -1070,7 +1070,7 @@ class SettingsWindow(QWidget):
             expected_job = str(entry.get("expectedJob") or "").strip()
             found_job = str(entry.get("foundJob") or "").strip()
             pdf_filename = str(entry.get("pdfFilename") or "?")
-            if not allow:
+            if allow:
                 reply = QMessageBox.question(
                     dialog,
                     "Allow cutlist mismatch",

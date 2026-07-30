@@ -174,6 +174,30 @@ def test_mismatch_dialog_allow_rebuilds_with_the_exact_job_identity(monkeypatch)
     assert messages == [("Cutlist mismatch", "Override updated.")]
 
 
+def test_mismatch_dialog_allow_requires_confirmation_with_pdf_and_job_values(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    override_app = _OverrideApp()
+    window = SettingsWindow(Config(), app_instance=override_app)
+    confirmation = []
+
+    _capture_mismatch_dialog_buttons(monkeypatch, window, _job_mismatch_payload(False))
+    monkeypatch.setattr(
+        "ready_jobs_watcher.gui.QMessageBox.question",
+        lambda _parent, title, message, *_args: confirmation.append((title, message)) or QMessageBox.StandardButton.No,
+    )
+
+    allow_button = next(button for button in _FakeButton.instances if button.label == "Allow this PDF anyway")
+    allow_button.clicked.callback()
+
+    assert override_app.calls == []
+    assert allow_button.enabled is True
+    assert confirmation == [(
+        "Allow cutlist mismatch",
+        "Allow 'FFCL.pdf' even though it shows job 456 instead of expected job 123?\n\n"
+        "This will rebuild the job so the tablet can use this PDF.",
+    )]
+
+
 def test_mismatch_dialog_leaves_template_errors_without_an_override_action(monkeypatch):
     window = _bare_settings_window_with_override_app()
     payload = {"mismatches": [{"docType": "Face Frame", "pdfFilename": "FFCL.pdf"}]}
