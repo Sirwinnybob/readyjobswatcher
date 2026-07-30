@@ -1,6 +1,16 @@
+import json
 import os
 
 import ready_jobs_watcher.cutlist_job_mismatch as mismatch
+
+
+def _override_fields():
+    return dict(
+        doc_type="NAILER_CUT_LIST",
+        pdf_filename="530a - Nailer Cut List.pdf",
+        expected_job="530A",
+        found_job="532",
+    )
 
 
 def test_override_matches_only_exact_document_identity(tmp_path):
@@ -31,6 +41,53 @@ def test_removing_final_override_removes_ledger_file(tmp_path):
     mismatch.allow_job_mismatch_override(str(job_dir), **fields)
     assert mismatch.remove_job_mismatch_override(str(job_dir), **fields)
     assert not os.path.exists(mismatch.mismatch_override_path(str(job_dir)))
+
+
+def test_allow_override_leaves_corrupt_ledger_untouched(tmp_path):
+    job_dir = tmp_path / "530a - TEST"
+    job_dir.mkdir()
+    path = mismatch.mismatch_override_path(str(job_dir))
+    os.makedirs(os.path.dirname(path))
+    original = "{not json"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(original)
+
+    assert not mismatch.allow_job_mismatch_override(str(job_dir), **_override_fields())
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == original
+
+
+def test_allow_override_leaves_unsupported_ledger_untouched(tmp_path):
+    job_dir = tmp_path / "530a - TEST"
+    job_dir.mkdir()
+    path = mismatch.mismatch_override_path(str(job_dir))
+    os.makedirs(os.path.dirname(path))
+    original = {"version": 2, "overrides": []}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(original, f)
+
+    assert not mismatch.allow_job_mismatch_override(str(job_dir), **_override_fields())
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f) == original
+
+
+def test_allow_override_is_idempotent_and_persists_approval_metadata(tmp_path):
+    job_dir = tmp_path / "530a - TEST"
+    job_dir.mkdir()
+    fields = _override_fields()
+
+    assert mismatch.allow_job_mismatch_override(str(job_dir), approved_by="operator", **fields)
+    assert mismatch.allow_job_mismatch_override(str(job_dir), approved_by="different", **fields)
+
+    with open(mismatch.mismatch_override_path(str(job_dir)), encoding="utf-8") as f:
+        ledger = json.load(f)
+    assert ledger["version"] == 1
+    assert ledger["overrides"] == [{
+        **fields,
+        "approvedAt": ledger["overrides"][0]["approvedAt"],
+        "approvedBy": "operator",
+    }]
+    assert ledger["overrides"][0]["approvedAt"].endswith("+00:00")
 
 
 def test_parse_job_identifier_plain_number():
