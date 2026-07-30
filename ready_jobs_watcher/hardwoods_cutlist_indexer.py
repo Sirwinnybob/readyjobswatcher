@@ -17,6 +17,7 @@ from decimal import InvalidOperation
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple
 
 import fitz  # PyMuPDF
+from .atomic_write import atomic_write_bytes as _shared_atomic_write_bytes
 from .atomic_write import atomic_write_json as _shared_atomic_write_json
 from .tracker_action_stream import load_hardwoods_tracker_actions
 from .refresh_signals import touch_hardwoods_refresh_signal
@@ -870,10 +871,20 @@ def _parse_document_rows(
                     )
                 if folder_id is not None:
                     pdf_id = extract_pdf_job_identifier(doc_type, first_lines)
-                    if pdf_id is not None and is_job_mismatch(folder_id, pdf_id):
+                    if allow_job_mismatch and approved_job_mismatch is not None:
+                        if pdf_id is None:
+                            raise SkippableDocumentError(
+                                "approved job mismatch identity unavailable during retry"
+                            )
                         actual_identity = (folder_id.display(), pdf_id.display())
-                        if not allow_job_mismatch or approved_job_mismatch != actual_identity:
-                            raise JobMismatchError(expected=folder_id, found=pdf_id)
+                        if actual_identity != approved_job_mismatch:
+                            if is_job_mismatch(folder_id, pdf_id):
+                                raise JobMismatchError(expected=folder_id, found=pdf_id)
+                            raise SkippableDocumentError(
+                                "approved job mismatch identity changed during retry"
+                            )
+                    elif pdf_id is not None and is_job_mismatch(folder_id, pdf_id):
+                        raise JobMismatchError(expected=folder_id, found=pdf_id)
 
             markers = _extract_section_markers(doc_type, rows_by_y)
             if markers:
@@ -1172,6 +1183,33 @@ def _load_existing_index(job_folder_path: str) -> Optional[Dict]:
         return None
     except Exception:
         return None
+
+
+def _snapshot_file_bytes(path: str) -> Optional[bytes]:
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def _restore_file_snapshot(path: str, snapshot: Optional[bytes]) -> bool:
+    try:
+        if snapshot is None:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+        else:
+            _shared_atomic_write_bytes(path, snapshot)
+        return True
+    except OSError as exc:
+        main_logger.error(
+            "Failed restoring hardwoods publication file %s: %s",
+            path,
+            exc,
+        )
+        return False
 
 
 def _existing_index_references_closet_rod_pdf(job_folder_path: str, filename: str) -> bool:
@@ -1721,6 +1759,7 @@ def _build_hardwoods_cutlist_index_for_job_unlocked(
     job_folder_path: str,
     deployment_gate=None,
     on_job_mismatch: Optional[Callable[[Dict], None]] = None,
+    required_override_identity: Optional[OverrideIdentity] = None,
 ) -> HardwoodsIndexBuildResult:
     """Build one job. The caller must hold cutlist_job_lock for this path."""
     if not os.path.isdir(job_folder_path):
@@ -1731,6 +1770,11 @@ def _build_hardwoods_cutlist_index_for_job_unlocked(
 
     docs = _find_hardwoods_docs(job_folder_path)
     if not docs:
+        if required_override_identity is not None:
+            return HardwoodsIndexBuildResult(
+                success=True,
+                reason="required override was not active",
+            )
         if not _write_mismatch_flags(job_folder_path, []):
             return HardwoodsIndexBuildResult(success=False, reason="mismatch status publication failed")
         try:
@@ -1880,6 +1924,16 @@ def _build_hardwoods_cutlist_index_for_job_unlocked(
             }
         )
 
+    if (
+        required_override_identity is not None
+        and required_override_identity not in active_override_identities
+    ):
+        return HardwoodsIndexBuildResult(
+            success=True,
+            active_override_identities=frozenset(active_override_identities),
+            reason="required override was not active",
+        )
+
     if not serialized_docs:
         if not _write_mismatch_flags(job_folder_path, current_mismatches):
             return HardwoodsIndexBuildResult(
@@ -1908,6 +1962,21 @@ def _build_hardwoods_cutlist_index_for_job_unlocked(
         "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "documents": serialized_docs,
     }
+    index_path = _index_path_for_job(job_folder_path)
+    status_path = mismatch_flag_path(job_folder_path)
+    try:
+        previous_index_bytes = _snapshot_file_bytes(index_path)
+        previous_status_bytes = _snapshot_file_bytes(status_path)
+    except OSError as exc:
+        main_logger.error(
+            "Failed snapshotting hardwoods publication files for %s: %s",
+            job_folder_path,
+            exc,
+        )
+        return HardwoodsIndexBuildResult(
+            success=False,
+            reason="publication snapshot failed",
+        )
     out_path = _write_index(job_folder_path, payload)
     if out_path is None:
         return HardwoodsIndexBuildResult(
@@ -1941,6 +2010,8 @@ def _build_hardwoods_cutlist_index_for_job_unlocked(
         next_docs=serialized_docs,
     )
     if revision_payload is None:
+        _restore_file_snapshot(index_path, previous_index_bytes)
+        _restore_file_snapshot(status_path, previous_status_bytes)
         return HardwoodsIndexBuildResult(
             success=False,
             active_override_identities=frozenset(active_override_identities),
@@ -1964,6 +2035,7 @@ def build_hardwoods_cutlist_index_result_for_job(
     job_folder_path: str,
     deployment_gate=None,
     on_job_mismatch: Optional[Callable[[Dict], None]] = None,
+    required_override_identity: Optional[OverrideIdentity] = None,
 ) -> HardwoodsIndexBuildResult:
     """Build one job under the lock shared with override ledger mutations."""
     with cutlist_job_lock(job_folder_path):
@@ -1971,6 +2043,7 @@ def build_hardwoods_cutlist_index_result_for_job(
             job_folder_path,
             deployment_gate=deployment_gate,
             on_job_mismatch=on_job_mismatch,
+            required_override_identity=required_override_identity,
         )
 
 

@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ready_jobs_watcher import cutlist_job_mismatch
 import ready_jobs_watcher.hardwoods_cutlist_indexer as cutlist_indexer
 import ready_jobs_watcher.main as main
@@ -33,6 +35,16 @@ def _cutlist_override_identity():
     }
 
 
+def _cutlist_override_identity_tuple():
+    identity = _cutlist_override_identity()
+    return (
+        identity["doc_type"],
+        identity["pdf_filename"],
+        identity["expected_job"],
+        identity["found_job"],
+    )
+
+
 def _cutlist_rebuild_result(*, success=True, active=True):
     identity = _cutlist_override_identity()
     active_identities = (
@@ -52,6 +64,36 @@ def _cutlist_rebuild_result(*, success=True, active=True):
         changed=success,
         active_override_identities=active_identities,
     )
+
+
+def _seed_cutlist_publication_outputs(job_path, *, include_hardwoods_outputs=True):
+    metadata_dir = job_path / ".metadata"
+    hardwoods_dir = metadata_dir / "hardwoods"
+    hardwoods_dir.mkdir(parents=True, exist_ok=True)
+    snapshots = {}
+    if include_hardwoods_outputs:
+        snapshots.update({
+            hardwoods_dir / "cutlist_index.json": (
+                b'{\r\n  "generatedAt": "before",\r\n  "documents": []\r\n}\r\n'
+            ),
+            hardwoods_dir / "cutlist_job_mismatch.json": (
+                b'{\r\n  "updatedAt": "before",\r\n  "mismatches": []\r\n}\r\n'
+            ),
+            hardwoods_dir / "cutlist_revisions.json": (
+                b'{\r\n  "schemaVersion": 1,\r\n  "currentRevision": 7,\r\n'
+                b'  "revisions": [{"revision": 7}],\r\n  "currentRowStates": []\r\n}\r\n'
+            ),
+        })
+    snapshots[metadata_dir / "cache_static.json"] = b'{"before": "cache"}\r\n'
+    for path, content in snapshots.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    return snapshots
+
+
+def _assert_publication_outputs_unchanged(snapshots):
+    for path, content in snapshots.items():
+        assert path.read_bytes() == content
 
 
 class _FakePdfPage:
@@ -135,7 +177,11 @@ def test_update_cutlist_override_rebuilds_job_then_refreshes_cache(tmp_path, mon
     assert rebuilt_paths == [
         (
             str(job_path),
-            {"deployment_gate": app.deployment_gate, "on_job_mismatch": app._queue_job_mismatch_notice},
+            {
+                "deployment_gate": app.deployment_gate,
+                "on_job_mismatch": app._queue_job_mismatch_notice,
+                "required_override_identity": _cutlist_override_identity_tuple(),
+            },
         )
     ]
     app.metadata_refresh_service.refresh_job_now.assert_called_once_with(
@@ -154,6 +200,7 @@ def test_update_cutlist_override_fails_when_target_retry_fails_despite_valid_sib
     sibling = job_path / "530a - Face Frame Cut List.pdf"
     sibling.write_text("placeholder", encoding="utf-8")
     app = _cutlist_override_app(tmp_path)
+    snapshots = _seed_cutlist_publication_outputs(job_path)
 
     target_opens = [
         _FakePdfDocument([_FakePdfPage(_cutlist_table_words("532"))]),
@@ -186,6 +233,43 @@ def test_update_cutlist_override_fails_when_target_retry_fails_despite_valid_sib
     )
     assert target_status["overridePresent"] is True
     assert target_status.get("overrideActive", False) is False
+    _assert_publication_outputs_unchanged(snapshots)
+    app.metadata_refresh_service.refresh_job_now.assert_not_called()
+    app.metadata_refresh_service.schedule_job.assert_not_called()
+    app.settings_window.refresh_jobs_dashboard.assert_not_called()
+
+
+@pytest.mark.parametrize("replacement_job", ["UNNUMBERED", "530a"])
+def test_update_cutlist_override_rejects_retry_without_exact_approved_identity(
+    tmp_path,
+    monkeypatch,
+    replacement_job,
+):
+    job_name, job_path, target = _wrong_job_target_for_publication_test(tmp_path)
+    app = _cutlist_override_app(tmp_path)
+    snapshots = _seed_cutlist_publication_outputs(job_path)
+    target_opens = [
+        _FakePdfDocument([_FakePdfPage(_cutlist_table_words("532"))]),
+        _FakePdfDocument([_FakePdfPage(_cutlist_table_words(replacement_job))]),
+    ]
+    monkeypatch.setattr(
+        cutlist_indexer.fitz,
+        "open",
+        lambda path: target_opens.pop(0) if str(path) == str(target) else None,
+    )
+
+    result = app.update_cutlist_job_mismatch_override(
+        job_name,
+        allow=True,
+        **_cutlist_override_identity(),
+    )
+
+    assert result == {
+        "success": False,
+        "message": "Override saved, but the selected PDF was not indexed.",
+    }
+    assert cutlist_job_mismatch.has_job_mismatch_override(str(job_path), **_cutlist_override_identity())
+    _assert_publication_outputs_unchanged(snapshots)
     app.metadata_refresh_service.refresh_job_now.assert_not_called()
     app.metadata_refresh_service.schedule_job.assert_not_called()
     app.settings_window.refresh_jobs_dashboard.assert_not_called()
@@ -256,6 +340,53 @@ def test_update_cutlist_override_stops_before_index_when_status_publication_fail
     assert not (job_path / ".metadata" / "hardwoods" / "cutlist_index.json").exists()
     assert not (job_path / ".metadata" / "hardwoods" / "cutlist_revisions.json").exists()
     app.metadata_refresh_service.refresh_job_now.assert_not_called()
+    app.settings_window.refresh_jobs_dashboard.assert_not_called()
+
+
+@pytest.mark.parametrize("existing_outputs", [True, False])
+def test_update_cutlist_override_rolls_back_index_and_status_when_revision_publication_fails(
+    tmp_path,
+    monkeypatch,
+    existing_outputs,
+):
+    job_name, job_path, _target = _wrong_job_target_for_publication_test(tmp_path)
+    app = _cutlist_override_app(tmp_path)
+    snapshots = _seed_cutlist_publication_outputs(
+        job_path,
+        include_hardwoods_outputs=existing_outputs,
+    )
+    hardwoods_dir = job_path / ".metadata" / "hardwoods"
+    index_path = hardwoods_dir / "cutlist_index.json"
+    status_path = hardwoods_dir / "cutlist_job_mismatch.json"
+    revision_path = hardwoods_dir / "cutlist_revisions.json"
+    monkeypatch.setattr(
+        cutlist_indexer.fitz,
+        "open",
+        lambda _path: _FakePdfDocument([_FakePdfPage(_cutlist_table_words("532"))]),
+    )
+    monkeypatch.setattr(cutlist_indexer, "_upsert_revision_state", lambda *_args, **_kwargs: None)
+
+    result = app.update_cutlist_job_mismatch_override(
+        job_name,
+        allow=True,
+        **_cutlist_override_identity(),
+    )
+
+    assert result == {
+        "success": False,
+        "message": "Override saved, but hardwoods rebuild did not complete.",
+    }
+    if existing_outputs:
+        _assert_publication_outputs_unchanged(snapshots)
+    else:
+        assert not index_path.exists()
+        assert not status_path.exists()
+        assert not revision_path.exists()
+        assert (job_path / ".metadata" / "cache_static.json").read_bytes() == snapshots[
+            job_path / ".metadata" / "cache_static.json"
+        ]
+    app.metadata_refresh_service.refresh_job_now.assert_not_called()
+    app.metadata_refresh_service.schedule_job.assert_not_called()
     app.settings_window.refresh_jobs_dashboard.assert_not_called()
 
 

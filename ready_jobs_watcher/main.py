@@ -572,6 +572,16 @@ class Application:
                         job_path,
                         deployment_gate=self.deployment_gate,
                         on_job_mismatch=self._queue_job_mismatch_notice,
+                        required_override_identity=(
+                            (
+                                str(identity["doc_type"]),
+                                str(identity["pdf_filename"]),
+                                str(identity["expected_job"]),
+                                str(identity["found_job"]),
+                            )
+                            if allow
+                            else None
+                        ),
                     )
                 except Exception as exc:
                     logging.error("Cutlist override rebuild failed for %s: %s", job_folder_name, exc, exc_info=True)
