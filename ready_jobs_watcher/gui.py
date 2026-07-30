@@ -9,7 +9,7 @@ import logging
 import datetime
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -209,6 +209,11 @@ class JobMismatchSignal(QObject):
     new_mismatch = pyqtSignal(object)
 
 
+class CutlistMismatchOverrideSignal(QObject):
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(object)
+
+
 class QtLogHandler(logging.Handler):
     def __init__(self, log_signal):
         super().__init__()
@@ -334,6 +339,9 @@ class SettingsWindow(QWidget):
         self.molding_sync_signal.completed.connect(self._show_molding_sync_result)
         self.job_mismatch_signal = JobMismatchSignal()
         self.job_mismatch_signal.new_mismatch.connect(self._show_cutlist_mismatch_alert_dialog)
+        self.cutlist_mismatch_override_signal = CutlistMismatchOverrideSignal()
+        self.cutlist_mismatch_override_signal.completed.connect(self._show_cutlist_mismatch_override_result)
+        self.cutlist_mismatch_override_signal.failed.connect(self._show_cutlist_mismatch_override_failure)
         self.alert_coordinator = None
         self.bad_parts_center_dialog = None
         self.jobs_table = None
@@ -1038,8 +1046,7 @@ class SettingsWindow(QWidget):
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel(
             f"The following cutlist document(s) in '{job_folder_name}' print a different job "
-            "number than this folder. They were NOT indexed - the tablet does not see them.\n"
-            "Replace the file with the correct job's cutlist and it will re-index automatically."
+            "number than this folder. Review each document's current index status below."
         ))
         for entry in entries:
             if not isinstance(entry, dict):
@@ -1048,17 +1055,156 @@ class SettingsWindow(QWidget):
             pdf_filename = str(entry.get("pdfFilename") or "?")
             expected_job = str(entry.get("expectedJob") or "?")
             found_job = str(entry.get("foundJob") or "?")
-            layout.addWidget(QLabel(
-                f"• {doc_type}: '{pdf_filename}' shows job {found_job} (expected {expected_job})"
-            ))
+            identity_text = (
+                f"{doc_type}: '{pdf_filename}' shows job {found_job} "
+                f"(expected {expected_job})"
+            )
+            if entry.get("overrideActive"):
+                status_text = (
+                    f"• Allowed override active — {identity_text}. "
+                    "This PDF is indexed and visible to the tablet."
+                )
+            elif entry.get("overridePresent"):
+                status_text = (
+                    f"• Saved override inactive — {identity_text}. "
+                    "This PDF was NOT indexed during the last rebuild; "
+                    "the saved allow remains removable."
+                )
+            else:
+                status_text = (
+                    f"• Blocked mismatch — {identity_text}. "
+                    "This PDF was NOT indexed; the tablet does not see it."
+                )
+            layout.addWidget(QLabel(status_text))
 
         action_row = QHBoxLayout()
+        override_buttons: List[QPushButton] = []
+        can_manage_override = bool(
+            self.app_instance
+            and hasattr(self.app_instance, "update_cutlist_job_mismatch_override")
+        )
+
+        def _start_override_action(allow: bool, entry: dict, button: QPushButton) -> None:
+            expected_job = str(entry.get("expectedJob") or "").strip()
+            found_job = str(entry.get("foundJob") or "").strip()
+            pdf_filename = str(entry.get("pdfFilename") or "?")
+            if allow:
+                reply = QMessageBox.question(
+                    dialog,
+                    "Allow cutlist mismatch",
+                    f"Allow '{pdf_filename}' even though it shows job {found_job} "
+                    f"instead of expected job {expected_job}?\n\n"
+                    "This will rebuild the job so the tablet can use this PDF.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+            for action_button in override_buttons:
+                action_button.setEnabled(False)
+            import threading
+            threading.Thread(
+                target=self._run_cutlist_mismatch_override_worker,
+                args=(job_folder_name, allow, entry, dialog, tuple(override_buttons)),
+                daemon=True,
+            ).start()
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            expected_job = str(entry.get("expectedJob") or "").strip()
+            found_job = str(entry.get("foundJob") or "").strip()
+            if not (can_manage_override and expected_job and found_job):
+                continue
+
+            allow = not bool(entry.get("overridePresent") or entry.get("overrideActive"))
+            label = "Allow this PDF anyway" if allow else "Remove allow and rebuild"
+            override_btn = QPushButton(label)
+            override_buttons.append(override_btn)
+            override_btn.clicked.connect(
+                lambda _checked=False, allow=allow, entry=entry, button=override_btn:
+                _start_override_action(allow, entry, button)
+            )
+            action_row.addWidget(override_btn)
+
         dismiss_btn = QPushButton("Dismiss")
         dismiss_btn.clicked.connect(dialog.accept)
         action_row.addStretch()
         action_row.addWidget(dismiss_btn)
         layout.addLayout(action_row)
         dialog.exec()
+
+    def _run_cutlist_mismatch_override_worker(
+        self,
+        job_folder_name: str,
+        allow: bool,
+        entry: dict,
+        dialog: QDialog,
+        buttons: Tuple[QPushButton, ...],
+    ) -> None:
+        try:
+            result = self.app_instance.update_cutlist_job_mismatch_override(
+                job_folder_name,
+                allow=allow,
+                doc_type=str(entry["docType"]),
+                pdf_filename=str(entry["pdfFilename"]),
+                expected_job=str(entry["expectedJob"]),
+                found_job=str(entry["foundJob"]),
+            )
+        except Exception as exc:
+            logging.error("Cutlist mismatch override update failed: %s", exc, exc_info=True)
+            self.cutlist_mismatch_override_signal.failed.emit({
+                "dialog": dialog,
+                "buttons": buttons,
+                "message": str(exc),
+            })
+            return
+
+        self.cutlist_mismatch_override_signal.completed.emit({
+            "dialog": dialog,
+            "buttons": buttons,
+            "result": result,
+        })
+
+    def _show_cutlist_mismatch_override_result(self, outcome: dict) -> None:
+        outcome = outcome if isinstance(outcome, dict) else {}
+        result = outcome.get("result") if isinstance(outcome.get("result"), dict) else {}
+        dialog = outcome.get("dialog")
+        if result.get("success"):
+            self.refresh_jobs_dashboard()
+            QMessageBox.information(
+                dialog,
+                "Cutlist mismatch",
+                str(result.get("message") or "Cutlist mismatch override updated."),
+            )
+            return
+
+        buttons = outcome.get("buttons")
+        if not isinstance(buttons, (list, tuple)):
+            button = outcome.get("button")
+            buttons = [button] if button is not None else []
+        for button in buttons:
+            button.setEnabled(True)
+        QMessageBox.warning(
+            dialog,
+            "Cutlist mismatch",
+            str(result.get("message") or "Cutlist mismatch override could not be updated."),
+        )
+
+    def _show_cutlist_mismatch_override_failure(self, outcome: dict) -> None:
+        outcome = outcome if isinstance(outcome, dict) else {}
+        buttons = outcome.get("buttons")
+        if not isinstance(buttons, (list, tuple)):
+            button = outcome.get("button")
+            buttons = [button] if button is not None else []
+        for button in buttons:
+            button.setEnabled(True)
+        QMessageBox.critical(
+            outcome.get("dialog"),
+            "Cutlist mismatch",
+            f"Cutlist mismatch override failed:\n{outcome.get('message') or 'Unknown error'}",
+        )
 
     def _show_pending_job_prompt_dialog(self, job_folder_name: str):
         if not self.app_instance:
