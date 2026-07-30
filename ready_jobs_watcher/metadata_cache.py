@@ -1240,6 +1240,7 @@ def refresh_single_job(
         consolidate_hardwoods_tracker(job_folder, compact=compact_tracker_events)
     lineup_positions = {j["folderName"]: j["lineupPosition"] for j in compute_lineup(base_path, scan_jobs(base_path))}
     data = generate_static_cache(job_folder, job_folder.name, lineup_positions.get(job_folder.name))
+    generate_cache_index(job_folder, data)
     archive_result = None
     if archive_root is not None:
         archive_result = archive_job_metadata(

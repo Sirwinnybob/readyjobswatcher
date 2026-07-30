@@ -22,6 +22,7 @@ class MetadataClassification:
 
 _DERIVED_OWNED_SUFFIXES = {
     ".metadata/cache_static.json",
+    ".metadata/cache_index.json",
     ".metadata/deployment_gate.json",
     ".metadata/cabinet_sheet_index.json",
     ".metadata/hardwoods/cutlist_index.json",
