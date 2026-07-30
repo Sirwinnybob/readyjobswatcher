@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ready_jobs_watcher.metadata_cache import (
     _compute_progress_summary,
+    _validate_cache_index,
     generate_cache_index,
     update_all_jobs_cache,
 )
@@ -334,3 +335,130 @@ def test_non_dict_actions_skipped(tmp_path):
     }
     result = _compute_progress_summary(job, static_data)
     assert result["cnc"]["done"] == 1  # only the valid dict action counts
+
+
+def test_validate_cache_index_missing_file(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_malformed_json(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    (job / ".metadata" / "cache_index.json").write_text("not json", encoding="utf-8")
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_empty_json(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    (job / ".metadata" / "cache_index.json").write_text("{}", encoding="utf-8")
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_missing_progress(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {"jobInfo": {"folderName": "123 - Test"}}
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_missing_jobInfo(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {"progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False, "has3DAssets": False}}
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_null_folderName(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {"jobInfo": {"folderName": None}, "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False, "has3DAssets": False}}
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_valid(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {
+        "jobInfo": {"folderName": "123 - Test"},
+        "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False, "has3DAssets": False},
+    }
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is True
+
+
+def test_validate_cache_index_empty_folderName(tmp_path):
+    """folderName is an empty string — should fail."""
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {
+        "jobInfo": {"folderName": ""},
+        "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False, "has3DAssets": False},
+    }
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_folderName_not_string(tmp_path):
+    """folderName is a number, not a string — should fail."""
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {
+        "jobInfo": {"folderName": 123},
+        "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False, "has3DAssets": False},
+    }
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_extra_keys(tmp_path):
+    """Extra keys beyond required ones — should still pass."""
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {
+        "jobInfo": {"folderName": "123 - Test", "extraField": "ignored"},
+        "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": True, "has3DAssets": True, "extraMetric": {}},
+    }
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is True
+
+
+def test_validate_cache_index_missing_one_progress_key(tmp_path):
+    """progressSummary missing 'has3DAssets' key — should fail."""
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {
+        "jobInfo": {"folderName": "123 - Test"},
+        "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False},
+    }
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_jobInfo_not_dict(tmp_path):
+    """jobInfo is a string, not a dict — should fail."""
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {
+        "jobInfo": "not a dict",
+        "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False, "has3DAssets": False},
+    }
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is False
+
+
+def test_validate_cache_index_whitespace_folderName(tmp_path):
+    """folderName is whitespace-only — should fail."""
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    data = {
+        "jobInfo": {"folderName": "   "},
+        "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False, "has3DAssets": False},
+    }
+    (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
+    assert _validate_cache_index(job) is False

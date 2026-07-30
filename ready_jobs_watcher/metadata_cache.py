@@ -427,6 +427,39 @@ def generate_cache_index(job_folder: Path, static_data: Dict[str, Any]) -> Dict[
     return index_data
 
 
+_REQUIRED_PROGRESS_KEYS = frozenset({"cnc", "hardwoods", "hasDeliverySheet", "has3DAssets"})
+
+
+def _validate_cache_index(job_folder: Path) -> bool:
+    index_path = job_folder / ".metadata" / "cache_index.json"
+    if not index_path.exists():
+        logging.getLogger(__name__).warning("cache_index.json missing for %s", job_folder.name)
+        return False
+    data = _read_json(index_path)
+    if not isinstance(data, dict):
+        logging.getLogger(__name__).warning("cache_index.json malformed for %s", job_folder.name)
+        return False
+    job_info = data.get("jobInfo")
+    progress = data.get("progressSummary")
+    missing = []
+    if not isinstance(job_info, dict):
+        missing.append("jobInfo")
+    else:
+        folder_name = job_info.get("folderName")
+        if not isinstance(folder_name, str) or not folder_name.strip():
+            missing.append("jobInfo.folderName")
+    if not isinstance(progress, dict):
+        missing.append("progressSummary")
+    elif not _REQUIRED_PROGRESS_KEYS.issubset(progress.keys()):
+        missing.append(f"progressSummary.{_REQUIRED_PROGRESS_KEYS - progress.keys()}")
+    if missing:
+        logging.getLogger(__name__).warning(
+            "cache_index.json incomplete for %s: missing %s", job_folder.name, ", ".join(missing)
+        )
+        return False
+    return True
+
+
 def build_pdf_catalog(job_folder: Path) -> Dict[str, Any]:
     root_pdfs = []
     if job_folder.exists():
