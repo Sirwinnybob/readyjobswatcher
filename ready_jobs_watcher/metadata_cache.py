@@ -405,6 +405,23 @@ def _compute_progress_summary(job_folder: Path, static_data: Dict[str, Any]) -> 
     }
 
 
+def generate_cache_index(job_folder: Path, static_data: Dict[str, Any]) -> Dict[str, Any]:
+    progress = _compute_progress_summary(job_folder, static_data)
+    job_info = static_data.get("jobInfo", {})
+    index_data = {
+        "jobInfo": {
+            "folderName": job_info.get("folderName"),
+            "jobNumber": job_info.get("jobNumber"),
+            "jobName": job_info.get("jobName"),
+            "hiddenFromProduction": bool(job_info.get("hiddenFromProduction", False)),
+            "lineupPosition": job_info.get("lineupPosition"),
+        },
+        "progressSummary": progress,
+    }
+    _atomic_write_json(job_folder / ".metadata" / "cache_index.json", index_data)
+    return index_data
+
+
 def build_pdf_catalog(job_folder: Path) -> Dict[str, Any]:
     root_pdfs = []
     if job_folder.exists():

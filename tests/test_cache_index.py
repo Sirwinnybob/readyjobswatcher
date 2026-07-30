@@ -3,7 +3,10 @@ import json
 import pytest
 from pathlib import Path
 
-from ready_jobs_watcher.metadata_cache import _compute_progress_summary
+from ready_jobs_watcher.metadata_cache import (
+    _compute_progress_summary,
+    generate_cache_index,
+)
 
 
 def test_progress_summary_empty_tracker(tmp_path):
@@ -165,3 +168,58 @@ def test_progress_summary_unskip_reverts(tmp_path):
     cnc = result["cnc"]
     assert cnc["skipped"] == 0
     assert cnc["done"] == 1
+
+
+def test_generate_cache_index_writes_file(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / ".metadata").mkdir()
+    (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+        json.dumps({"tabletId": "consolidated", "actions": []}), encoding="utf-8"
+    )
+    static_data = {
+        "jobInfo": {
+            "folderName": "123 - Test",
+            "jobNumber": "123",
+            "jobName": "Test",
+            "hiddenFromProduction": False,
+            "lineupPosition": 1,
+        },
+        "cncJob": {
+            "materials": [
+                {
+                    "materialName": "FRAME",
+                    "pageCount": 3,
+                    "pdfFilename": "123 - FRAME.pdf",
+                }
+            ]
+        },
+        "hasThreeDAssets": False,
+        "pdfCatalog": {"deliverySheet": None},
+    }
+    result = generate_cache_index(job, static_data)
+    index_file = job / ".metadata" / "cache_index.json"
+    assert index_file.exists()
+    assert result["jobInfo"]["folderName"] == "123 - Test"
+    assert "progressSummary" in result
+    assert result["progressSummary"]["cnc"]["totalSheets"] == 3
+
+
+def test_generate_cache_index_skip_if_unchanged(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / ".metadata").mkdir()
+    (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+        json.dumps({"tabletId": "consolidated", "actions": []}), encoding="utf-8"
+    )
+    static_data = {
+        "jobInfo": {"folderName": "123 - Test"},
+        "cncJob": {"materials": []},
+        "hasThreeDAssets": False,
+        "pdfCatalog": {"deliverySheet": None},
+    }
+    generate_cache_index(job, static_data)
+    mtime1 = (job / ".metadata" / "cache_index.json").stat().st_mtime_ns
+    generate_cache_index(job, static_data)
+    mtime2 = (job / ".metadata" / "cache_index.json").stat().st_mtime_ns
+    assert mtime1 == mtime2, "identical payload should not rewrite"
