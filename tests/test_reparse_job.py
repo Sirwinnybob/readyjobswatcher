@@ -79,6 +79,22 @@ def test_update_cutlist_override_keeps_allow_decision_when_rebuild_fails(tmp_pat
     app.settings_window.refresh_jobs_dashboard.assert_not_called()
 
 
+def test_update_cutlist_override_keeps_allow_decision_when_rebuild_returns_false(tmp_path, monkeypatch):
+    job_name = "530a - TEST"
+    job_path = tmp_path / job_name
+    job_path.mkdir()
+    app = _cutlist_override_app(tmp_path)
+    monkeypatch.setattr(main, "build_hardwoods_cutlist_index_for_job", lambda *args, **kwargs: False)
+
+    result = app.update_cutlist_job_mismatch_override(job_name, allow=True, **_cutlist_override_identity())
+
+    assert result == {"success": False, "message": "Override saved, but hardwoods rebuild did not complete."}
+    assert cutlist_job_mismatch.has_job_mismatch_override(str(job_path), **_cutlist_override_identity())
+    app.metadata_refresh_service.refresh_job_now.assert_not_called()
+    app.metadata_refresh_service.schedule_job.assert_not_called()
+    app.settings_window.refresh_jobs_dashboard.assert_not_called()
+
+
 def test_update_cutlist_override_keeps_revoke_decision_when_refresh_fails(tmp_path, monkeypatch):
     job_name = "530a - TEST"
     job_path = tmp_path / job_name
@@ -90,8 +106,34 @@ def test_update_cutlist_override_keeps_revoke_decision_when_refresh_fails(tmp_pa
 
     result = app.update_cutlist_job_mismatch_override(job_name, allow=False, **_cutlist_override_identity())
 
-    assert result == {"success": False, "message": "Override saved, but cache refresh failed: cache unavailable"}
+    assert result == {"success": False, "message": "Override removed, but cache refresh failed: cache unavailable"}
     assert not cutlist_job_mismatch.has_job_mismatch_override(str(job_path), **_cutlist_override_identity())
+    app.settings_window.refresh_jobs_dashboard.assert_not_called()
+
+
+def test_update_cutlist_override_returns_failure_when_allow_write_raises(tmp_path, monkeypatch):
+    job_name = "530a - TEST"
+    job_path = tmp_path / job_name
+    job_path.mkdir()
+    app = _cutlist_override_app(tmp_path)
+    rebuild_calls = []
+
+    def write_override(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(main, "allow_job_mismatch_override", write_override)
+    monkeypatch.setattr(
+        main,
+        "build_hardwoods_cutlist_index_for_job",
+        lambda *args, **kwargs: rebuild_calls.append((args, kwargs)) or True,
+    )
+
+    result = app.update_cutlist_job_mismatch_override(job_name, allow=True, **_cutlist_override_identity())
+
+    assert result == {"success": False, "message": "Override could not be saved: disk full"}
+    assert rebuild_calls == []
+    app.metadata_refresh_service.refresh_job_now.assert_not_called()
+    app.metadata_refresh_service.schedule_job.assert_not_called()
     app.settings_window.refresh_jobs_dashboard.assert_not_called()
 
 

@@ -545,14 +545,18 @@ class Application:
         if not os.path.isdir(job_path):
             return {"success": False, "message": "Job folder no longer exists."}
 
-        decision_recorded = (
-            allow_job_mismatch_override(job_path, **identity)
-            if allow
-            else remove_job_mismatch_override(job_path, **identity)
-        )
+        decision_description = "saved" if allow else "removed"
+        try:
+            decision_recorded = (
+                allow_job_mismatch_override(job_path, **identity)
+                if allow
+                else remove_job_mismatch_override(job_path, **identity)
+            )
+        except Exception as exc:
+            logging.error("Cutlist override update failed for %s: %s", job_folder_name, exc, exc_info=True)
+            return {"success": False, "message": f"Override could not be {decision_description}: {exc}"}
         if not decision_recorded:
-            action = "saved" if allow else "revoked"
-            return {"success": False, "message": f"Override could not be {action}."}
+            return {"success": False, "message": f"Override could not be {decision_description}."}
 
         try:
             rebuilt = build_hardwoods_cutlist_index_for_job(
@@ -562,15 +566,15 @@ class Application:
             )
         except Exception as exc:
             logging.error("Cutlist override rebuild failed for %s: %s", job_folder_name, exc, exc_info=True)
-            return {"success": False, "message": f"Override saved, but rebuild failed: {exc}"}
+            return {"success": False, "message": f"Override {decision_description}, but rebuild failed: {exc}"}
         if not rebuilt:
-            return {"success": False, "message": "Override saved, but hardwoods rebuild did not complete."}
+            return {"success": False, "message": f"Override {decision_description}, but hardwoods rebuild did not complete."}
 
         try:
             self.metadata_refresh_service.refresh_job_now(Path(job_path), "cutlist_job_mismatch_override_updated")
         except Exception as exc:
             logging.error("Cutlist override cache refresh failed for %s: %s", job_folder_name, exc, exc_info=True)
-            return {"success": False, "message": f"Override saved, but cache refresh failed: {exc}"}
+            return {"success": False, "message": f"Override {decision_description}, but cache refresh failed: {exc}"}
 
         if self.settings_window:
             self.settings_window.refresh_jobs_dashboard()
