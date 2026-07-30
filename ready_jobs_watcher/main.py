@@ -1643,7 +1643,7 @@ class Application:
             return False
         try:
             summary = update_all_jobs_cache(
-                self.config.ROOT_DIR,
+                Path(self.config.ROOT_DIR),
                 consolidate_trackers=False,
                 archive=False,
             )
