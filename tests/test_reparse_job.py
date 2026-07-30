@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from ready_jobs_watcher import cutlist_job_mismatch
+import ready_jobs_watcher.hardwoods_cutlist_indexer as cutlist_indexer
 import ready_jobs_watcher.main as main
 from ready_jobs_watcher.main import Application
 from ready_jobs_watcher.deployment_gate import DEPLOYMENT_GATE_FILENAME
@@ -28,6 +29,30 @@ def _cutlist_override_identity():
         "expected_job": "530A",
         "found_job": "532",
     }
+
+
+class _FakePdfPage:
+    def __init__(self, words):
+        self._words = words
+
+    def get_text(self, mode="text", *_args, **_kwargs):
+        return self._words if mode == "words" else ""
+
+
+class _FakePdfDocument:
+    def __init__(self, pages):
+        self._pages = pages
+        self.page_count = len(pages)
+
+    def __getitem__(self, index):
+        return self._pages[index]
+
+    def close(self):
+        return None
+
+
+def _pdf_word(x, y, text):
+    return (float(x), float(y), float(x) + 8.0, float(y) + 8.0, text, 0, 0, 0)
 
 
 def test_update_cutlist_override_rebuilds_job_then_refreshes_cache(tmp_path, monkeypatch):
@@ -76,6 +101,50 @@ def test_update_cutlist_override_keeps_allow_decision_when_rebuild_fails(tmp_pat
     assert result == {"success": False, "message": "Override saved, but rebuild failed: parser unavailable"}
     assert cutlist_job_mismatch.has_job_mismatch_override(str(job_path), **_cutlist_override_identity())
     app.metadata_refresh_service.refresh_job_now.assert_not_called()
+    app.settings_window.refresh_jobs_dashboard.assert_not_called()
+
+
+def test_update_cutlist_override_does_not_bypass_document_type_mismatch_or_refresh_cache(tmp_path, monkeypatch):
+    job_name = "530a - TEST"
+    job_path = tmp_path / job_name
+    job_path.mkdir()
+    pdf_path = job_path / "530a - Face Frame Cut List.pdf"
+    pdf_path.write_text("placeholder", encoding="utf-8")
+    app = _cutlist_override_app(tmp_path)
+    fixture_identity = {
+        "doc_type": cutlist_indexer.DOC_TYPE_FACE_FRAME,
+        "pdf_filename": pdf_path.name,
+        "expected_job": "530A",
+        "found_job": "532",
+    }
+
+    words = [
+        _pdf_word(74, 100, "Door"),
+        _pdf_word(108, 100, "Cut"),
+        _pdf_word(132, 100, "List"),
+        _pdf_word(168, 100, "3.0"),
+        _pdf_word(80, 130, "532"),
+        _pdf_word(100, 130, "-"),
+        _pdf_word(112, 130, "WRONG"),
+        _pdf_word(160, 130, "JOB"),
+    ]
+    monkeypatch.setattr(
+        cutlist_indexer.fitz,
+        "open",
+        lambda path: _FakePdfDocument([_FakePdfPage(words)]),
+    )
+
+    result = app.update_cutlist_job_mismatch_override(job_name, allow=True, **fixture_identity)
+
+    assert result == {
+        "success": False,
+        "message": "Override saved, but hardwoods rebuild did not complete.",
+    }
+    assert cutlist_job_mismatch.has_job_mismatch_override(str(job_path), **fixture_identity)
+    assert not (job_path / ".metadata" / "hardwoods" / "cutlist_index.json").exists()
+    assert not (job_path / ".metadata" / "hardwoods" / "cutlist_revisions.json").exists()
+    app.metadata_refresh_service.refresh_job_now.assert_not_called()
+    app.metadata_refresh_service.schedule_job.assert_not_called()
     app.settings_window.refresh_jobs_dashboard.assert_not_called()
 
 
