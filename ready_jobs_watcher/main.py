@@ -57,6 +57,7 @@ from .cutlist_job_mismatch import (
     remove_job_mismatch_override,
 )
 from .dae_converter import convert_3d_models_for_job, scan_root_for_missing_glbs
+from .metadata_cache import update_all_jobs_cache
 from .deployment_gate import DeploymentGateManager
 from .notifications import send_notification, send_critical_alert
 from .metadata_refresh import MetadataRefreshService
@@ -1536,6 +1537,14 @@ class Application:
         )
         index_thread.start()
 
+        # Startup check: validate and repair cache_index.json for all deployed jobs.
+        cache_thread = threading.Thread(
+            target=self._run_cache_index_startup_check,
+            daemon=True,
+            name="StartupCacheIndexCheck",
+        )
+        cache_thread.start()
+
         # Start the event loop
         sys.exit(self.qapp.exec())
 
@@ -1546,6 +1555,7 @@ class Application:
             ("initial scan", self.initial_scan),
             ("GLB startup check", self._run_startup_glb_check),
             ("cabinet index startup check", self._run_cabinet_index_startup_check),
+            ("cache index startup check", self._run_cache_index_startup_check),
         ):
             if self.stop_event.is_set():
                 break
@@ -1621,6 +1631,28 @@ class Application:
             return True
         except Exception as e:
             logging.error("Startup cabinet index check failed: %s", e, exc_info=True)
+            return False
+
+    def _run_cache_index_startup_check(self):
+        """Validate and repair cache_index.json for all deployed jobs on startup."""
+        if not self._is_root_available_at_startup():
+            logging.warning(
+                "Startup cache index check deferred; Ready Jobs root is unavailable: %s",
+                self.config.ROOT_DIR,
+            )
+            return False
+        try:
+            summary = update_all_jobs_cache(
+                self.config.ROOT_DIR,
+                consolidate_trackers=False,
+                archive=False,
+            )
+            rebuilt = summary.get("rebuilt", 0)
+            if rebuilt:
+                logging.info("Startup: regenerated cache_index.json for %d job(s)", rebuilt)
+            return True
+        except Exception as e:
+            logging.error("Startup cache index check failed: %s", e, exc_info=True)
             return False
 
     def perform_backup(self):
