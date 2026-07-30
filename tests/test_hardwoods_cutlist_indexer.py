@@ -2023,3 +2023,90 @@ def test_on_job_mismatch_callback_fires_once_then_not_again_for_same_unfixed_doc
     assert calls[0]["jobFolderName"] == "530a - DC BIGLEY"
     assert calls[0]["expectedJob"] == "530A"  # parse_job_identifier uppercases the suffix
     assert calls[0]["foundJob"] == "532"
+
+
+def _make_wrong_job_nailer(tmp_path, monkeypatch):
+    job_dir = tmp_path / "530a - DC BIGLEY"
+    job_dir.mkdir()
+    nailer = job_dir / "530a - Nailer Cut List.pdf"
+    nailer.write_text("placeholder", encoding="utf-8")
+    wrong_job_words = [
+        _w(80, 130, "532"),
+        _w(100, 130, "-"),
+        _w(112, 130, "WRONG"),
+        _w(160, 130, "JOB"),
+    ]
+    table_words = _std_header(160) + _std_row(182, 2, "Bottom Rail", "4.75", "54", "15, 16")
+    monkeypatch.setattr(
+        indexer.fitz, "open", lambda path: _FakeDoc([_FakePage(words=wrong_job_words + table_words)])
+    )
+    return job_dir, nailer
+
+
+def _make_v3_face_frame_filename_with_door_title(tmp_path, monkeypatch):
+    job_dir = tmp_path / "530a - DC BIGLEY"
+    job_dir.mkdir()
+    pdf_path = job_dir / "530a - Face Frame Cut List.pdf"
+    pdf_path.write_text("placeholder", encoding="utf-8")
+    title_words = [
+        _w(74, 100, "Door"),
+        _w(108, 100, "Cut"),
+        _w(132, 100, "List"),
+        _w(168, 100, "3.0"),
+    ]
+    wrong_job_words = [
+        _w(80, 130, "532"),
+        _w(100, 130, "-"),
+        _w(112, 130, "WRONG"),
+        _w(160, 130, "JOB"),
+    ]
+    material_words = [
+        _w(74, 145, "Material:"),
+        _w(124, 145, "'3/4"),
+        _w(160, 145, "Maple'"),
+    ]
+    table_words = _std_header(160) + _std_row(182, 2, "Bottom Rail", "4.75", "54", "15, 16")
+    monkeypatch.setattr(
+        indexer.fitz,
+        "open",
+        lambda path: _FakeDoc([_FakePage(words=title_words + wrong_job_words + material_words + table_words)]),
+    )
+    return job_dir, pdf_path
+
+
+def test_matching_override_indexes_document_and_keeps_visible_status(tmp_path, monkeypatch):
+    job_dir, nailer = _make_wrong_job_nailer(tmp_path, monkeypatch)
+    cutlist_mismatch.allow_job_mismatch_override(
+        str(job_dir),
+        doc_type=indexer.DOC_TYPE_NAILER,
+        pdf_filename=nailer.name,
+        expected_job="530A",
+        found_job="532",
+        approved_by="operator",
+    )
+
+    notifications = []
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir), on_job_mismatch=notifications.append) is True
+    _, payload = _load_output(str(job_dir))
+    assert [doc["docType"] for doc in payload["documents"]] == [indexer.DOC_TYPE_NAILER]
+    assert indexer._load_existing_mismatch_flags(str(job_dir))[indexer.DOC_TYPE_NAILER]["overrideActive"] is True
+    assert notifications == []
+
+
+def test_override_never_bypasses_mismatched_v3_report_title(tmp_path, monkeypatch):
+    job_dir, pdf_path = _make_v3_face_frame_filename_with_door_title(tmp_path, monkeypatch)
+    cutlist_mismatch.allow_job_mismatch_override(
+        str(job_dir),
+        doc_type=indexer.DOC_TYPE_FACE_FRAME,
+        pdf_filename=pdf_path.name,
+        expected_job="530A",
+        found_job="532",
+    )
+
+    with pytest.raises(indexer.TemplateMismatchError):
+        indexer._parse_document_rows(
+            indexer.DOC_TYPE_FACE_FRAME,
+            str(pdf_path),
+            str(job_dir),
+            allow_job_mismatch=True,
+        )

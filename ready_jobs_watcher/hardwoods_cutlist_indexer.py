@@ -24,6 +24,7 @@ from .cutlist_job_mismatch import (
     JobIdentifier,
     extract_pdf_job_identifier,
     folder_job_identifier,
+    has_job_mismatch_override,
     is_job_mismatch,
     mismatch_flag_path,
 )
@@ -794,7 +795,13 @@ def _assign_material_to_totals(
     return totals_sorted, running_material, running_unit_type
 
 
-def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> Tuple[int, List[Dict], List[Dict]]:
+def _parse_document_rows(
+    doc_type: str,
+    pdf_path: str,
+    job_folder_path: str,
+    *,
+    allow_job_mismatch: bool = False,
+) -> Tuple[int, List[Dict], List[Dict]]:
     rows: List[Dict] = []
     totals: List[Dict] = []
     template_detected = False
@@ -834,7 +841,11 @@ def _parse_document_rows(doc_type: str, pdf_path: str, job_folder_path: str) -> 
                     )
                 if folder_id is not None:
                     pdf_id = extract_pdf_job_identifier(doc_type, first_lines)
-                    if pdf_id is not None and is_job_mismatch(folder_id, pdf_id):
+                    if (
+                        pdf_id is not None
+                        and is_job_mismatch(folder_id, pdf_id)
+                        and not allow_job_mismatch
+                    ):
                         raise JobMismatchError(expected=folder_id, found=pdf_id)
 
             markers = _extract_section_markers(doc_type, rows_by_y)
@@ -1724,19 +1735,50 @@ def build_hardwoods_cutlist_index_for_job(
                 "foundJob": e.found.display(),
                 "detectedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
-            current_mismatches.append(entry)
-            main_logger.error(
-                "Hardwoods parse skipped (job mismatch): %s (expected %s, found %s)",
-                path,
-                entry["expectedJob"],
-                entry["foundJob"],
+            allowed = has_job_mismatch_override(
+                job_folder_path,
+                doc_type=doc_type,
+                pdf_filename=filename,
+                expected_job=entry["expectedJob"],
+                found_job=entry["foundJob"],
             )
-            if on_job_mismatch is not None and doc_type not in previous_mismatches:
+            current_mismatches.append({**entry, **({"overrideActive": True} if allowed else {})})
+            if allowed:
                 try:
-                    on_job_mismatch({**entry, "jobFolderName": os.path.basename(job_folder_path)})
-                except Exception as exc:
-                    main_logger.warning("on_job_mismatch callback failed for %s: %s", path, exc)
-            continue
+                    page_count, rows, totals = _parse_document_rows(
+                        doc_type,
+                        path,
+                        job_folder_path,
+                        allow_job_mismatch=True,
+                    )
+                except SkippableDocumentError as retry_error:
+                    main_logger.info("Hardwoods parse skipped: %s (%s)", path, retry_error)
+                    continue
+                except TemplateMismatchError as retry_error:
+                    main_logger.error("Hardwoods parse skipped (template mismatch): %s (%s)", path, retry_error)
+                    if retry_error.required_v3 and doc_type in _REQUIRED_READABLE_V3_DOC_TYPES:
+                        main_logger.error(
+                            "Hardwoods index publication aborted: required 3.0 sibling malformed: %s",
+                            path,
+                        )
+                        return False
+                    continue
+                except Exception as retry_error:
+                    main_logger.error("Hardwoods parse failed: %s (%s)", path, retry_error, exc_info=True)
+                    continue
+            else:
+                main_logger.error(
+                    "Hardwoods parse skipped (job mismatch): %s (expected %s, found %s)",
+                    path,
+                    entry["expectedJob"],
+                    entry["foundJob"],
+                )
+                if on_job_mismatch is not None and doc_type not in previous_mismatches:
+                    try:
+                        on_job_mismatch({**entry, "jobFolderName": os.path.basename(job_folder_path)})
+                    except Exception as exc:
+                        main_logger.warning("on_job_mismatch callback failed for %s: %s", path, exc)
+                continue
         except Exception as e:
             main_logger.error("Hardwoods parse failed: %s (%s)", path, e, exc_info=True)
             continue
