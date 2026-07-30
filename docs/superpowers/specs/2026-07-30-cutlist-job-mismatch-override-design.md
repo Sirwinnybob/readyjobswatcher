@@ -36,7 +36,7 @@ In **Settings → Jobs**, a red `CUTLIST MISMATCH` row remains visible for both 
 
 - Blocked job-number mismatch: show **Allow this PDF anyway** and **Dismiss**. The allow action has a confirmation that names the file, folder job, and printed job.
 - Allowed job-number mismatch: label it **Allowed override active** and show **Remove allow and rebuild**.
-- Any template/document-type mismatch: show its rejection reason but no allow button.
+- Any template/document-type mismatch: no allow button is created. It continues through the existing parser error/log path. In particular, the required 3.0 failure path must not write a new status flag, because it deliberately preserves the prior index, revision, and mismatch status unchanged.
 
 The action is performed on a background worker, disables duplicate clicks while it runs, refreshes the Jobs dashboard when complete, and reports any rebuild/cache error without deleting the operator’s recorded decision.
 
