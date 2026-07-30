@@ -451,7 +451,8 @@ def _validate_cache_index(job_folder: Path) -> bool:
     if not isinstance(progress, dict):
         missing.append("progressSummary")
     elif not _REQUIRED_PROGRESS_KEYS.issubset(progress.keys()):
-        missing.append(f"progressSummary.{_REQUIRED_PROGRESS_KEYS - progress.keys()}")
+        missing_keys = _REQUIRED_PROGRESS_KEYS - progress.keys()
+        missing.append(f"progressSummary.{', '.join(sorted(missing_keys))}")
     if missing:
         logging.getLogger(__name__).warning(
             "cache_index.json incomplete for %s: missing %s", job_folder.name, ", ".join(missing)
