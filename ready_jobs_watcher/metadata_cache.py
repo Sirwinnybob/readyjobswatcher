@@ -273,6 +273,8 @@ def _compute_cnc_progress(job_folder: Path, static_data: Dict[str, Any]) -> Opti
 
     per_file: Dict[str, List[Dict]] = {}
     for a in actions:
+        if not isinstance(a, dict):
+            continue
         fname = a.get("file") or a.get("pdfFilename", "")
         if fname:
             per_file.setdefault(fname, []).append(a)
@@ -290,7 +292,10 @@ def _compute_cnc_progress(job_folder: Path, static_data: Dict[str, Any]) -> Opti
         file_actions = per_file.get(fname, [])
 
         page_status: Dict[str, str] = {}
-        for a in sorted(file_actions, key=lambda x: x.get("timestamp", "")):
+        for a in sorted(
+            (item for item in file_actions if isinstance(item, dict)),
+            key=lambda x: x.get("timestamp", ""),
+        ):
             page = str(a.get("page", ""))
             action = a.get("action", "")
             if not page or not action:

@@ -237,3 +237,100 @@ def test_update_all_jobs_cache_writes_index(tmp_path):
     result = update_all_jobs_cache(tmp_path, consolidate_trackers=False, archive=False)
     assert (job / ".metadata" / "cache_index.json").exists()
     assert result["rebuilt"] == 1
+
+
+def test_hardwood_progress_counts(tmp_path):
+    """_compute_progress_summary returns hardwood progress from consolidated tracker."""
+    job = tmp_path / "123 - Test"
+    hw_tracker = job / ".metadata" / "hardwoods" / ".tracker"
+    hw_tracker.mkdir(parents=True)
+    actions = [
+        {"docType": "FACE_FRAME_CUT_LIST", "rowId": "r1", "action": "set_done_count", "value": 1, "timestamp": "1"},
+        {"docType": "FACE_FRAME_CUT_LIST", "rowId": "r2", "action": "set_bad_count", "value": 1, "timestamp": "2"},
+        {"docType": "NAILER_CUT_LIST", "rowId": "r3", "action": "set_skipped", "timestamp": "3"},
+    ]
+    (hw_tracker / "consolidated.json").write_text(
+        json.dumps({"actions": actions}), encoding="utf-8"
+    )
+    static_data = {
+        "hardwoodJob": {
+            "index": {
+                "documents": [
+                    {"docType": "FACE_FRAME_CUT_LIST", "rows": [{"rowId": "r1"}, {"rowId": "r2"}]},
+                    {"docType": "NAILER_CUT_LIST", "rows": [{"rowId": "r3"}]},
+                ]
+            }
+        },
+        "hasThreeDAssets": False,
+        "pdfCatalog": {"deliverySheet": None},
+    }
+    result = _compute_progress_summary(job, static_data)
+    hw = result["hardwoods"]
+    assert hw["totalPieces"] == 3
+    assert hw["donePieces"] == 1
+    assert hw["badPieces"] == 1
+    assert hw["skippedPieces"] == 1
+    assert hw["docTypes"][0]["docType"] == "FACE_FRAME_CUT_LIST"
+    assert hw["docTypes"][0]["done"] == 1
+
+
+def test_missing_consolidated_json(tmp_path):
+    """Missing consolidated.json yields zero progress, no crash."""
+    job = tmp_path / "123 - Test"
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / ".metadata").mkdir()
+    static_data = {
+        "cncJob": {"materials": [
+            {"materialName": "FRAME", "pageCount": 5, "pdfFilename": "123 - FRAME.pdf"}
+        ]},
+        "hasThreeDAssets": False,
+        "pdfCatalog": {"deliverySheet": None},
+    }
+    result = _compute_progress_summary(job, static_data)
+    assert result["cnc"]["done"] == 0
+    assert result["cnc"]["bad"] == 0
+    assert result["cnc"]["totalSheets"] == 5
+
+
+def test_corrupt_consolidated_json(tmp_path):
+    """Corrupt consolidated.json yields zero progress, no crash."""
+    job = tmp_path / "123 - Test"
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / ".metadata").mkdir()
+    (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+        "not valid json", encoding="utf-8"
+    )
+    static_data = {
+        "cncJob": {"materials": [
+            {"materialName": "FRAME", "pageCount": 5, "pdfFilename": "123 - FRAME.pdf"}
+        ]},
+        "hasThreeDAssets": False,
+        "pdfCatalog": {"deliverySheet": None},
+    }
+    result = _compute_progress_summary(job, static_data)
+    assert result["cnc"]["done"] == 0
+
+
+def test_non_dict_actions_skipped(tmp_path):
+    """Non-dict items in actions array are safely skipped."""
+    job = tmp_path / "123 - Test"
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / ".metadata").mkdir()
+    actions = [
+        "this is a string, not a dict",
+        ["a", "list"],
+        None,
+        {"file": "123 - FRAME.pdf", "page": 1, "action": "complete", "timestamp": "1"},
+    ]
+    (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+        json.dumps({"actions": actions}), encoding="utf-8"
+    )
+    static_data = {
+        "cncJob": {"materials": [
+            {"materialName": "FRAME", "pageCount": 5, "pdfFilename": "123 - FRAME.pdf"}
+        ]},
+        "hasThreeDAssets": False,
+        "pdfCatalog": {"deliverySheet": None},
+    }
+    result = _compute_progress_summary(job, static_data)
+    assert result["cnc"]["done"] == 1  # only the valid dict action counts
