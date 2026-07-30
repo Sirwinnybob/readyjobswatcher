@@ -1742,7 +1742,6 @@ def build_hardwoods_cutlist_index_for_job(
                 expected_job=entry["expectedJob"],
                 found_job=entry["foundJob"],
             )
-            current_mismatches.append({**entry, **({"overrideActive": True} if allowed else {})})
             if allowed:
                 try:
                     page_count, rows, totals = _parse_document_rows(
@@ -1766,7 +1765,9 @@ def build_hardwoods_cutlist_index_for_job(
                 except Exception as retry_error:
                     main_logger.error("Hardwoods parse failed: %s (%s)", path, retry_error, exc_info=True)
                     continue
+                current_mismatches.append({**entry, "overrideActive": True})
             else:
+                current_mismatches.append(entry)
                 main_logger.error(
                     "Hardwoods parse skipped (job mismatch): %s (expected %s, found %s)",
                     path,

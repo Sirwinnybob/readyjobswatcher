@@ -2093,6 +2093,26 @@ def test_matching_override_indexes_document_and_keeps_visible_status(tmp_path, m
     assert notifications == []
 
 
+def test_failed_approved_retry_is_not_marked_active_or_indexed(tmp_path, monkeypatch):
+    job_dir, nailer = _make_wrong_job_nailer(tmp_path, monkeypatch)
+    cutlist_mismatch.allow_job_mismatch_override(
+        str(job_dir),
+        doc_type=indexer.DOC_TYPE_NAILER,
+        pdf_filename=nailer.name,
+        expected_job="530A",
+        found_job="532",
+    )
+
+    malformed_retry = _FakeDoc([_FakePage(words=[_w(80, 130, "unparseable")])])
+    first_parse = indexer.fitz.open(str(nailer))
+    retry_docs = [first_parse, malformed_retry]
+    monkeypatch.setattr(indexer.fitz, "open", lambda path: retry_docs.pop(0))
+
+    assert indexer.build_hardwoods_cutlist_index_for_job(str(job_dir)) is False
+    assert not os.path.exists(os.path.join(job_dir, ".metadata", "hardwoods", "cutlist_index.json"))
+    assert indexer._load_existing_mismatch_flags(str(job_dir)) == {}
+
+
 def test_override_never_bypasses_mismatched_v3_report_title(tmp_path, monkeypatch):
     job_dir, pdf_path = _make_v3_face_frame_filename_with_door_title(tmp_path, monkeypatch)
     cutlist_mismatch.allow_job_mismatch_override(
