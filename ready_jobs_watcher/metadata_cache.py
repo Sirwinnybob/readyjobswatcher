@@ -1076,6 +1076,13 @@ def _iter_staleness_files(job_folder: Path):
     ):
         yield path
 
+    # Tracker consolidated files — affects cache_index.json progress summary
+    for tracker_path in (
+        job_folder / "CNC" / ".tracker" / "consolidated.json",
+        job_folder / ".metadata" / "hardwoods" / ".tracker" / "consolidated.json",
+    ):
+        yield tracker_path
+
     for folder, predicate in (
         (job_folder, lambda p: p.suffix.lower() == ".pdf"),
         (job_folder / "CNC", lambda p: p.suffix.lower() == ".pdf" and "all sheets" not in p.name.lower()),
@@ -1186,7 +1193,8 @@ def update_all_jobs_cache(
             if not needs_rebuild:
                 needs_rebuild = check_cache_needs_rebuild(job_folder, cache_path.stat().st_mtime)
             if needs_rebuild:
-                generate_static_cache(job_folder, folder_name, lineup_positions.get(folder_name))
+                static_data = generate_static_cache(job_folder, folder_name, lineup_positions.get(folder_name))
+                generate_cache_index(job_folder, static_data)
                 summary["rebuilt"] += 1
 
             if archive and archive_root is not None:

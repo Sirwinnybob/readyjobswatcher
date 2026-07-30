@@ -6,6 +6,7 @@ from pathlib import Path
 from ready_jobs_watcher.metadata_cache import (
     _compute_progress_summary,
     generate_cache_index,
+    update_all_jobs_cache,
 )
 
 
@@ -223,3 +224,16 @@ def test_generate_cache_index_skip_if_unchanged(tmp_path):
     generate_cache_index(job, static_data)
     mtime2 = (job / ".metadata" / "cache_index.json").stat().st_mtime_ns
     assert mtime1 == mtime2, "identical payload should not rewrite"
+
+
+def test_update_all_jobs_cache_writes_index(tmp_path):
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    (job / "CNC").mkdir(parents=True)
+    gate = {"deployed": True, "parseReady": True, "hiddenFromProduction": False}
+    (job / ".metadata" / "deployment_gate.json").write_text(
+        json.dumps(gate), encoding="utf-8"
+    )
+    result = update_all_jobs_cache(tmp_path, consolidate_trackers=False, archive=False)
+    assert (job / ".metadata" / "cache_index.json").exists()
+    assert result["rebuilt"] == 1
