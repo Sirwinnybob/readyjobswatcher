@@ -68,7 +68,7 @@ class DebouncedMetadataRefreshScheduler:
         def _run():
             with self._lock:
                 self._global_timer = None
-                latest_reason = self._global_reason or reason
+                latest_reason = self._global_reason if self._global_reason is not None else reason
                 self._global_reason = None
             try:
                 self.refresh_all_callback(latest_reason)

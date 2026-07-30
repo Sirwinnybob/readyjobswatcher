@@ -80,6 +80,25 @@ def test_root_production_order_change_debounces_global_refresh(tmp_path):
     assert global_calls == ["production_order_updated"]
 
 
+def test_global_refresh_uses_latest_empty_reason(tmp_path):
+    FakeTimer.instances = []
+    global_calls = []
+    scheduler = DebouncedMetadataRefreshScheduler(
+        root_dir=tmp_path,
+        refresh_callback=lambda job_path, reason: None,
+        refresh_all_callback=lambda reason: global_calls.append(reason),
+        delay_seconds=8,
+        timer_factory=FakeTimer,
+    )
+
+    scheduler.schedule_all("production_order_updated")
+    scheduler.schedule_all("")
+
+    FakeTimer.instances[0].fire()
+
+    assert global_calls == [""]
+
+
 def test_tracker_reason_refresh_consolidates_trackers(monkeypatch, tmp_path):
     calls = []
 
