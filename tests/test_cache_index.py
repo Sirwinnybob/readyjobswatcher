@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 from pathlib import Path
@@ -462,3 +463,162 @@ def test_validate_cache_index_whitespace_folderName(tmp_path):
     }
     (job / ".metadata" / "cache_index.json").write_text(json.dumps(data), encoding="utf-8")
     assert _validate_cache_index(job) is False
+
+
+def test_update_all_jobs_cache_fixes_bad_index(tmp_path):
+    """When cache_static is fresh but cache_index is missing, update regenerates it."""
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    (job / "CNC").mkdir(parents=True)
+    gate = {"deployed": True, "parseReady": True, "hiddenFromProduction": False}
+    (job / ".metadata" / "deployment_gate.json").write_text(json.dumps(gate), encoding="utf-8")
+    static_data = {
+        "jobInfo": {"folderName": "123 - Test"},
+        "cncJob": {"materials": [{"materialName": "FRAME", "pageCount": 2, "pdfFilename": "f.pdf"}]},
+        "hasThreeDAssets": False,
+        "pdfCatalog": {"deliverySheet": None},
+    }
+    (job / ".metadata" / "cache_static.json").write_text(
+        json.dumps(static_data), encoding="utf-8"
+    )
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+        json.dumps({"tabletId": "c", "actions": []}), encoding="utf-8"
+    )
+    result = update_all_jobs_cache(tmp_path, consolidate_trackers=False, archive=False)
+    assert (job / ".metadata" / "cache_index.json").exists()
+    assert result["rebuilt"] >= 1
+    index_data = json.loads((job / ".metadata" / "cache_index.json").read_text(encoding="utf-8"))
+    assert index_data["jobInfo"]["folderName"] == "123 - Test"
+
+
+def test_update_all_jobs_cache_fixes_corrupt_index(tmp_path):
+    """When cache_index is corrupt but cache_static is fresh, update regenerates it."""
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    (job / "CNC").mkdir(parents=True)
+    gate = {"deployed": True, "parseReady": True, "hiddenFromProduction": False}
+    (job / ".metadata" / "deployment_gate.json").write_text(json.dumps(gate), encoding="utf-8")
+    static_data = {
+        "jobInfo": {"folderName": "123 - Test"},
+        "cncJob": {"materials": [{"materialName": "FRAME", "pageCount": 2, "pdfFilename": "f.pdf"}]},
+        "hasThreeDAssets": False,
+        "pdfCatalog": {"deliverySheet": None},
+    }
+    (job / ".metadata" / "cache_static.json").write_text(
+        json.dumps(static_data), encoding="utf-8"
+    )
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+        json.dumps({"tabletId": "c", "actions": []}), encoding="utf-8"
+    )
+    (job / ".metadata" / "cache_index.json").write_text("corrupt", encoding="utf-8")
+    result = update_all_jobs_cache(tmp_path, consolidate_trackers=False, archive=False)
+    assert result["rebuilt"] >= 1
+    index_data = json.loads((job / ".metadata" / "cache_index.json").read_text(encoding="utf-8"))
+    assert index_data["jobInfo"]["folderName"] == "123 - Test"
+
+
+def test_update_all_jobs_cache_skips_valid_index(tmp_path):
+    """When cache_index is valid and cache_static is fresh, no rebuild."""
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    (job / "CNC").mkdir(parents=True)
+    gate = {"deployed": True, "parseReady": True, "hiddenFromProduction": False}
+    (job / ".metadata" / "deployment_gate.json").write_text(json.dumps(gate), encoding="utf-8")
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+        json.dumps({"tabletId": "c", "actions": []}), encoding="utf-8"
+    )
+    static_data = {
+        "jobInfo": {"folderName": "123 - Test"},
+        "cncJob": {"materials": [{"materialName": "FRAME", "pageCount": 2, "pdfFilename": "f.pdf"}]},
+        "hasThreeDAssets": False,
+        "pdfCatalog": {"deliverySheet": None},
+    }
+    # cache_static written LAST so its mtime is newest — avoids false stale check
+    (job / ".metadata" / "cache_static.json").write_text(
+        json.dumps(static_data), encoding="utf-8"
+    )
+    valid_index = {
+        "jobInfo": {"folderName": "123 - Test"},
+        "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False, "has3DAssets": False},
+    }
+    (job / ".metadata" / "cache_index.json").write_text(
+        json.dumps(valid_index), encoding="utf-8"
+    )
+    result = update_all_jobs_cache(tmp_path, consolidate_trackers=False, archive=False)
+    assert result["rebuilt"] == 0
+
+
+def test_update_all_jobs_cache_empty_cache_static_skips(tmp_path, caplog):
+    """When cache_static.json is {} (empty dict), skip regenerating cache_index."""
+    caplog.set_level(logging.WARNING)
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    (job / "CNC").mkdir(parents=True)
+    gate = {"deployed": True, "parseReady": True, "hiddenFromProduction": False}
+    (job / ".metadata" / "deployment_gate.json").write_text(json.dumps(gate), encoding="utf-8")
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+        json.dumps({"tabletId": "c", "actions": []}), encoding="utf-8"
+    )
+    (job / ".metadata" / "cache_static.json").write_text("{}", encoding="utf-8")
+    result = update_all_jobs_cache(tmp_path, consolidate_trackers=False, archive=False)
+    assert result["rebuilt"] == 0
+    assert not (job / ".metadata" / "cache_index.json").exists()
+    assert "missing or corrupt" in caplog.text
+
+
+def test_update_all_jobs_cache_corrupt_cache_static_skips(tmp_path, caplog):
+    """When cache_static.json is corrupt JSON, skip regenerating cache_index."""
+    caplog.set_level(logging.WARNING)
+    job = tmp_path / "123 - Test"
+    (job / ".metadata").mkdir(parents=True)
+    (job / "CNC").mkdir(parents=True)
+    gate = {"deployed": True, "parseReady": True, "hiddenFromProduction": False}
+    (job / ".metadata" / "deployment_gate.json").write_text(json.dumps(gate), encoding="utf-8")
+    (job / "CNC" / ".tracker").mkdir(parents=True)
+    (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+        json.dumps({"tabletId": "c", "actions": []}), encoding="utf-8"
+    )
+    (job / ".metadata" / "cache_static.json").write_text("not valid json", encoding="utf-8")
+    result = update_all_jobs_cache(tmp_path, consolidate_trackers=False, archive=False)
+    assert result["rebuilt"] == 0
+    assert "missing or corrupt" in caplog.text
+
+
+def test_update_all_jobs_cache_multi_job_mixed_index_state(tmp_path):
+    """Multiple jobs: only the one with bad cache_index gets rebuilt."""
+    for folder in ("123 - Alpha", "456 - Beta", "789 - Gamma"):
+        job = tmp_path / folder
+        (job / ".metadata").mkdir(parents=True)
+        (job / "CNC").mkdir(parents=True)
+        gate = {"deployed": True, "parseReady": True, "hiddenFromProduction": False}
+        (job / ".metadata" / "deployment_gate.json").write_text(json.dumps(gate), encoding="utf-8")
+        (job / "CNC" / ".tracker").mkdir(parents=True)
+        (job / "CNC" / ".tracker" / "consolidated.json").write_text(
+            json.dumps({"tabletId": "c", "actions": []}), encoding="utf-8"
+        )
+        static_data = {
+            "jobInfo": {"folderName": folder},
+            "cncJob": {"materials": [{"materialName": "FRAME", "pageCount": 2, "pdfFilename": "f.pdf"}]},
+            "hasThreeDAssets": False,
+            "pdfCatalog": {"deliverySheet": None},
+        }
+        (job / ".metadata" / "cache_static.json").write_text(
+            json.dumps(static_data), encoding="utf-8"
+        )
+    # Alpha: valid index, Beta: missing index, Gamma: corrupt index
+    valid_index = {
+        "jobInfo": {"folderName": "123 - Alpha"},
+        "progressSummary": {"cnc": {}, "hardwoods": {}, "hasDeliverySheet": False, "has3DAssets": False},
+    }
+    alpha_job = tmp_path / "123 - Alpha"
+    (alpha_job / ".metadata" / "cache_index.json").write_text(
+        json.dumps(valid_index), encoding="utf-8"
+    )
+    gamma_job = tmp_path / "789 - Gamma"
+    (gamma_job / ".metadata" / "cache_index.json").write_text("garbage", encoding="utf-8")
+    result = update_all_jobs_cache(tmp_path, consolidate_trackers=False, archive=False)
+    assert result["rebuilt"] == 2  # Beta (missing) + Gamma (corrupt)

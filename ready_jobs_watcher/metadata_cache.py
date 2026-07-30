@@ -1234,6 +1234,17 @@ def update_all_jobs_cache(
                 static_data = generate_static_cache(job_folder, folder_name, lineup_positions.get(folder_name))
                 generate_cache_index(job_folder, static_data)
                 summary["rebuilt"] += 1
+            elif not _validate_cache_index(job_folder):
+                static_data = _read_json(cache_path)
+                if static_data:
+                    generate_cache_index(job_folder, static_data)
+                    summary["rebuilt"] += 1
+                    logging.getLogger(__name__).info("Regenerated cache_index.json for %s", folder_name)
+                else:
+                    logging.getLogger(__name__).warning(
+                        "Cannot regenerate cache_index.json for %s: cache_static.json missing or corrupt",
+                        folder_name,
+                    )
 
             if archive and archive_root is not None:
                 result = archive_job_metadata(
