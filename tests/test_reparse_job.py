@@ -390,6 +390,57 @@ def test_update_cutlist_override_rolls_back_index_and_status_when_revision_publi
     app.settings_window.refresh_jobs_dashboard.assert_not_called()
 
 
+@pytest.mark.parametrize("existing_outputs", [True, False])
+def test_update_cutlist_override_rolls_back_index_and_status_when_revision_publication_raises(
+    tmp_path,
+    monkeypatch,
+    existing_outputs,
+):
+    job_name, job_path, _target = _wrong_job_target_for_publication_test(tmp_path)
+    app = _cutlist_override_app(tmp_path)
+    snapshots = _seed_cutlist_publication_outputs(
+        job_path,
+        include_hardwoods_outputs=existing_outputs,
+    )
+    hardwoods_dir = job_path / ".metadata" / "hardwoods"
+    index_path = hardwoods_dir / "cutlist_index.json"
+    status_path = hardwoods_dir / "cutlist_job_mismatch.json"
+    revision_path = hardwoods_dir / "cutlist_revisions.json"
+    monkeypatch.setattr(
+        cutlist_indexer.fitz,
+        "open",
+        lambda _path: _FakePdfDocument([_FakePdfPage(_cutlist_table_words("532"))]),
+    )
+
+    def raise_revision_publication(*_args, **_kwargs):
+        raise ValueError("injected revision publication failure")
+
+    monkeypatch.setattr(cutlist_indexer, "_upsert_revision_state", raise_revision_publication)
+
+    result = app.update_cutlist_job_mismatch_override(
+        job_name,
+        allow=True,
+        **_cutlist_override_identity(),
+    )
+
+    assert result == {
+        "success": False,
+        "message": "Override saved, but hardwoods rebuild did not complete.",
+    }
+    if existing_outputs:
+        _assert_publication_outputs_unchanged(snapshots)
+    else:
+        assert not index_path.exists()
+        assert not status_path.exists()
+        assert not revision_path.exists()
+        assert (job_path / ".metadata" / "cache_static.json").read_bytes() == snapshots[
+            job_path / ".metadata" / "cache_static.json"
+        ]
+    app.metadata_refresh_service.refresh_job_now.assert_not_called()
+    app.metadata_refresh_service.schedule_job.assert_not_called()
+    app.settings_window.refresh_jobs_dashboard.assert_not_called()
+
+
 def test_revoke_waits_for_watcher_build_then_prevents_stale_override_republication(tmp_path, monkeypatch):
     job_name = "530a - TEST"
     job_path = tmp_path / job_name

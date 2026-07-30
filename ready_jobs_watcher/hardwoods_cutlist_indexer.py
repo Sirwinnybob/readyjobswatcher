@@ -2004,11 +2004,20 @@ def _build_hardwoods_cutlist_index_for_job_unlocked(
             success=False,
             reason="mismatch status publication failed",
         )
-    revision_payload = _upsert_revision_state(
-        job_folder_path=job_folder_path,
-        previous_index=previous_index,
-        next_docs=serialized_docs,
-    )
+    try:
+        revision_payload = _upsert_revision_state(
+            job_folder_path=job_folder_path,
+            previous_index=previous_index,
+            next_docs=serialized_docs,
+        )
+    except Exception as exc:
+        main_logger.error(
+            "Failed publishing hardwoods revision state for %s: %s",
+            job_folder_path,
+            exc,
+            exc_info=True,
+        )
+        revision_payload = None
     if revision_payload is None:
         _restore_file_snapshot(index_path, previous_index_bytes)
         _restore_file_snapshot(status_path, previous_status_bytes)
