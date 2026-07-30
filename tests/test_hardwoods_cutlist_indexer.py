@@ -1322,6 +1322,76 @@ def test_duplicate_match_uses_tracker_done_priority_then_order(tmp_path, monkeyp
     assert rows2[1]["rowId"] == alpha_id
 
 
+def test_reconciliation_does_not_carry_forward_duplicate_prior_row_ids(tmp_path):
+    job_dir = tmp_path / "998 - TEST"
+    metadata_dir = job_dir / ".metadata" / "hardwoods"
+    metadata_dir.mkdir(parents=True)
+    doc_type = indexer.DOC_TYPE_DOOR_CUT
+    duplicate_id = "DOOR_CUT_LIST:1:15:duplicate"
+    old_rows = [
+        {
+            "rowId": duplicate_id,
+            "page": 1,
+            "rowOrdinal": ordinal,
+            "material": "1/4 MDF",
+            "width": "2",
+            "length": "30",
+        }
+        for ordinal in (15, 16)
+    ]
+    (metadata_dir / indexer.HARDWOODS_INDEX_FILENAME).write_text(
+        json.dumps({"documents": [{"docType": doc_type, "rows": old_rows}]}),
+        encoding="utf-8",
+    )
+    new_rows = [
+        {
+            "rowId": f"DOOR_CUT_LIST:1:{ordinal}:fresh",
+            "page": 1,
+            "rowOrdinal": ordinal,
+            "material": "1/4 MDF",
+            "width": "2",
+            "length": "30",
+        }
+        for ordinal in (15, 16)
+    ]
+
+    indexer._reconcile_rows_with_previous_index(
+        str(job_dir),
+        [{"docType": doc_type, "rows": new_rows}],
+    )
+
+    assert len({row["rowId"] for row in new_rows}) == 2
+    assert new_rows[0]["rowId"] == duplicate_id
+    assert new_rows[1]["rowId"] == "DOOR_CUT_LIST:1:16:fresh"
+
+
+def test_reconciliation_repairs_duplicate_row_ids_without_a_prior_index(tmp_path):
+    job_dir = tmp_path / "998 - TEST"
+    job_dir.mkdir()
+    doc_type = indexer.DOC_TYPE_DOOR_CUT
+    new_rows = [
+        {
+            "rowId": "DOOR_CUT_LIST:1:15:duplicate",
+            "page": 1,
+            "rowOrdinal": ordinal,
+            "material": "1/4 MDF",
+            "width": "2",
+            "length": "30",
+        }
+        for ordinal in (15, 16)
+    ]
+
+    indexer._reconcile_rows_with_previous_index(
+        str(job_dir),
+        [{"docType": doc_type, "rows": new_rows}],
+    )
+
+    assert [row["rowId"] for row in new_rows] == [
+        "DOOR_CUT_LIST:1:15:duplicate",
+        "DOOR_CUT_LIST:1:15:duplicate:dup2",
+    ]
+
+
 def test_replacement_does_not_transfer_row_ids_across_doc_types(tmp_path, monkeypatch):
     job_dir = tmp_path / "998 - TEST"
     job_dir.mkdir()

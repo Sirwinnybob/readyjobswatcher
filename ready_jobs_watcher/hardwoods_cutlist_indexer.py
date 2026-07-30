@@ -1558,9 +1558,42 @@ def _tracker_completion_priority(job_folder_path: str) -> Dict[Tuple[str, str], 
     return {key: (vals[0], vals[1]) for key, vals in out.items()}
 
 
+def _repair_duplicate_row_ids(serialized_docs: List[Dict]) -> None:
+    for doc in serialized_docs:
+        if not isinstance(doc, dict):
+            continue
+        doc_type = str(doc.get("docType", "") or "")
+        rows = doc.get("rows", [])
+        if not isinstance(rows, list):
+            continue
+        assigned_row_ids = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_id = str(row.get("rowId", "") or "").strip()
+            if not row_id:
+                continue
+            if row_id in assigned_row_ids:
+                duplicate_suffix = 2
+                repaired_row_id = f"{row_id}:dup{duplicate_suffix}"
+                while repaired_row_id in assigned_row_ids:
+                    duplicate_suffix += 1
+                    repaired_row_id = f"{row_id}:dup{duplicate_suffix}"
+                main_logger.warning(
+                    "HARDWOODS_DUPLICATE_ROW_ID_REPAIRED doc=%s old=%s new=%s",
+                    doc_type,
+                    row_id,
+                    repaired_row_id,
+                )
+                row_id = repaired_row_id
+                row["rowId"] = row_id
+            assigned_row_ids.add(row_id)
+
+
 def _reconcile_rows_with_previous_index(job_folder_path: str, serialized_docs: List[Dict]) -> None:
     previous = _load_existing_index(job_folder_path)
     if not previous:
+        _repair_duplicate_row_ids(serialized_docs)
         return
 
     completion_priority = _tracker_completion_priority(job_folder_path)
@@ -1609,15 +1642,21 @@ def _reconcile_rows_with_previous_index(job_folder_path: str, serialized_docs: L
         # Deterministic assignment for duplicate rows.
         indexed_new_rows = [(idx, row) for idx, row in enumerate(new_rows) if isinstance(row, dict)]
         indexed_new_rows.sort(key=lambda item: _row_order_key(item[1]))
+        assigned_row_ids = set()
         for _, new_row in indexed_new_rows:
             key = _row_match_key(doc_type, new_row)
-            if not key:
-                continue
-            bucket = candidates_by_key.get(key)
-            if not bucket:
-                continue
-            chosen = bucket.pop(0)
-            new_row["rowId"] = chosen["rowId"]
+            bucket = candidates_by_key.get(key) if key else None
+            while bucket and str(bucket[0]["rowId"] or "") in assigned_row_ids:
+                bucket.pop(0)
+            if bucket:
+                chosen = bucket.pop(0)
+                new_row["rowId"] = chosen["rowId"]
+
+            row_id = str(new_row.get("rowId", "") or "").strip()
+            if row_id:
+                assigned_row_ids.add(row_id)
+
+    _repair_duplicate_row_ids(serialized_docs)
 
 
 def _remove_index_if_exists(job_folder_path: str) -> bool:
